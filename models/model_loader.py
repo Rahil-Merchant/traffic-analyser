@@ -3,6 +3,7 @@ import torch
 from ultralytics import YOLO
 from core.utils import debug_print
 import os
+from config import MODEL_INPUT_SIZE
 
 def load_model(model_path, device, conf_threshold, iou_threshold):
     """
@@ -33,11 +34,7 @@ def load_model(model_path, device, conf_threshold, iou_threshold):
             if device == 'cuda':
                 try:
                     debug_print("Warming up .pt model...")
-                    # Determine input size from model if possible, fallback otherwise
-                    inp_size = getattr(model, 'imgsz', 640)
-                    if isinstance(inp_size, list): inp_size = inp_size[0]
-                    if not isinstance(inp_size, int): inp_size = 640 # Fallback if imgsz attribute is unusual
-                    dummy_input = torch.zeros(1, 3, inp_size, inp_size).to(device)
+                    dummy_input = torch.zeros(1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE).to(device)
                     model(dummy_input, verbose=False) # Perform a dummy inference
                     torch.cuda.synchronize()
                     debug_print("Model warm-up complete.")
