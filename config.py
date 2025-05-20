@@ -4,7 +4,7 @@ from datetime import datetime
 import torch # Import torch to check GPU capability
 
 PROCESSING_MODE = 'enhanced'
-LINE_MODE = 'interactive'
+LINE_MODE = 'hardcoded'
 ENABLE_VISUALIZATION = True
 
 # --- Input Settings (primarily for hardcoded mode) ---
@@ -25,7 +25,7 @@ REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 # --- Model Configuration ---
 MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/silent_contract_9082.engine"
 # MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/SGDMed_SGD_LR0p0100_WD0p00050_Cls1p50_Mix0p15_20250418_112036.engine"
-CONF_THRESHOLD = 0.8 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
+CONF_THRESHOLD = 0.4 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 416 # Keep smaller size for performance
 
@@ -66,17 +66,41 @@ MIXED_PRECISION = True if PROCESSING_MODE == 'enhanced' and torch.cuda.is_availa
 PARALLEL_STREAMS = 16 if PROCESSING_MODE == 'enhanced' else 2
 
 # --- Tracking Configuration --- 
-REIDENTIFICATION_TIMEOUT = 10.0
-MAX_MATCHING_DISTANCE = 50
-TRACKER_CONFIG = ''
+# --- ByteTrack Configuration ---
+# Confidence threshold to consider a detection as a potential candidate for tracking.
+# Detections below this are ignored by ByteTrack.
+BYTETRACK_TRACK_THRESH = 0.4
+
+# Confidence threshold for a detection to be considered "high-confidence".
+# These are matched first with existing active tracks.
+BYTETRACK_TRACK_HIGH_THRESH = 0.5
+
+# Confidence threshold to initiate a *new* track from an unmatched high-confidence detection.
+# This should generally be >= BYTETRACK_TRACK_HIGH_THRESH.
+# Some implementations set it slightly higher to be more conservative about starting new tracks.
+BYTETRACK_NEW_TRACK_THRESH = 0.6
+
+# IoU (Intersection over Union) threshold for matching tracks with detections.
+# If IoU is below this, the match is not considered valid.
+BYTETRACK_MATCH_THRESH_IOU = 0.6 # Can be 0.7, 0.8 etc. Depends on how much overlap you expect.
+
+# Maximum number of frames to keep a track in the "lost" state before it's removed.
+# This value is in *frames*. If you prefer to think in seconds, convert it based on your
+# processing FPS (e.g., if processing at 10 FPS, 30 frames = 3 seconds).
+# Example: if your BYTETRACK_TRACK_BUFFER_AGE_SECONDS = 2.0 (seconds)
+# and your processing_fps = 10, then BYTETRACK_TRACK_BUFFER_AGE_FRAMES = 2.0 * 10 = 20 frames.
+# For simplicity, let's define it directly in frames in config, or calculate it during ByteTracker init.
+BYTETRACK_TRACK_BUFFER_AGE_FRAMES = 100 # e.g., for 30 FPS this is 1 second. Adjust based on your needs.
+
+# --- (End of ByteTrack Configuration) ---
 
 # Timeout durations - Keep Increased slightly more
 VEHICLE_TIMEOUTS = {
-    'Light Vehicle': 40, 'Motorcycle': 40, 'Minibus Taxi': 50,
-    'Short Truck': 50, 'Medium Truck': 55, 'Long Truck': 60,
-    'Bus': 55, 'Pedestrian': 65, 'Cyclist': 65,
-    'Animal drawn vehicle': 65, 'Person with wheel barrow': 65,
-    'default': 40 # Increased default timeout
+    'Light Vehicle': 400, 'Motorcycle': 400, 'Minibus Taxi': 500,
+    'Short Truck': 500, 'Medium Truck': 550, 'Long Truck': 600,
+    'Bus': 550, 'Pedestrian': 650, 'Cyclist': 650,
+    'Animal drawn vehicle': 650, 'Person with wheel barrow': 650,
+    'default': 400 # Increased default timeout
 }
 TRACK_HISTORY_LENGTH = 100 # Keep reduced slightly
 
@@ -90,7 +114,8 @@ REPORTING_DIRECTIONS = { 'From South': ['To North', 'To West', 'To East'], 'From
 
 # --- Performance & Debugging ---
 ENABLE_DETAILED_PERFORMANCE_METRICS = True
-DEBUG_MODE = False # Keep False for performance runs
+DEBUG_MODE = True # Keep False for performance runs
+DEBUG_MODE_TRACKING  = True
 PERFORMANCE_SAMPLE_INTERVAL = 5.0
 MEMORY_CLEANUP_INTERVAL = 300
 
@@ -111,6 +136,5 @@ else: print("Using Interactive Lines (Gradio)")
 print(f"Target FPS: {TARGET_FPS}, Batch Size: {OPTIMAL_BATCH_SIZE}, Threads: {THREAD_COUNT}")
 print(f"Mixed Precision: {MIXED_PRECISION}, CUDA Streams: {PARALLEL_STREAMS}")
 # Adjusted print for tracking params
-print(f"Re-ID Timeout: {REIDENTIFICATION_TIMEOUT}s, Max Misses: {MAX_CONSECUTIVE_MISSES}") # Removed Max Match Dist
 print(f"Detailed Perf Metrics: {ENABLE_DETAILED_PERFORMANCE_METRICS}, Debug Mode: {DEBUG_MODE}")
 print(f"--------------------------------------------------------------------")
