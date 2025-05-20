@@ -76,13 +76,19 @@ class ZoneTracker:
             # print(f"DEBUG ZoneCheck V:{vehicle_id} Dir:{direction}: PrevIn(Center)={prev_in}, CurrIn(BottomCenter)={curr_in}")
 
             if prev_in != curr_in: # A transition occurred
-                key = f"{direction}_{vehicle_id}"; last_cross = self.zone_cooldowns.get(key, -1)
-                on_cooldown = (current_time - last_cross < 0.1)
+                key = f"{direction}_{vehicle_id}"
+                last_cross_time_for_this_zone_and_id = self.zone_cooldowns.get(key, -1.0) # Ensure float for comparison
+                
+                # INCREASE THIS COOLDOWN SIGNIFICANTLY
+                # current_cooldown_period = 0.1 # Original very short cooldown
+                current_cooldown_period = 0.75 # Seconds - Try 0.5s to 1.0s
+                                            # This applies per (vehicle, zone) pair.
 
-                # Debug Print (Optional)
-                # print(f"DEBUG_EXIT_CHECK: V:{vehicle_id} Dir:{direction} Transition! PrevIn={prev_in} CurrIn={curr_in} CooldownActive={on_cooldown}")
+                on_cooldown = (current_time - last_cross_time_for_this_zone_and_id < current_cooldown_period)
 
-                if on_cooldown: continue # Still on cooldown
+                if on_cooldown:
+                    debug_print(f"ZoneTracker: V_BT:{vehicle_id} cooldown active for zone {direction}. Skipping transition.")
+                    continue # Still on cooldown
 
                 event_type = None
                 if not prev_in and curr_in: event_type = "ENTRY"

@@ -1,301 +1,150 @@
+# tracker_utils.py
+
 import numpy as np
-import scipy.linalg
 import torch
+# scipy.linalg is not needed for GPUKalmanFilterXYAH if using torch.linalg
+
+def xywh2ltwh(x): # Expects list, np.ndarray, or torch.Tensor (for x,y,w,h center)
+    """Convert [x, y, w, h] center to [x1, y1, w, h] top-left."""
+    if isinstance(x, list):
+        x_arr = np.asarray(x, dtype=np.float32)
+    elif isinstance(x, torch.Tensor):
+        x_arr = x.cpu().numpy() if x.is_cuda else x.numpy()
+        x_arr = np.copy(x_arr) # Ensure it's a copy
+    elif isinstance(x, np.ndarray):
+        x_arr = np.copy(x)
+    else:
+        raise TypeError(f"xywh2ltwh: Expected list, np.ndarray, or torch.Tensor, got {type(x)}")
+
+    y = np.copy(x_arr)
+    if x_arr.ndim == 1 and x_arr.shape[0] == 4:
+        y[0] = x_arr[0] - x_arr[2] / 2.0  # top left x (x1)
+        y[1] = x_arr[1] - x_arr[3] / 2.0  # top left y (y1)
+    elif x_arr.ndim == 2 and x_arr.shape[-1] == 4:
+        y[..., 0] = x_arr[..., 0] - x_arr[..., 2] / 2.0
+        y[..., 1] = x_arr[..., 1] - x_arr[..., 3] / 2.0
+    else:
+        raise ValueError(f"Input to xywh2ltwh must be of shape (4,) or (N, 4), got {x_arr.shape}")
+    return y
 
 
-class KalmanFilterXYAH:
+class GPUKalmanFilterXYAH:
     """
-    A KalmanFilterXYAH class for tracking bounding boxes in image space using a Kalman filter.
-
-    Implements a simple Kalman filter for tracking bounding boxes in image space. The 8-dimensional state space
-    (x, y, a, h, vx, vy, va, vh) contains the bounding box center position (x, y), aspect ratio a, height h, and their
-    respective velocities. Object motion follows a constant velocity model, and bounding box location (x, y, a, h) is
-    taken as a direct observation of the state space (linear observation model).
-
-    Attributes:
-        _motion_mat (np.ndarray): The motion matrix for the Kalman filter.
-        _update_mat (np.ndarray): The update matrix for the Kalman filter.
-        _std_weight_position (float): Standard deviation weight for position.
-        _std_weight_velocity (float): Standard deviation weight for velocity.
-
-    Methods:
-        initiate: Creates a track from an unassociated measurement.
-        predict: Runs the Kalman filter prediction step.
-        project: Projects the state distribution to measurement space.
-        multi_predict: Runs the Kalman filter prediction step (vectorized version).
-        update: Runs the Kalman filter correction step.
-        gating_distance: Computes the gating distance between state distribution and measurements.
-
-    Examples:
-        Initialize the Kalman filter and create a track from a measurement
-        >>> kf = KalmanFilterXYAH()
-        >>> measurement = np.array([100, 200, 1.5, 50])
-        >>> mean, covariance = kf.initiate(measurement)
-        >>> print(mean)
-        >>> print(covariance)
+    Kalman Filter for (x, y, aspect_ratio, height) state, implemented with PyTorch for GPU.
+    State: [cx, cy, a, h, vx, vy, va, vh]
+    Measurement: [cx, cy, a, h]
     """
-
-    def __init__(self):
-        """
-        Initialize Kalman filter model matrices with motion and observation uncertainty weights.
-
-        The Kalman filter is initialized with an 8-dimensional state space (x, y, a, h, vx, vy, va, vh), where (x, y)
-        represents the bounding box center position, 'a' is the aspect ratio, 'h' is the height, and their respective
-        velocities are (vx, vy, va, vh). The filter uses a constant velocity model for object motion and a linear
-        observation model for bounding box location.
-
-        Examples:
-            Initialize a Kalman filter for tracking:
-            >>> kf = KalmanFilterXYAH()
-        """
+    def __init__(self, device=None):
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = device
+            
         ndim, dt = 4, 1.0
 
-        # Create Kalman filter model matrices
-        self._motion_mat = np.eye(2 * ndim, 2 * ndim)
+        self._motion_mat = torch.eye(2 * ndim, device=self.device, dtype=torch.float32)
         for i in range(ndim):
             self._motion_mat[i, ndim + i] = dt
-        self._update_mat = np.eye(ndim, 2 * ndim)
+        
+        self._update_mat = torch.eye(ndim, 2 * ndim, device=self.device, dtype=torch.float32)
 
-        # Motion and observation uncertainty are chosen relative to the current state estimate
         self._std_weight_position = 1.0 / 20
         self._std_weight_velocity = 1.0 / 160
 
-    def initiate(self, measurement: np.ndarray):
-        """
-        Create a track from an unassociated measurement.
+    def initiate(self, measurement_gpu: torch.Tensor):
+        mean_pos = measurement_gpu 
+        mean_vel = torch.zeros_like(mean_pos, device=self.device)
+        mean = torch.cat([mean_pos, mean_vel])
 
-        Args:
-            measurement (np.ndarray): Bounding box coordinates (x, y, a, h) with center position (x, y), aspect ratio a,
-                and height h.
-
-        Returns:
-            (np.ndarray): Mean vector (8-dimensional) of the new track. Unobserved velocities are initialized to 0 mean.
-            (np.ndarray): Covariance matrix (8x8 dimensional) of the new track.
-
-        Examples:
-            >>> kf = KalmanFilterXYAH()
-            >>> measurement = np.array([100, 50, 1.5, 200])
-            >>> mean, covariance = kf.initiate(measurement)
-        """
-        mean_pos = measurement
-        mean_vel = np.zeros_like(mean_pos)
-        mean = np.r_[mean_pos, mean_vel]
-
-        std = [
-            2 * self._std_weight_position * measurement[3],
-            2 * self._std_weight_position * measurement[3],
-            1e-2,
-            2 * self._std_weight_position * measurement[3],
-            10 * self._std_weight_velocity * measurement[3],
-            10 * self._std_weight_velocity * measurement[3],
-            1e-5,
-            10 * self._std_weight_velocity * measurement[3],
-        ]
-        covariance = np.diag(np.square(std))
+        std = torch.zeros(8, device=self.device, dtype=torch.float32)
+        std[0] = 2 * self._std_weight_position * measurement_gpu[3] 
+        std[1] = 2 * self._std_weight_position * measurement_gpu[3] 
+        std[2] = 1e-2  
+        std[3] = 2 * self._std_weight_position * measurement_gpu[3] 
+        std[4] = 10 * self._std_weight_velocity * measurement_gpu[3]
+        std[5] = 10 * self._std_weight_velocity * measurement_gpu[3]
+        std[6] = 1e-5  
+        std[7] = 10 * self._std_weight_velocity * measurement_gpu[3]
+        covariance = torch.diag(torch.square(std))
         return mean, covariance
 
-    def predict(self, mean: np.ndarray, covariance: np.ndarray):
-        """
-        Run Kalman filter prediction step.
+    def predict(self, mean_gpu: torch.Tensor, covariance_gpu: torch.Tensor):
+        std_pos = torch.zeros(4, device=self.device, dtype=torch.float32)
+        std_pos[0] = self._std_weight_position * mean_gpu[3]
+        std_pos[1] = self._std_weight_position * mean_gpu[3]
+        std_pos[2] = 1e-2
+        std_pos[3] = self._std_weight_position * mean_gpu[3]
 
-        Args:
-            mean (np.ndarray): The 8-dimensional mean vector of the object state at the previous time step.
-            covariance (np.ndarray): The 8x8-dimensional covariance matrix of the object state at the previous time step.
+        std_vel = torch.zeros(4, device=self.device, dtype=torch.float32)
+        std_vel[0] = self._std_weight_velocity * mean_gpu[3]
+        std_vel[1] = self._std_weight_velocity * mean_gpu[3]
+        std_vel[2] = 1e-5
+        std_vel[3] = self._std_weight_velocity * mean_gpu[3]
+        
+        motion_cov = torch.diag(torch.square(torch.cat([std_pos, std_vel])))
 
-        Returns:
-            (np.ndarray): Mean vector of the predicted state. Unobserved velocities are initialized to 0 mean.
-            (np.ndarray): Covariance matrix of the predicted state.
+        mean_gpu = self._motion_mat @ mean_gpu
+        covariance_gpu = self._motion_mat @ covariance_gpu @ self._motion_mat.T + motion_cov
+        return mean_gpu, covariance_gpu
 
-        Examples:
-            >>> kf = KalmanFilterXYAH()
-            >>> mean = np.array([0, 0, 1, 1, 0, 0, 0, 0])
-            >>> covariance = np.eye(8)
-            >>> predicted_mean, predicted_covariance = kf.predict(mean, covariance)
-        """
-        std_pos = [
-            self._std_weight_position * mean[3],
-            self._std_weight_position * mean[3],
-            1e-2,
-            self._std_weight_position * mean[3],
-        ]
-        std_vel = [
-            self._std_weight_velocity * mean[3],
-            self._std_weight_velocity * mean[3],
-            1e-5,
-            self._std_weight_velocity * mean[3],
-        ]
-        motion_cov = np.diag(np.square(np.r_[std_pos, std_vel]))
+    def project(self, mean_gpu: torch.Tensor, covariance_gpu: torch.Tensor):
+        std = torch.zeros(4, device=self.device, dtype=torch.float32)
+        std[0] = self._std_weight_position * mean_gpu[3]
+        std[1] = self._std_weight_position * mean_gpu[3]
+        std[2] = 1e-1 
+        std[3] = self._std_weight_position * mean_gpu[3]
+        innovation_cov = torch.diag(torch.square(std))
 
-        mean = np.dot(mean, self._motion_mat.T)
-        covariance = np.linalg.multi_dot((self._motion_mat, covariance, self._motion_mat.T)) + motion_cov
+        mean_gpu_proj = self._update_mat @ mean_gpu
+        covariance_gpu_proj = self._update_mat @ covariance_gpu @ self._update_mat.T
+        return mean_gpu_proj, covariance_gpu_proj + innovation_cov
 
-        return mean, covariance
+    def update(self, mean_gpu: torch.Tensor, covariance_gpu: torch.Tensor, measurement_gpu: torch.Tensor):
+        projected_mean_gpu, projected_cov_gpu = self.project(mean_gpu, covariance_gpu)
+        PHt = covariance_gpu @ self._update_mat.T 
+        
+        try:
+            L = torch.linalg.cholesky(projected_cov_gpu) 
+            S_inv = torch.cholesky_inverse(L, upper=False) 
+            kalman_gain = PHt @ S_inv
+        except RuntimeError as e: 
+            # print(f"Warning: GPU Kalman Filter Cholesky or inverse failed: {e}. Using pseudo-inverse.") # Less verbose
+            try:
+                S_pinv = torch.linalg.pinv(projected_cov_gpu)
+                kalman_gain = PHt @ S_pinv
+            except RuntimeError as pinv_e:
+                print(f"CRITICAL WARNING: KF pseudo-inverse also failed: {pinv_e}. Update skipped.")
+                return mean_gpu, covariance_gpu 
+            if torch.isnan(kalman_gain).any() or torch.isinf(kalman_gain).any():
+                print(f"CRITICAL WARNING: Kalman gain NaN/Inf after pinv. Update skipped.")
+                return mean_gpu, covariance_gpu
+        
+        innovation = measurement_gpu - projected_mean_gpu
+        new_mean_gpu = mean_gpu + kalman_gain @ innovation 
+        new_covariance_gpu = covariance_gpu - kalman_gain @ projected_cov_gpu @ kalman_gain.T
+        
+        if torch.isnan(new_mean_gpu).any() or torch.isinf(new_mean_gpu).any() or \
+           torch.isnan(new_covariance_gpu).any() or torch.isinf(new_covariance_gpu).any():
+            print(f"CRITICAL WARNING: KF update resulted in NaN/Inf state. Reverting to pre-update state for track.")
+            return mean_gpu, covariance_gpu 
+        return new_mean_gpu, new_covariance_gpu
 
-    def project(self, mean: np.ndarray, covariance: np.ndarray):
-        """
-        Project state distribution to measurement space.
+    def multi_predict(self, means_gpu: torch.Tensor, covariances_gpu: torch.Tensor):
+        N = means_gpu.shape[0]
+        if N == 0: return means_gpu, covariances_gpu
 
-        Args:
-            mean (np.ndarray): The state's mean vector (8 dimensional array).
-            covariance (np.ndarray): The state's covariance matrix (8x8 dimensional).
+        std_pos_h = self._std_weight_position * means_gpu[:, 3]
+        std_vel_h = self._std_weight_velocity * means_gpu[:, 3]
 
-        Returns:
-            (np.ndarray): Projected mean of the given state estimate.
-            (np.ndarray): Projected covariance matrix of the given state estimate.
-
-        Examples:
-            >>> kf = KalmanFilterXYAH()
-            >>> mean = np.array([0, 0, 1, 1, 0, 0, 0, 0])
-            >>> covariance = np.eye(8)
-            >>> projected_mean, projected_covariance = kf.project(mean, covariance)
-        """
-        std = [
-            self._std_weight_position * mean[3],
-            self._std_weight_position * mean[3],
-            1e-1,
-            self._std_weight_position * mean[3],
-        ]
-        innovation_cov = np.diag(np.square(std))
-
-        mean = np.dot(self._update_mat, mean)
-        covariance = np.linalg.multi_dot((self._update_mat, covariance, self._update_mat.T))
-        return mean, covariance + innovation_cov
-
-    def multi_predict(self, mean: np.ndarray, covariance: np.ndarray):
-        """
-        Run Kalman filter prediction step for multiple object states (Vectorized version).
-
-        Args:
-            mean (np.ndarray): The Nx8 dimensional mean matrix of the object states at the previous time step.
-            covariance (np.ndarray): The Nx8x8 covariance matrix of the object states at the previous time step.
-
-        Returns:
-            (np.ndarray): Mean matrix of the predicted states with shape (N, 8).
-            (np.ndarray): Covariance matrix of the predicted states with shape (N, 8, 8).
-
-        Examples:
-            >>> mean = np.random.rand(10, 8)  # 10 object states
-            >>> covariance = np.random.rand(10, 8, 8)  # Covariance matrices for 10 object states
-            >>> predicted_mean, predicted_covariance = kalman_filter.multi_predict(mean, covariance)
-        """
-        std_pos = [
-            self._std_weight_position * mean[:, 3],
-            self._std_weight_position * mean[:, 3],
-            1e-2 * np.ones_like(mean[:, 3]),
-            self._std_weight_position * mean[:, 3],
-        ]
-        std_vel = [
-            self._std_weight_velocity * mean[:, 3],
-            self._std_weight_velocity * mean[:, 3],
-            1e-5 * np.ones_like(mean[:, 3]),
-            self._std_weight_velocity * mean[:, 3],
-        ]
-        sqr = np.square(np.r_[std_pos, std_vel]).T
-
-        motion_cov = [np.diag(sqr[i]) for i in range(len(mean))]
-        motion_cov = np.asarray(motion_cov)
-
-        mean = np.dot(mean, self._motion_mat.T)
-        left = np.dot(self._motion_mat, covariance).transpose((1, 0, 2))
-        covariance = np.dot(left, self._motion_mat.T) + motion_cov
-
-        return mean, covariance
-
-    def update(self, mean: np.ndarray, covariance: np.ndarray, measurement: np.ndarray):
-        """
-        Run Kalman filter correction step.
-
-        Args:
-            mean (np.ndarray): The predicted state's mean vector (8 dimensional).
-            covariance (np.ndarray): The state's covariance matrix (8x8 dimensional).
-            measurement (np.ndarray): The 4 dimensional measurement vector (x, y, a, h), where (x, y) is the center
-                position, a the aspect ratio, and h the height of the bounding box.
-
-        Returns:
-            (np.ndarray): Measurement-corrected state mean.
-            (np.ndarray): Measurement-corrected state covariance.
-
-        Examples:
-            >>> kf = KalmanFilterXYAH()
-            >>> mean = np.array([0, 0, 1, 1, 0, 0, 0, 0])
-            >>> covariance = np.eye(8)
-            >>> measurement = np.array([1, 1, 1, 1])
-            >>> new_mean, new_covariance = kf.update(mean, covariance, measurement)
-        """
-        projected_mean, projected_cov = self.project(mean, covariance)
-
-        chol_factor, lower = scipy.linalg.cho_factor(projected_cov, lower=True, check_finite=False)
-        kalman_gain = scipy.linalg.cho_solve(
-            (chol_factor, lower), np.dot(covariance, self._update_mat.T).T, check_finite=False
-        ).T
-        innovation = measurement - projected_mean
-
-        new_mean = mean + np.dot(innovation, kalman_gain.T)
-        new_covariance = covariance - np.linalg.multi_dot((kalman_gain, projected_cov, kalman_gain.T))
-        return new_mean, new_covariance
-
-    def gating_distance(
-        self,
-        mean: np.ndarray,
-        covariance: np.ndarray,
-        measurements: np.ndarray,
-        only_position: bool = False,
-        metric: str = "maha",
-    ) -> np.ndarray:
-        """
-        Compute gating distance between state distribution and measurements.
-
-        A suitable distance threshold can be obtained from `chi2inv95`. If `only_position` is False, the chi-square
-        distribution has 4 degrees of freedom, otherwise 2.
-
-        Args:
-            mean (np.ndarray): Mean vector over the state distribution (8 dimensional).
-            covariance (np.ndarray): Covariance of the state distribution (8x8 dimensional).
-            measurements (np.ndarray): An (N, 4) matrix of N measurements, each in format (x, y, a, h) where (x, y) is the
-                bounding box center position, a the aspect ratio, and h the height.
-            only_position (bool): If True, distance computation is done with respect to box center position only.
-            metric (str): The metric to use for calculating the distance. Options are 'gaussian' for the squared
-                Euclidean distance and 'maha' for the squared Mahalanobis distance.
-
-        Returns:
-            (np.ndarray): Returns an array of length N, where the i-th element contains the squared distance between
-                (mean, covariance) and `measurements[i]`.
-
-        Examples:
-            Compute gating distance using Mahalanobis metric:
-            >>> kf = KalmanFilterXYAH()
-            >>> mean = np.array([0, 0, 1, 1, 0, 0, 0, 0])
-            >>> covariance = np.eye(8)
-            >>> measurements = np.array([[1, 1, 1, 1], [2, 2, 1, 1]])
-            >>> distances = kf.gating_distance(mean, covariance, measurements, only_position=False, metric="maha")
-        """
-        mean, covariance = self.project(mean, covariance)
-        if only_position:
-            mean, covariance = mean[:2], covariance[:2, :2]
-            measurements = measurements[:, :2]
-
-        d = measurements - mean
-        if metric == "gaussian":
-            return np.sum(d * d, axis=1)
-        elif metric == "maha":
-            cholesky_factor = np.linalg.cholesky(covariance)
-            z = scipy.linalg.solve_triangular(cholesky_factor, d.T, lower=True, check_finite=False, overwrite_b=True)
-            return np.sum(z * z, axis=0)  # square maha
-        else:
-            raise ValueError("Invalid distance metric")
-
-
-def xywh2ltwh(x):
-    """
-    Convert the bounding box format from [x, y, w, h] to [x1, y1, w, h], where x1, y1 are the top-left coordinates.
-
-    Args:
-        x (np.ndarray | torch.Tensor): The input tensor with the bounding box coordinates in the xywh format
-
-    Returns:
-        y (np.ndarray | torch.Tensor): The bounding box coordinates in the xyltwh format
-    """
-    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-    y[..., 0] = x[..., 0] - x[..., 2] / 2  # top left x
-    y[..., 1] = x[..., 1] - x[..., 3] / 2  # top left y
-    return y
+        motion_cov_diag_elements = torch.stack([
+            std_pos_h, std_pos_h, 
+            torch.full_like(std_pos_h, 1e-2, device=self.device), std_pos_h,
+            std_vel_h, std_vel_h,
+            torch.full_like(std_vel_h, 1e-5, device=self.device), std_vel_h
+        ], dim=1)
+        motion_cov = torch.diag_embed(torch.square(motion_cov_diag_elements))
+        
+        means_gpu_pred = means_gpu @ self._motion_mat.T
+        cov_Mt = covariances_gpu @ self._motion_mat.T 
+        covariances_gpu_pred = self._motion_mat @ cov_Mt + motion_cov
+        return means_gpu_pred, covariances_gpu_pred

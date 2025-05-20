@@ -1,157 +1,108 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+# tracker_matching.py
 
 import numpy as np
 import scipy
-from scipy.spatial.distance import cdist
-
-from ultralytics.utils.metrics import batch_probiou, bbox_ioa
+from scipy.spatial.distance import cdist 
+import torch
+import torchvision.ops 
 
 try:
-    import lap  # for linear_assignment
-
-    assert lap.__version__  # verify package is not directory
-except (ImportError, AssertionError, AttributeError):
-    from ultralytics.utils.checks import check_requirements
-
-    check_requirements("lap>=0.5.12")  # https://github.com/gatagat/lap
     import lap
+    assert lap.__version__ 
+except (ImportError, AssertionError, AttributeError):
+    print("Warning: 'lap' library not found or import failed. Linear assignment will use scipy if available.")
+    lap = None 
 
 
 def linear_assignment(cost_matrix: np.ndarray, thresh: float, use_lap: bool = True) -> tuple:
-    """
-    Perform linear assignment using either the scipy or lap.lapjv method.
-
-    Args:
-        cost_matrix (np.ndarray): The matrix containing cost values for assignments, with shape (N, M).
-        thresh (float): Threshold for considering an assignment valid.
-        use_lap (bool): Use lap.lapjv for the assignment. If False, scipy.optimize.linear_sum_assignment is used.
-
-    Returns:
-        matched_indices (np.ndarray): Array of matched indices of shape (K, 2), where K is the number of matches.
-        unmatched_a (np.ndarray): Array of unmatched indices from the first set, with shape (L,).
-        unmatched_b (np.ndarray): Array of unmatched indices from the second set, with shape (M,).
-
-    Examples:
-        >>> cost_matrix = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-        >>> thresh = 5.0
-        >>> matched_indices, unmatched_a, unmatched_b = linear_assignment(cost_matrix, thresh, use_lap=True)
-    """
     if cost_matrix.size == 0:
-        return np.empty((0, 2), dtype=int), tuple(range(cost_matrix.shape[0])), tuple(range(cost_matrix.shape[1]))
+        return np.empty((0, 2), dtype=int), list(range(cost_matrix.shape[0])), list(range(cost_matrix.shape[1]))
 
-    if use_lap:
-        # Use lap.lapjv
-        # https://github.com/gatagat/lap
-        _, x, y = lap.lapjv(cost_matrix, extend_cost=True, cost_limit=thresh)
-        matches = [[ix, mx] for ix, mx in enumerate(x) if mx >= 0]
+    use_lap_actually = use_lap and lap is not None
+    
+    if use_lap_actually:
+        _, x, y = lap.lapjv(cost_matrix, extend_cost=True, cost_limit=thresh) # type: ignore
+        matches = np.asarray([[ix, mx] for ix, mx in enumerate(x) if mx >= 0], dtype=int)
         unmatched_a = np.where(x < 0)[0]
         unmatched_b = np.where(y < 0)[0]
-    else:
-        # Use scipy.optimize.linear_sum_assignment
-        # https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linear_sum_assignment.html
-        x, y = scipy.optimize.linear_sum_assignment(cost_matrix)  # row x, col y
-        matches = np.asarray([[x[i], y[i]] for i in range(len(x)) if cost_matrix[x[i], y[i]] <= thresh])
-        if len(matches) == 0:
-            unmatched_a = list(np.arange(cost_matrix.shape[0]))
-            unmatched_b = list(np.arange(cost_matrix.shape[1]))
+    else: 
+        if use_lap and lap is None: print("lapjv requested but not available, falling back to scipy.")
+        try:
+            if scipy.__version__ < "1.4.0" and (cost_matrix.shape[0] == 0 or cost_matrix.shape[1] == 0):
+                 return np.empty((0,2), dtype=int), np.arange(cost_matrix.shape[0]), np.arange(cost_matrix.shape[1])
+            row_ind, col_ind = scipy.optimize.linear_sum_assignment(cost_matrix)
+            valid_matches_mask = cost_matrix[row_ind, col_ind] <= thresh
+            matches = np.stack((row_ind[valid_matches_mask], col_ind[valid_matches_mask]), axis=1).astype(int)
+        except AttributeError: # If scipy or linear_sum_assignment is not available
+             print("Scipy linear_sum_assignment not available or failed. Returning no matches.")
+             matches = np.empty((0,2), dtype=int)
+
+
+        if matches.shape[0] == 0:
+            unmatched_a = np.arange(cost_matrix.shape[0])
+            unmatched_b = np.arange(cost_matrix.shape[1])
         else:
-            unmatched_a = list(frozenset(np.arange(cost_matrix.shape[0])) - frozenset(matches[:, 0]))
-            unmatched_b = list(frozenset(np.arange(cost_matrix.shape[1])) - frozenset(matches[:, 1]))
+            unmatched_a = np.setdiff1d(np.arange(cost_matrix.shape[0]), matches[:, 0], assume_unique=True)
+            unmatched_b = np.setdiff1d(np.arange(cost_matrix.shape[1]), matches[:, 1], assume_unique=True)
+            
+    return matches, list(unmatched_a), list(unmatched_b)
 
-    return matches, unmatched_a, unmatched_b
 
+def iou_distance(atracks: list, btracks: list) -> np.ndarray: # atracks, btracks are lists of GPUSTrack
+    if not atracks or not btracks:
+        return np.empty((len(atracks), len(btracks)), dtype=np.float32)
 
-def iou_distance(atracks: list, btracks: list) -> np.ndarray:
-    """
-    Compute cost based on Intersection over Union (IoU) between tracks.
+    try:
+        # GPUSTrack.xyxy_gpu returns a [x1,y1,x2,y2] GPU tensor
+        atlbrs_gpu_list = [track.xyxy_gpu for track in atracks if track.xyxy_gpu is not None and track.xyxy_gpu.numel() == 4 and track.is_activated and track.mean_gpu is not None]
+        btlbrs_gpu_list = [track.xyxy_gpu for track in btracks if track.xyxy_gpu is not None and track.xyxy_gpu.numel() == 4 and track.is_activated and track.mean_gpu is not None] # Only consider activated tracks for matching
 
-    Args:
-        atracks (List[STrack] | List[np.ndarray]): List of tracks 'a' or bounding boxes.
-        btracks (List[STrack] | List[np.ndarray]): List of tracks 'b' or bounding boxes.
+        if not atlbrs_gpu_list or not btlbrs_gpu_list:
+             return np.ones((len(atracks), len(btracks)), dtype=np.float32) 
 
-    Returns:
-        (np.ndarray): Cost matrix computed based on IoU with shape (len(atracks), len(btracks)).
-
-    Examples:
-        Compute IoU distance between two sets of tracks
-        >>> atracks = [np.array([0, 0, 10, 10]), np.array([20, 20, 30, 30])]
-        >>> btracks = [np.array([5, 5, 15, 15]), np.array([25, 25, 35, 35])]
-        >>> cost_matrix = iou_distance(atracks, btracks)
-    """
-    if atracks and isinstance(atracks[0], np.ndarray) or btracks and isinstance(btracks[0], np.ndarray):
-        atlbrs = atracks
-        btlbrs = btracks
-    else:
-        atlbrs = [track.xywha if track.angle is not None else track.xyxy for track in atracks]
-        btlbrs = [track.xywha if track.angle is not None else track.xyxy for track in btracks]
-
-    ious = np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float32)
-    if len(atlbrs) and len(btlbrs):
-        if len(atlbrs[0]) == 5 and len(btlbrs[0]) == 5:
-            ious = batch_probiou(
-                np.ascontiguousarray(atlbrs, dtype=np.float32),
-                np.ascontiguousarray(btlbrs, dtype=np.float32),
-            ).numpy()
-        else:
-            ious = bbox_ioa(
-                np.ascontiguousarray(atlbrs, dtype=np.float32),
-                np.ascontiguousarray(btlbrs, dtype=np.float32),
-                iou=True,
-            )
-    return 1 - ious  # cost matrix
+        atlbrs_gpu = torch.stack(atlbrs_gpu_list) 
+        btlbrs_gpu = torch.stack(btlbrs_gpu_list)
+        
+        ious_gpu = torchvision.ops.box_iou(atlbrs_gpu, btlbrs_gpu) 
+        cost_matrix_gpu = 1.0 - ious_gpu
+        return cost_matrix_gpu.cpu().numpy()
+        
+    except Exception as e:
+        print(f"Error during GPU IoU calculation in iou_distance: {e}. Returning max cost matrix.")
+        return np.ones((len(atracks), len(btracks)), dtype=np.float32)
 
 
 def embedding_distance(tracks: list, detections: list, metric: str = "cosine") -> np.ndarray:
-    """
-    Compute distance between tracks and detections based on embeddings.
+    # This is a placeholder, actual ReID feature handling would be complex
+    # print("Warning: embedding_distance is placeholder and not using GPU features.")
+    cost_matrix = np.ones((len(tracks), len(detections)), dtype=np.float32)
+    if not tracks or not detections: # Handle empty inputs to avoid error with asarray
+        return np.zeros((len(tracks), len(detections)), dtype=np.float32)
 
-    Args:
-        tracks (List[STrack]): List of tracks, where each track contains embedding features.
-        detections (List[BaseTrack]): List of detections, where each detection contains embedding features.
-        metric (str): Metric for distance computation. Supported metrics include 'cosine', 'euclidean', etc.
+    try: 
+        # Assuming tracks/detections are STrack-like and might have .curr_feat or .smooth_feat (NumPy)
+        det_features_list = [track.curr_feat for track in detections if hasattr(track, 'curr_feat') and track.curr_feat is not None]
+        track_features_list = [track.smooth_feat for track in tracks if hasattr(track, 'smooth_feat') and track.smooth_feat is not None]
 
-    Returns:
-        (np.ndarray): Cost matrix computed based on embeddings with shape (N, M), where N is the number of tracks
-            and M is the number of detections.
-
-    Examples:
-        Compute the embedding distance between tracks and detections using cosine metric
-        >>> tracks = [STrack(...), STrack(...)]  # List of track objects with embedding features
-        >>> detections = [BaseTrack(...), BaseTrack(...)]  # List of detection objects with embedding features
-        >>> cost_matrix = embedding_distance(tracks, detections, metric="cosine")
-    """
-    cost_matrix = np.zeros((len(tracks), len(detections)), dtype=np.float32)
-    if cost_matrix.size == 0:
-        return cost_matrix
-    det_features = np.asarray([track.curr_feat for track in detections], dtype=np.float32)
-    # for i, track in enumerate(tracks):
-    # cost_matrix[i, :] = np.maximum(0.0, cdist(track.smooth_feat.reshape(1,-1), det_features, metric))
-    track_features = np.asarray([track.smooth_feat for track in tracks], dtype=np.float32)
-    cost_matrix = np.maximum(0.0, cdist(track_features, det_features, metric))  # Normalized features
+        if det_features_list and track_features_list:
+            det_features = np.asarray(det_features_list, dtype=np.float32)
+            track_features = np.asarray(track_features_list, dtype=np.float32)
+            if det_features.ndim > 1 and track_features.ndim > 1 and det_features.shape[1] == track_features.shape[1]: # Basic check
+                cost_matrix = np.maximum(0.0, cdist(track_features, det_features, metric))
+    except AttributeError: pass # .curr_feat or .smooth_feat not present
+    except Exception as e: print(f"Error in embedding_distance: {e}")
     return cost_matrix
 
+def fuse_score(cost_matrix: np.ndarray, detections: list) -> np.ndarray: 
+    if cost_matrix.size == 0 or not detections: return cost_matrix
+    
+    iou_sim = 1.0 - cost_matrix 
+    det_scores = np.array([det.score for det in detections], dtype=np.float32)
+    
+    if cost_matrix.shape[1] != len(det_scores): 
+        # print(f"Warning: fuse_score shape mismatch. Cost matrix cols {cost_matrix.shape[1]} vs det_scores len {len(det_scores)}. Skipping fuse.")
+        return cost_matrix # Return original cost matrix if shapes mismatch
 
-def fuse_score(cost_matrix: np.ndarray, detections: list) -> np.ndarray:
-    """
-    Fuse cost matrix with detection scores to produce a single similarity matrix.
-
-    Args:
-        cost_matrix (np.ndarray): The matrix containing cost values for assignments, with shape (N, M).
-        detections (List[BaseTrack]): List of detections, each containing a score attribute.
-
-    Returns:
-        (np.ndarray): Fused similarity matrix with shape (N, M).
-
-    Examples:
-        Fuse a cost matrix with detection scores
-        >>> cost_matrix = np.random.rand(5, 10)  # 5 tracks and 10 detections
-        >>> detections = [BaseTrack(score=np.random.rand()) for _ in range(10)]
-        >>> fused_matrix = fuse_score(cost_matrix, detections)
-    """
-    if cost_matrix.size == 0:
-        return cost_matrix
-    iou_sim = 1 - cost_matrix
-    det_scores = np.array([det.score for det in detections])
-    det_scores = np.expand_dims(det_scores, axis=0).repeat(cost_matrix.shape[0], axis=0)
-    fuse_sim = iou_sim * det_scores
-    return 1 - fuse_sim  # fuse_cost
+    det_scores_expanded = np.expand_dims(det_scores, axis=0)
+    fuse_sim = iou_sim * det_scores_expanded 
+    return 1.0 - fuse_sim

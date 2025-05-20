@@ -27,8 +27,8 @@ MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/silent_contr
 # MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/SGDMed_SGD_LR0p0100_WD0p00050_Cls1p50_Mix0p15_20250418_112036.engine"
 MODEL_INPUT_SIZE = 416 # Model input resolution (square)
 
-# YOLO Detection Thresholds (Used as high-confidence for ByteTrack)
-CONF_THRESHOLD = 0.25 # Confidence threshold for detections to be considered primary tracks
+# YOLO Detection Thresholds
+CONF_THRESHOLD = 0.1 # Confidence threshold for detections to be considered primary tracks
 IOU_THRESHOLD = 0.45  # IoU threshold for NMS
 
 # --- Line & Zone Definitions (Polygons for 'hardcoded' or 'interactive' mode) ---
@@ -71,25 +71,32 @@ MIXED_PRECISION = True if PROCESSING_MODE == 'enhanced' and torch.cuda.is_availa
 PARALLEL_STREAMS = 16 if PROCESSING_MODE == 'enhanced' else 2
 
 # --- Tracking Configuration ---
-# ByteTrack specific parameters (values from Ultralytics defaults, can be tuned)
-# CONF_THRESHOLD above is used as track_high_thresh
-TRACK_LOW_CONF_THRESHOLD = 0.1  # Confidence threshold for low-score detections (ByteTrack second association)
-NEW_TRACK_CONF_THRESHOLD = 0.3  # Confidence threshold to initiate a new track (usually slightly higher than track_high_thresh or same)
-TRACK_BUFFER_FRAMES = int(TARGET_FPS * 2.0) # Max frames to keep a lost track (e.g., 2 seconds at TARGET_FPS)
-TRACK_IOU_THRESHOLD = 0.3       # IoU threshold for matching tracks with detections
-
-# Application-level tracking parameters
-TRACK_HISTORY_LENGTH = 100      # Max length of tracking trail for visualization
-MAX_APP_CONSECUTIVE_MISSES = int(TARGET_FPS * 1.5) # App-level: Max frames a track is missed before considered for special handling (e.g. warning in timeout)
+REIDENTIFICATION_TIMEOUT = 10.0 # May become less relevant with ByteTrack, PathManager handles timeouts
+MAX_MATCHING_DISTANCE = 50    # Not directly used by ByteTrack, which uses IoU
 
 # Vehicle Timeouts in Intersection (Application-Level)
 VEHICLE_TIMEOUTS = { # In seconds
-    'Light Vehicle': 40, 'Motorcycle': 40, 'Minibus Taxi': 50,
-    'Short Truck': 50, 'Medium Truck': 55, 'Long Truck': 60,
-    'Bus': 55, 'Pedestrian': 65, 'Cyclist': 65,
-    'Animal drawn vehicle': 65, 'Person with wheel barrow': 65,
-    'default': 40
+    'Light Vehicle': 400, 'Motorcycle': 400, 'Minibus Taxi': 500,
+    'Short Truck': 500, 'Medium Truck': 550, 'Long Truck': 600,
+    'Bus': 550, 'Pedestrian': 650, 'Cyclist': 650,
+    'Animal drawn vehicle': 650, 'Person with wheel barrow': 650,
+    'default': 400
 }
+TRACK_HISTORY_LENGTH = 100 # For PathManager's visual trails
+# Max consecutive misses for a path in PathManager before being considered for timeout
+                                          # Or a fixed higher value like 50 or 60.
+                                          # This value is in terms of *frames processed by PathManager*.
+                                          # If you process every frame (TARGET_FPS = original_fps), then it's direct.
+                                          # If TARGET_FPS is lower, this still means 40 *processed frames*.
+
+# --- ByteTrack Specific Arguments (can also be moved to a dedicated tracker_config.py) ---
+BYTETRACK_TRACK_HIGH_THRESH = 0.3
+BYTETRACK_TRACK_LOW_THRESH = 0.1
+BYTETRACK_NEW_TRACK_THRESH = BYTETRACK_TRACK_HIGH_THRESH + .1
+BYTETRACK_MATCH_THRESH = 0.8  # This is cost (1-IoU), so IoU >= 0.2
+BYTETRACK_TRACK_BUFFER = 90   # Frames to keep a ByteTrack track in 'lost' state internally
+MAX_CONSECUTIVE_MISSES_FOR_PATH_MANAGER = BYTETRACK_TRACK_BUFFER + 10 # e.g., 30 + 10 = 40 frames
+BYTETRACK_FUSE_SCORE = True
 
 # --- Reporting Configuration ---
 VEHICLE_ID_MAP = {
@@ -108,7 +115,7 @@ REPORTING_DIRECTIONS = { # Used for Excel sheet names, actual movements depend o
 
 # --- Performance & Debugging ---
 ENABLE_DETAILED_PERFORMANCE_METRICS = True
-DEBUG_MODE = False # Set to True for verbose debug prints
+DEBUG_MODE = True # Set to True for verbose debug prints
 PERFORMANCE_SAMPLE_INTERVAL = 5.0 # Seconds
 MEMORY_CLEANUP_INTERVAL = 300 # Seconds
 
@@ -117,35 +124,17 @@ GRADIO_SERVER_PORT = 7862
 GRADIO_SHARE = False
 
 # --- Print Confirmation ---
-print(f"--- Configuration Loaded (ByteTrack Integrated) ---")
+print(f"--- Configuration Loaded (ByteTrack Integration) ---")
 print(f"Processing Mode: {PROCESSING_MODE.upper()}")
 print(f"Line Definition Mode: {LINE_MODE.upper()}")
 if LINE_MODE == 'hardcoded': print(f"Input Video: {INPUT_VIDEO_PATH}")
 print(f"Start Date/Time: {START_DATE} / {START_TIME}")
-print(f"Using Model: {MODEL_PATH} (Detection Conf: {CONF_THRESHOLD}, IoU_NMS: {IOU_THRESHOLD})")
-print(f"Model Input Size: {MODEL_INPUT_SIZE}x{MODEL_INPUT_SIZE}")
+print(f"Using Model: {MODEL_PATH} (Conf: {CONF_THRESHOLD}, IoU: {IOU_THRESHOLD})")
+print(f"Model Input Size: {MODEL_INPUT_SIZE}x{MODEL_INPUT_SIZE}, Display Size: {FRAME_WIDTH}x{FRAME_HEIGHT}")
 if LINE_MODE == 'hardcoded': print("Using Hardcoded Zones (config.py)")
 else: print("Using Interactive Zones (Gradio)")
 print(f"Target FPS: {TARGET_FPS}, Batch Size: {OPTIMAL_BATCH_SIZE}, Threads: {THREAD_COUNT}")
 print(f"Mixed Precision: {MIXED_PRECISION}, CUDA Streams: {PARALLEL_STREAMS}")
-print(f"ByteTrack Params: LowConfThr={TRACK_LOW_CONF_THRESHOLD}, NewTrackThr={NEW_TRACK_CONF_THRESHOLD}, Buffer={TRACK_BUFFER_FRAMES}f, MatchIoU={TRACK_IOU_THRESHOLD}")
-print(f"App-Level Tracking: MaxMisses={MAX_APP_CONSECUTIVE_MISSES}f")
+print(f"PathManager Misses Timeout: {MAX_CONSECUTIVE_MISSES_FOR_PATH_MANAGER} frames")
 print(f"Detailed Perf Metrics: {ENABLE_DETAILED_PERFORMANCE_METRICS}, Debug Mode: {DEBUG_MODE}")
 print(f"--------------------------------------------------------------------")
-
-# --- TRACKER_CONFIG (for Ultralytics ByteTrack) ---
-# This dictionary will be built from the parameters above and passed to the tracker.
-# It needs to match the argument names expected by ultralytics.trackers.BYTETracker.
-# Based on ultralytics/cfg/trackers/bytetrack.yaml
-TRACKER_CONFIG_ARGS = {
-    'tracker_type': 'bytetrack', # For reference, not directly used by BYTETracker class
-    'track_high_thresh': CONF_THRESHOLD,        # High confidence detection threshold
-    'track_low_thresh': TRACK_LOW_CONF_THRESHOLD,   # Low confidence detection threshold
-    'new_track_thresh': NEW_TRACK_CONF_THRESHOLD, # Threshold for initiating a new track
-    'track_buffer': TRACK_BUFFER_FRAMES,        # Buffer for keeping lost tracks
-    'match_thresh': TRACK_IOU_THRESHOLD,        # IoU threshold for matching
-    # 'gmc_method': None, # Not using Global Motion Compensation for now
-    # 'proximity_thresh': 0.5, # Not typically used in basic ByteTrack
-    # 'appearance_thresh': 0.25, # Not typically used in basic ByteTrack
-    # 'with_reid': False, # Not using ReID model with ByteTrack for now
-}
