@@ -17,17 +17,18 @@ START_TIME = _now.strftime("%H%M%S") + f"{_now.microsecond // 1000:03d}"
 DEFAULT_PRIMARY_DIRECTION = 'south'
 
 # --- Core Settings ---
-TARGET_FPS = 20
+TARGET_FPS = 15
 BASE_OUTPUT_DIR = "C:/Users/EMAAN/Documents/YOLO/project/output"
 VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/silent_contract_9082.engine"
+# MODEL_PATH = r"../yolov8l.pt"
+MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/silent_contract_9082_960px.engine"
 # MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/SGDMed_SGD_LR0p0100_WD0p00050_Cls1p50_Mix0p15_20250418_112036.engine"
-CONF_THRESHOLD = 0.8 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
+CONF_THRESHOLD = 0.25 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
-MODEL_INPUT_SIZE = 416 # Keep smaller size for performance
+MODEL_INPUT_SIZE = 960 # Keep smaller size for performance
 
 # --- Line & Zone Definitions ---
 LINE_POINTS = {
@@ -49,14 +50,22 @@ LINE_POINTS = {
              ( 57, 466),
              ( 53, 397)]
 }
-FRAME_WIDTH = 640; FRAME_HEIGHT = 480
+FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
+
+scale_x = FRAME_WIDTH / 640
+scale_y = FRAME_HEIGHT / 480
+
+LINE_POINTS = {
+    'north': [(int(x * scale_x), int(y * scale_y)) for (x, y) in [(282, 339), (422, 312), (371, 240), (272, 264)]],
+    'south': [(int(x * scale_x), int(y * scale_y)) for (x, y) in [(290, 446), (605, 335), (619, 441), (470, 466), (361, 476)]],
+    'east':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in [(512, 306), (596, 322), (628, 214), (525, 175)]],
+    'west':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in [(252, 378), (244, 442), (57, 466), (53, 397)]],
+}
 VALID_MOVEMENTS = { 'north': ['south','east','west'], 'south': ['north','east','west'], 'east': ['west','north','south'], 'west': ['east','north','south'] }
 
 # --- Hardware Optimizations ---
 # Adjust Batch Size based on chosen MODEL_INPUT_SIZE (320) and GPU VRAM
-if MODEL_INPUT_SIZE >= 640: _default_batch = 16 if PROCESSING_MODE == 'standard' else 32
-else: _default_batch = 32 if PROCESSING_MODE == 'standard' else 128 # Keep larger for 320
-OPTIMAL_BATCH_SIZE = _default_batch
+OPTIMAL_BATCH_SIZE = 128 if MODEL_INPUT_SIZE<=420 else 16 if MODEL_INPUT_SIZE>=960 else 64
 USE_ADVANCED_VIDEO_READER = True 
 PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7500
 FFMPEG_PATH = r'C:\ffmpeg\ffmpeg.exe'
@@ -72,11 +81,11 @@ TRACKER_CONFIG = ''
 
 # Timeout durations - Keep Increased slightly more
 VEHICLE_TIMEOUTS = {
-    'Light Vehicle': 40, 'Motorcycle': 40, 'Minibus Taxi': 50,
-    'Short Truck': 50, 'Medium Truck': 55, 'Long Truck': 60,
-    'Bus': 55, 'Pedestrian': 65, 'Cyclist': 65,
-    'Animal drawn vehicle': 65, 'Person with wheel barrow': 65,
-    'default': 40 # Increased default timeout
+    'Light Vehicle': 400, 'Motorcycle': 400, 'Minibus Taxi': 500,
+    'Short Truck': 500, 'Medium Truck': 550, 'Long Truck': 600,
+    'Bus': 550, 'Pedestrian': 650, 'Cyclist': 650,
+    'Animal drawn vehicle': 650, 'Person with wheel barrow': 650,
+    'default': 400 # Increased default timeout
 }
 TRACK_HISTORY_LENGTH = 100 # Keep reduced slightly
 

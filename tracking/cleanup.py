@@ -1,36 +1,35 @@
 # project/tracking/cleanup.py
 from core.utils import debug_print
 
-# Configurable thresholds
-STALE_VEHICLE_TIMEOUT_SECONDS = 300 # 5 mins video time
-MAX_COMPLETED_PATHS = 2000
+def cleanup_tracking_data(video_processor_instance, current_frame_time_seconds):
+    """Removes data for vehicles that are no longer tracked or very old."""
+    if not hasattr(video_processor_instance, 'active_track_data'):
+        return 0
 
-def cleanup_tracking_data(vehicle_tracker, zone_tracker, current_frame_time):
-    """Removes data for vehicles unseen for a long time."""
-    stale_ids = []
-    if hasattr(vehicle_tracker, 'last_seen_time'):
-        for v_id, last_seen in list(vehicle_tracker.last_seen_time.items()):
-            if current_frame_time - last_seen > STALE_VEHICLE_TIMEOUT_SECONDS:
-                stale_ids.append(v_id)
+    stale_ids_app_level = []
+    # Example: if a track in active_track_data hasn't been updated (via last_seen_frame)
+    # for a very long time, it's an error or an edge case.
+    app_level_timeout_frames = video_processor_instance.bytetracker.max_time_lost * 5 # Much longer than bytetrack
+    
+    current_video_frame_num = video_processor_instance.current_bytetrack_frame_id # Approximate current frame
 
-    if not stale_ids: return 0
-    debug_print(f"Cleanup: Found {len(stale_ids)} stale vehicle IDs.")
+    for track_id, data in list(video_processor_instance.active_track_data.items()):
+        if (current_video_frame_num - data.get('last_seen_frame', current_video_frame_num)) > app_level_timeout_frames:
+            stale_ids_app_level.append(track_id)
+
     count = 0
-    for v_id in stale_ids:
-        if vehicle_tracker.remove_vehicle_data(v_id): count += 1
-        if zone_tracker: zone_tracker.remove_vehicle_data(v_id)
+    for v_id in stale_ids_app_level:
+        if v_id in video_processor_instance.active_track_data:
+            del video_processor_instance.active_track_data[v_id]
+            count += 1
+        if video_processor_instance.zone_tracker:
+            video_processor_instance.zone_tracker.remove_vehicle_data(v_id)
+    
+    if count > 0:
+        debug_print(f"AppLevelCleanup: Removed data for {count} very stale tracks from active_track_data.")
 
-    # Cleanup internal cooldowns within zone/line objects
-    if zone_tracker and hasattr(zone_tracker, 'cleanup_cooldowns'): zone_tracker.cleanup_cooldowns(current_frame_time)
-    if zone_tracker and hasattr(zone_tracker, 'lines'):
-        for line in zone_tracker.lines.values():
-            if line and hasattr(line, 'cleanup_cooldowns'): line.cleanup_cooldowns(current_frame_time)
+    # Cleanup zone cooldowns (this is still relevant)
+    if video_processor_instance.zone_tracker and hasattr(video_processor_instance.zone_tracker, 'cleanup_cooldowns'):
+        video_processor_instance.zone_tracker.cleanup_cooldowns(current_frame_time_seconds)
 
-    # Cap completed paths
-    if hasattr(vehicle_tracker, 'completed_paths') and len(vehicle_tracker.completed_paths) > MAX_COMPLETED_PATHS:
-         removed = len(vehicle_tracker.completed_paths) - MAX_COMPLETED_PATHS
-         vehicle_tracker.completed_paths = vehicle_tracker.completed_paths[-MAX_COMPLETED_PATHS:]
-         debug_print(f"Cleanup: Capped completed_paths, removed {removed}.")
-
-    debug_print(f"Cleanup: Removed data for {count} stale vehicles.")
     return count
