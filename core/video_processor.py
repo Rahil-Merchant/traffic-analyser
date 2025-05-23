@@ -1032,15 +1032,27 @@ class VideoProcessor:
                             for _i in range(len(current_batch_frames_metadata)): self.frame_read_queue.task_done() # Mark done if skipped
                             continue
                         
-                        yolo_results_batch=None; current_stream=None
-                        if self.device=='cuda' and self.streams: current_stream=self.streams[self.current_stream_index%len(self.streams)]; self.current_stream_index+=1
-                        with torch.cuda.stream(current_stream) if current_stream else torch.no_grad():
-                           with torch.amp.autocast(device_type=self.device,enabled=MIXED_PRECISION and self.device=='cuda'):
-                             if self.perf and self.perf.start_event: self.perf.start_event.record(stream=current_stream)
-                             yolo_results_batch=self.model(input_batch_tensor_model,verbose=False)
-                             if self.perf and self.perf.end_event: self.perf.end_event.record(stream=current_stream)
-                        if current_stream: current_stream.synchronize()
-                        if self.perf and self.perf.start_event and self.perf.end_event: self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
+                        with torch.no_grad():  # Ensure no_grad is always active for inference
+                            if self.device == 'cuda' and self.streams:
+                                current_stream = self.streams[self.current_stream_index % len(self.streams)]
+                                self.current_stream_index += 1
+                                with torch.cuda.stream(current_stream):
+                                    with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
+                                        if self.perf and self.perf.start_event:
+                                            self.perf.start_event.record(stream=current_stream)
+                                        yolo_results_batch = self.model(input_batch_tensor_model, verbose=False)
+                                        if self.perf and self.perf.end_event:
+                                            self.perf.end_event.record(stream=current_stream)
+                                # Consider if synchronization is truly needed here or can be deferred/more targeted.
+                                # For now, keeping it to ensure results are ready for CPU-based _process_inference_results
+                                if current_stream:
+                                    current_stream.synchronize() # This makes the batch processing serial at this point.
+                            else: # CPU or no streams
+                                with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')): # AMP on CPU has little to no effect
+                                    yolo_results_batch = self.model(input_batch_tensor_model, verbose=False)
+
+                        if self.perf and self.perf.start_event and self.perf.end_event and self.device == 'cuda' and self.streams: # Check if events were recorded
+                            self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
 
                         # _process_inference_results now appends to self.finalized_paths_for_report internally
                         _, processed_frames_for_viz = self._process_inference_results(

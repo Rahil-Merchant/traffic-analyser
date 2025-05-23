@@ -22,18 +22,36 @@ VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082.pt"
+MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082_960px_bs32.engine"
 CONF_THRESHOLD = 0.25 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 960 # Keep smaller size for performance
 
 # --- Line & Zone Definitions ---
+LINE_POINTS = {
+    'north': [(282, 339), 
+              (422, 312),
+              (371, 240),
+              (272, 264)],
+    'south': [(290, 446), 
+              (605, 335),
+              (619, 441),
+              (470, 466),
+              (361, 476)],
+    'east': [(512, 306),  
+             (596, 322),
+             (628, 214),
+             (525, 175)],
+    'west': [(252, 378),  
+             (244, 442),
+             ( 57, 466),
+             ( 53, 397)]
+}
 FRAME_HEIGHT = MODEL_INPUT_SIZE
 FRAME_WIDTH = round(MODEL_INPUT_SIZE*(4/3))
-FRAME_HEIGHT_VIZ = 640
-FRAME_WIDTH_VIZ = 480
+FRAME_HEIGHT_VIZ = 480
+FRAME_WIDTH_VIZ = 640
 
-# Hardcoded dimension were set as per 640x480
 scale_x = FRAME_WIDTH / FRAME_WIDTH_VIZ
 scale_y = FRAME_HEIGHT / FRAME_HEIGHT_VIZ
 
@@ -56,7 +74,7 @@ elif MODEL_INPUT_SIZE<=960:
 else:
     OPTIMAL_BATCH_SIZE = 16
 
-OPTIMAL_BATCH_SIZE = 256
+OPTIMAL_BATCH_SIZE = 8
     
 USE_ADVANCED_VIDEO_READER = True 
 PYVIDEOREADER_DECODE_SEGMENT_SIZE = 36000
