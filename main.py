@@ -3,7 +3,7 @@ import os
 import sys
 
 from config import (
-    LINE_MODE, PROCESSING_MODE, GRADIO_SERVER_PORT, GRADIO_SHARE,
+    LINE_MODE, GRADIO_SERVER_PORT, GRADIO_SHARE,
     INPUT_VIDEO_PATH, START_DATE, START_TIME, DEFAULT_PRIMARY_DIRECTION
 )
 from core.utils import setup_torch_global_settings, setup_thread_affinity
@@ -17,7 +17,6 @@ else:
 # --- Main Execution Logic ---
 def run_app():
     print("--- Starting Vehicle Detection Application ---")
-    print(f"Processing Mode: {PROCESSING_MODE.upper()}")
     print(f"Line Mode: {LINE_MODE.upper()}")
 
     setup_torch_global_settings()

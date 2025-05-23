@@ -3,12 +3,11 @@ import os
 from datetime import datetime
 import torch # Import torch to check GPU capability
 
-PROCESSING_MODE = 'enhanced'
-LINE_MODE = 'interactive'
+LINE_MODE = 'hardcoded'
 ENABLE_VISUALIZATION = True
 
 # --- Input Settings (primarily for hardcoded mode) ---
-INPUT_VIDEO_PATH = "C:/Users/EMAAN/Documents/YOLO/5 minute test - 4 Way Intersection.mp4"
+INPUT_VIDEO_PATH = r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 minute test - 4 Way Intersection.mp4"
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -17,43 +16,26 @@ START_TIME = _now.strftime("%H%M%S") + f"{_now.microsecond // 1000:03d}"
 DEFAULT_PRIMARY_DIRECTION = 'south'
 
 # --- Core Settings ---
-TARGET_FPS = 15
-BASE_OUTPUT_DIR = "C:/Users/EMAAN/Documents/YOLO/project/output"
+TARGET_FPS = 25
+BASE_OUTPUT_DIR = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\output"
 VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-# MODEL_PATH = r"../yolov8l.pt"
-MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/silent_contract_9082_960px.engine"
-# MODEL_PATH = r"C:/Users/EMAAN/Documents/YOLO/project/models/weights/SGDMed_SGD_LR0p0100_WD0p00050_Cls1p50_Mix0p15_20250418_112036.engine"
+MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082.pt"
 CONF_THRESHOLD = 0.25 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 960 # Keep smaller size for performance
 
 # --- Line & Zone Definitions ---
-LINE_POINTS = {
-    'north': [(282, 339), 
-              (422, 312),
-              (371, 240),
-              (272, 264)],
-    'south': [(290, 446), 
-              (605, 335),
-              (619, 441),
-              (470, 466),
-              (361, 476)],
-    'east': [(512, 306),  
-             (596, 322),
-             (628, 214),
-             (525, 175)],
-    'west': [(252, 378),  
-             (244, 442),
-             ( 57, 466),
-             ( 53, 397)]
-}
-FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
+FRAME_HEIGHT = MODEL_INPUT_SIZE
+FRAME_WIDTH = round(MODEL_INPUT_SIZE*(4/3))
+FRAME_HEIGHT_VIZ = 640
+FRAME_WIDTH_VIZ = 480
 
-scale_x = FRAME_WIDTH / 640
-scale_y = FRAME_HEIGHT / 480
+# Hardcoded dimension were set as per 640x480
+scale_x = FRAME_WIDTH / FRAME_WIDTH_VIZ
+scale_y = FRAME_HEIGHT / FRAME_HEIGHT_VIZ
 
 LINE_POINTS = {
     'north': [(int(x * scale_x), int(y * scale_y)) for (x, y) in [(282, 339), (422, 312), (371, 240), (272, 264)]],
@@ -64,20 +46,30 @@ LINE_POINTS = {
 VALID_MOVEMENTS = { 'north': ['south','east','west'], 'south': ['north','east','west'], 'east': ['west','north','south'], 'west': ['east','north','south'] }
 
 # --- Hardware Optimizations ---
-# Adjust Batch Size based on chosen MODEL_INPUT_SIZE (320) and GPU VRAM
-OPTIMAL_BATCH_SIZE = 128 if MODEL_INPUT_SIZE<=420 else 16 if MODEL_INPUT_SIZE>=960 else 64
+OPTIMAL_BATCH_SIZE = 128
+if MODEL_INPUT_SIZE<=420:
+    OPTIMAL_BATCH_SIZE = 128
+elif MODEL_INPUT_SIZE<=640:
+    OPTIMAL_BATCH_SIZE = 64
+elif MODEL_INPUT_SIZE<=960:
+    OPTIMAL_BATCH_SIZE = 32
+else:
+    OPTIMAL_BATCH_SIZE = 16
+
+OPTIMAL_BATCH_SIZE = 256
+    
 USE_ADVANCED_VIDEO_READER = True 
-PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7500
+PYVIDEOREADER_DECODE_SEGMENT_SIZE = 36000
 FFMPEG_PATH = r'C:\ffmpeg\ffmpeg.exe'
 
-_cpu_count = os.cpu_count(); THREAD_COUNT = min(64, _cpu_count * 2) if _cpu_count else 24
-MIXED_PRECISION = True if PROCESSING_MODE == 'enhanced' and torch.cuda.is_available() else False
-PARALLEL_STREAMS = 16 if PROCESSING_MODE == 'enhanced' else 2
+_cpu_count = os.cpu_count()
+THREAD_COUNT = min(64, _cpu_count * 2)
+MIXED_PRECISION = True
+PARALLEL_STREAMS = 16
 
 # --- Tracking Configuration --- 
 REIDENTIFICATION_TIMEOUT = 10.0
 MAX_MATCHING_DISTANCE = 50
-TRACKER_CONFIG = ''
 
 # Timeout durations - Keep Increased slightly more
 VEHICLE_TIMEOUTS = {
@@ -109,7 +101,6 @@ GRADIO_SHARE = False
 
 # --- Print Confirmation ---
 print(f"--- Configuration Loaded (Tuned for Exit Accuracy) ---")
-print(f"Processing Mode: {PROCESSING_MODE.upper()}")
 print(f"Line Definition Mode: {LINE_MODE.upper()}")
 if LINE_MODE == 'hardcoded': print(f"Input Video: {INPUT_VIDEO_PATH}")
 print(f"Start Date/Time: {START_DATE} / {START_TIME}")

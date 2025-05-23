@@ -6,7 +6,7 @@ import os
 import re
 import time
 from config import (
-    START_DATE, START_TIME, PROCESSING_MODE, VIDEO_OUTPUT_DIR, LINE_MODE
+    START_DATE, START_TIME, VIDEO_OUTPUT_DIR, LINE_MODE
 )
 from core.video_processor import VideoProcessor
 from core.utils import debug_print
@@ -188,9 +188,8 @@ def create_interface():
             <div style="text-align: center; margin-bottom: 20px;">
                 <h1 style="font-size: 2.5em; font-weight: 600; color: #10b981;">🚦 Emaan Traffic Vehicle Detector</h1>
                 <p style="font-size: 1.1em; color: #4b5563;">Upload a video, configure settings, and process to count vehicles.</p>
-                <p style="font-size: 0.9em; color: #6b7280;"><strong>Mode:</strong> `{}` | <strong>Zone Def:</strong> `{}`</p>
             </div>
-            """.format(PROCESSING_MODE.upper(), "POLYGONS" if LINE_MODE == 'interactive' else "HARDCODED") # Update text
+            """
         )
 
         # --- Main Layout with Tabs ---

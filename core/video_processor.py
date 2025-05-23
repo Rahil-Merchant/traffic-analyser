@@ -14,11 +14,11 @@ from boxmot.trackers.bytetrack.bytetrack import ByteTrack
 
 # Configuration
 from config import (
-    TARGET_FPS, FRAME_WIDTH, FRAME_HEIGHT, OPTIMAL_BATCH_SIZE,
-    VIDEO_OUTPUT_DIR, ENABLE_DETAILED_PERFORMANCE_METRICS,
-    MIXED_PRECISION, PARALLEL_STREAMS, THREAD_COUNT,
-    MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, IOU_THRESHOLD,
-    LINE_MODE, LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, VEHICLE_TIMEOUTS,
+    TARGET_FPS, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH_VIZ, FRAME_HEIGHT_VIZ,
+    VIDEO_OUTPUT_DIR, ENABLE_DETAILED_PERFORMANCE_METRICS, OPTIMAL_BATCH_SIZE,
+    MIXED_PRECISION, PARALLEL_STREAMS, THREAD_COUNT, IOU_THRESHOLD,
+    MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
+    LINE_MODE, LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION,
     USE_ADVANCED_VIDEO_READER, PYVIDEOREADER_DECODE_SEGMENT_SIZE, FFMPEG_PATH
 )
 
@@ -51,6 +51,7 @@ class VideoProcessor:
     def __init__(self):
         self.target_fps = TARGET_FPS
         self.frame_shape = (FRAME_WIDTH, FRAME_HEIGHT)
+        self.frame_shape_viz = (FRAME_WIDTH_VIZ, FRAME_HEIGHT_VIZ)
         self.model_input_size_config = MODEL_INPUT_SIZE # Square size for model
         self.batch_size = OPTIMAL_BATCH_SIZE
         self.processing_lock = threading.Lock()
@@ -392,22 +393,8 @@ class VideoProcessor:
         actual_output_path = output_path
         try:
             # Attempt to initialize video writer
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v');
-            out = cv2.VideoWriter(actual_output_path, fourcc, self.target_fps, self.frame_shape)
-            if not out.isOpened():
-                print(f"Warn: mp4v failed for {actual_output_path}. Trying XVID/AVI.");
-                avi_path = os.path.splitext(actual_output_path)[0] + ".avi"
-                fourcc = cv2.VideoWriter_fourcc(*'XVID');
-                out = cv2.VideoWriter(avi_path, fourcc, self.target_fps, self.frame_shape)
-                if out.isOpened():
-                    actual_output_path = avi_path;
-                    # Important: Update the class variable if the path changed
-                    self.final_output_path = avi_path
-                else:
-                    print(f"ERROR: Writer failed to open for both MP4 and AVI.");
-                    # Signal failure (e.g., by setting final_output_path to None or an error string)
-                    self.final_output_path = "ERROR_WRITER_FAILED"
-                    return # Exit thread if writer cannot be opened
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(actual_output_path, fourcc, self.target_fps, self.frame_shape_viz)
 
             writer_initialized = True; print(f"Writer initialized for: {actual_output_path}")
 
@@ -426,8 +413,8 @@ class VideoProcessor:
                     if frame.dtype != np.uint8: frame = frame.astype(np.uint8)
                     if len(frame.shape) == 2: frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
                     # Ensure frame matches output shape before writing
-                    if frame.shape[1]!=self.frame_shape[0] or frame.shape[0]!=self.frame_shape[1]:
-                        frame = cv2.resize(frame, self.frame_shape)
+                    if frame.shape[1]!=self.frame_shape_viz[0] or frame.shape[0]!=self.frame_shape_viz[1]:
+                        frame = cv2.resize(frame, self.frame_shape_viz)
                     out.write(frame); frames_written += 1
 
                 # Mark task as done only if queue exists
@@ -441,7 +428,7 @@ class VideoProcessor:
         finally:
             # Release writer if it was initialized
             if out and writer_initialized:
-                 out.release();
+                 out.release()
                  debug_print(f"Writer released. Wrote {frames_written} frames to {actual_output_path}")
             # Signal writer queue end only if it exists (ensures main thread doesn't block indefinitely)
             if self.video_write_queue:
