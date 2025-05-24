@@ -2,23 +2,14 @@
 import subprocess
 import os
 import tempfile
-from config import FFMPEG_PATH
 
 def convert_dav_to_mp4_internal(dav_filepath):
     """
-    Converts a .dav file to .mp4 using ffmpeg (path determined by find_ffmpeg_path)
+    Converts a .dav file to .mp4 using ffmpeg
     Returns the path to the converted .mp4 file, or None on failure.
     The converted file is placed in the system's temporary directory.
     The caller is responsible for deleting this temporary output MP4 file.
     """
-    if not FFMPEG_PATH: # Use the globally determined path
-        print("ERROR: [convert_dav] FFmpeg executable path not determined. Cannot convert .dav file.")
-        return None
-    
-    ffmpeg_executable = FFMPEG_PATH
-    if not os.path.exists(dav_filepath):
-        print(f"ERROR: [convert_dav] Input .dav file not found: {dav_filepath}")
-        return None
 
     try:
         dav_basename = os.path.basename(dav_filepath)
@@ -31,7 +22,7 @@ def convert_dav_to_mp4_internal(dav_filepath):
         return None
 
     command = [
-                ffmpeg_executable,
+                'ffmpeg',
                 "-y",                 # Overwrite output
                 "-i", dav_filepath,   # Input
                 "-an",                # No audio
