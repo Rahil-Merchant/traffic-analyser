@@ -545,15 +545,6 @@ class VideoProcessor:
         
         return final_batch_tensor
 
-
-# project/core/video_processor.py
-
-    # ... (other VideoProcessor methods and __init__ remain as per the "report parity" version) ...
-
-    # _add_to_finalized_paths method is already a class method:
-    # def _add_to_finalized_paths(self, track_id_str, app_data, final_status_str, ...):
-    #     ...
-
     @torch.no_grad()
     def _process_inference_results(self, 
                                  yolo_results_batch,  # Results from model(batch_tensor)
@@ -593,6 +584,7 @@ class VideoProcessor:
                 dummy_img_for_tracker = np.zeros((img_h_model, img_w_model, 3), dtype=np.uint8)
 
                 # Call ByteTrack update sequentially for each frame in the batch
+                
                 online_targets_for_each_frame_in_batch[i] = self.bytetracker.update(
                     detections_np_single_frame,
                     dummy_img_for_tracker 
@@ -846,6 +838,7 @@ class VideoProcessor:
         actual_video_path_to_process = video_path; temp_converted_dav_mp4 = None
         if video_path.lower().endswith(".dav"):
             print(f"Input is .dav: {video_path}. Converting...")
+            # TODO - FIX THIS
             converted_path = convert_dav_to_mp4_internal(video_path)
             if converted_path and os.path.exists(converted_path):
                 actual_video_path_to_process = converted_path
@@ -898,7 +891,7 @@ class VideoProcessor:
             if ENABLE_VISUALIZATION:
                 os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True); ts_now=datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_filename_base_viz=f"output_{os.path.splitext(os.path.basename(actual_video_path_to_process))[0]}_{ts_now}"
-                output_path_viz=os.path.join(VIDEO_OUTPUT_DIR, f"{output_filename_base_viz}.mp4");
+                output_path_viz=os.path.join(VIDEO_OUTPUT_DIR, f"{output_filename_base_viz}.mp4")
                 self.final_output_path = output_path_viz
                 self.video_write_queue = queue.Queue(maxsize=self.batch_size*4)
                 self.writer_thread = threading.Thread(target=self._frame_writer_task, args=(output_path_viz,), daemon=True); self.writer_thread.start()
