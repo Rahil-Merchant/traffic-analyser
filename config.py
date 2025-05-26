@@ -1,11 +1,9 @@
 # project/config.py
 import os
 from datetime import datetime
-import torch # Import torch to check GPU capability
 
 LINE_MODE = 'hardcoded'
 ENABLE_VISUALIZATION = True
-
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -21,7 +19,8 @@ REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
 MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082_960px_bs192_trt.engine"
-CONF_THRESHOLD = 0.25 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
+NUM_INFERENCE_STREAMS = 1
+CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 960 # Keep smaller size for performance
 
@@ -74,44 +73,44 @@ LINE_POINTS = {
 
 # # *############## Video 2 #################
 # --- Input Settings (primarily for hardcoded mode) ---
-INPUT_VIDEO_PATH = r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 min test - Large FOV.mp4"
+# INPUT_VIDEO_PATH = r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 min test - Large FOV.mp4"
 
-# --- Line & Zone Definitions ---
-LINE_POINTS = {'north': [[699, 529],
-       [451, 486],
-       [455, 422],
-       [610, 455]],
-       'south': [[ 425,  573],
-       [ 881,  603],
-       [1254,  765],
-       [ 398,  819]],
-       'west': [[405, 529],
-       [416, 457],
-       [152, 394],
-       [ 49, 368],
-       [ 51, 472],
-       [285, 507]],
-       'east': [[843, 590],
-       [721, 544],
-       [717, 536],
-       [828, 527],
-       [889, 562],
-       [909, 590]]}
+# # --- Line & Zone Definitions ---
+# LINE_POINTS = {'north': [[699, 529],
+#        [451, 486],
+#        [455, 422],
+#        [610, 455]],
+#        'south': [[ 425,  573],
+#        [ 881,  603],
+#        [1254,  765],
+#        [ 398,  819]],
+#        'west': [[405, 529],
+#        [416, 457],
+#        [152, 394],
+#        [ 49, 368],
+#        [ 51, 472],
+#        [285, 507]],
+#        'east': [[843, 590],
+#        [721, 544],
+#        [717, 536],
+#        [828, 527],
+#        [889, 562],
+#        [909, 590]]}
 
-FRAME_HEIGHT = MODEL_INPUT_SIZE
-FRAME_WIDTH = round(MODEL_INPUT_SIZE*(4/3))
-FRAME_HEIGHT_VIZ = 800
-FRAME_WIDTH_VIZ = 960
+# FRAME_HEIGHT = MODEL_INPUT_SIZE
+# FRAME_WIDTH = round(MODEL_INPUT_SIZE*(4/3))
+# FRAME_HEIGHT_VIZ = 800
+# FRAME_WIDTH_VIZ = 960
 
-scale_x = 1
-scale_y = 1
+# scale_x = 1
+# scale_y = 1
 
-LINE_POINTS = {
-    'north': [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['north']],
-    'south': [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['south']],
-    'east':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['east']],
-    'west':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['west']],
-}
+# LINE_POINTS = {
+#     'north': [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['north']],
+#     'south': [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['south']],
+#     'east':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['east']],
+#     'west':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['west']],
+# }
 ######################
 
 
@@ -135,7 +134,7 @@ PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7600
 _cpu_count = os.cpu_count()
 THREAD_COUNT = min(64, _cpu_count * 2)
 MIXED_PRECISION = True
-PARALLEL_STREAMS = 8
+PARALLEL_STREAMS = 32
 
 # Timeout durations - In seconds
 VEHICLE_TIMEOUTS = {

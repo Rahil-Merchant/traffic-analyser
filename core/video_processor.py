@@ -19,7 +19,7 @@ from config import (
     MIXED_PRECISION, PARALLEL_STREAMS, THREAD_COUNT, IOU_THRESHOLD,
     MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
     LINE_MODE, LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION,
-    USE_ADVANCED_VIDEO_READER, PYVIDEOREADER_DECODE_SEGMENT_SIZE,
+    USE_ADVANCED_VIDEO_READER, PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS,
     BYTETRACK_MATCH_THRESH, BYTETRACK_MIN_CONF, BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH
 )
 
@@ -70,6 +70,8 @@ class VideoProcessor:
         # Core components
         self.device = get_device()
         self.model = None
+        self.models_list = [] # For multiple inference instances
+        self.num_inference_streams = max(1, NUM_INFERENCE_STREAMS)
         self.zone_tracker = None
         self.perf = None
         self.detection_zones_polygons = None # Holds final polygons (NumPy arrays)
@@ -88,6 +90,7 @@ class VideoProcessor:
         # Threading & Queues
         self.frame_read_queue = None
         self.video_write_queue = None # Will be None if visualization is disabled
+        self.max_queue_size = max(self.batch_size * self.num_inference_streams * 8, 128)
         self.stop_event = None
         self.reader_thread = None
         self.writer_thread = None # Will be None if visualization is disabled
@@ -365,7 +368,7 @@ class VideoProcessor:
                             queued_frame_count += 1
                         except queue.Full:
                             debug_print("PVR SegReader: Queue full, retrying...")
-                            time.sleep(0.1);
+                            time.sleep(0.1)
                             if self.stop_event.is_set(): break
                             try:
                                 self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
@@ -392,13 +395,12 @@ class VideoProcessor:
     def _frame_writer_task(self, output_path):
         # This task will only run if ENABLE_VISUALIZATION is True
         out = None; writer_initialized = False; frames_written = 0
-        actual_output_path = output_path
         try:
             # Attempt to initialize video writer
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(actual_output_path, fourcc, self.target_fps, self.frame_shape_viz)
+            out = cv2.VideoWriter(output_path, fourcc, self.target_fps, self.frame_shape_viz)
 
-            writer_initialized = True; print(f"Writer initialized for: {actual_output_path}")
+            writer_initialized = True; print(f"Writer initialized for: {output_path}")
 
             while True:
                 try: frame_data = self.video_write_queue.get(timeout=5.0) # Wait for frames
@@ -417,7 +419,8 @@ class VideoProcessor:
                     # Ensure frame matches output shape before writing
                     if frame.shape[1]!=self.frame_shape_viz[0] or frame.shape[0]!=self.frame_shape_viz[1]:
                         frame = cv2.resize(frame, self.frame_shape_viz)
-                    out.write(frame); frames_written += 1
+                    out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                    frames_written += 1
 
                 # Mark task as done only if queue exists
                 if self.video_write_queue: self.video_write_queue.task_done()
@@ -431,7 +434,7 @@ class VideoProcessor:
             # Release writer if it was initialized
             if out and writer_initialized:
                  out.release()
-                 debug_print(f"Writer released. Wrote {frames_written} frames to {actual_output_path}")
+                 debug_print(f"Writer released. Wrote {frames_written} frames to {output_path}")
             # Signal writer queue end only if it exists (ensures main thread doesn't block indefinitely)
             if self.video_write_queue:
                 try: self.video_write_queue.put(None, timeout=1.0)
@@ -798,18 +801,32 @@ class VideoProcessor:
     # --- End _process_inference_results ---
 
     def _add_to_finalized_paths(self, track_id_str, app_data, final_status_str, exit_direction_str, exit_time_dt, time_in_intersection_val):
-            """Helper to create and append a finalized path dictionary for reporting."""
-            path_report_entry = {
-                'id': track_id_str, # From ByteTrack
-                'type': app_data.get('current_type', 'UnknownType'), # Consistent type from app_data
-                'entry_direction': app_data.get('entry_direction'),
-                'exit_direction': exit_direction_str,
-                'entry_time': app_data.get('entry_time'),
-                'exit_time': exit_time_dt,
-                'time_in_intersection': round(time_in_intersection_val, 2) if time_in_intersection_val is not None else 0.0,
-                'status': final_status_str, # e.g., 'exited', 'timed_out', 'lost_track', 'forced_exit'
-            }
-            self.finalized_paths_for_report.append(path_report_entry)
+        """Helper to create and append a finalized path dictionary for reporting."""
+        path_report_entry = {
+            'id': track_id_str, # From ByteTrack
+            'type': app_data.get('current_type', 'UnknownType'), # Consistent type from app_data
+            'entry_direction': app_data.get('entry_direction'),
+            'exit_direction': exit_direction_str,
+            'entry_time': app_data.get('entry_time'),
+            'exit_time': exit_time_dt,
+            'time_in_intersection': round(time_in_intersection_val, 2) if time_in_intersection_val is not None else 0.0,
+            'status': final_status_str, # e.g., 'exited', 'timed_out', 'lost_track', 'forced_exit'
+        }
+        self.finalized_paths_for_report.append(path_report_entry)
+
+    def _execute_single_model_inference(self, model_instance, input_tensor_chunk, stream_to_use=None):
+        # It should take a chunk of frames (e.g., self.batch_size frames) and return a list of results.
+        # Remember the stream_to_use.synchronize() inside it if stream_to_use is not None.
+        if stream_to_use and self.device == 'cuda':
+            with torch.cuda.stream(stream_to_use):
+                with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
+                    results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE)
+            stream_to_use.synchronize() # Crucial for ThreadPoolExecutor
+            return results
+        else: 
+            with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
+                results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE)
+            return results
 
     # --- Main Processing Function ---
     def process_video(self, video_path, start_date_str, start_time_str, primary_direction):
@@ -823,20 +840,25 @@ class VideoProcessor:
         self.current_bytetrack_frame_id = 0
         self.active_track_data.clear()
         self.finalized_paths_for_report = [] # Reset for new video
+        effective_trigger_batch_size = self.batch_size * self.num_inference_streams
+        print(f"Effective trigger batch size for inference: {effective_trigger_batch_size} (batch_size={self.batch_size} * num_streams={self.num_inference_streams})")
 
         self.zone_tracker = None
         self.perf = PerformanceTracker(enabled=ENABLE_DETAILED_PERFORMANCE_METRICS)
         self.stop_event = threading.Event()
-        self.frame_read_queue = queue.Queue(maxsize=max(self.batch_size * 4, 64))
+        # todo: improve queue size selection logic - config import
+        self.frame_read_queue = queue.Queue(maxsize=self.max_queue_size)
         self.last_cleanup_time = time.monotonic()
         self.detection_zones_polygons = None
         self.final_output_path = None
         self.writer_thread = None
         self.video_write_queue = None
+        self.models_list = [] # Clear from previous runs
 
         print(f"--- Starting New Video Processing Run (with ByteTrack for Report Parity) ---")
 
-        actual_video_path_to_process = video_path; temp_converted_dav_mp4 = None
+        actual_video_path_to_process = video_path
+        temp_converted_dav_mp4 = None
         if video_path.lower().endswith(".dav"):
             print(f"Input is .dav: {video_path}. Converting...")
             # TODO - FIX THIS
@@ -851,7 +873,7 @@ class VideoProcessor:
                 print(error_msg); self.processing_lock.release(); raise RuntimeError(error_msg)
 
         try:
-            # --- Zone Definition (UNCHANGED) ---
+            # --- Zone Definition ---
             self.detection_zones_polygons = None
             if self.line_mode == 'hardcoded':
                 if 'LINE_POINTS' not in globals() or not isinstance(LINE_POINTS, dict) or not LINE_POINTS: raise ValueError("Hardcoded: LINE_POINTS missing/empty.")
@@ -868,10 +890,22 @@ class VideoProcessor:
             self.zone_tracker = ZoneTracker(self.detection_zones_polygons)
             if not self.zone_tracker or not self.zone_tracker.zones: raise RuntimeError("CRITICAL: ZoneTracker failed to initialize.")
 
-            if self.model is None:
-                effective_model_conf_for_detections = 0.05
-                self.model = load_model(MODEL_PATH, self.device, effective_model_conf_for_detections, IOU_THRESHOLD)
-            if self.model is None: raise RuntimeError(f"Failed to load model {MODEL_PATH}")
+            # --- Load Model(s) ---
+            print(f"Loading {self.num_inference_streams} model instances...")
+            for i in range(self.num_inference_streams):
+                try:
+                    model_instance = load_model(MODEL_PATH, self.device, CONF_THRESHOLD, IOU_THRESHOLD)
+                    if model_instance is None: raise RuntimeError(f"Failed to load model instance {i+1} from {MODEL_PATH}")
+                    self.models_list.append(model_instance)
+                    print(f"Loaded model instance {i+1}/{self.num_inference_streams}.")
+                except Exception as e:
+                    error_msg = f"FATAL: Could not load model instance {i+1}: {e}"
+                    print(error_msg); self.processing_lock.release(); raise RuntimeError(error_msg)
+            if not self.models_list:
+                error_msg = "FATAL: No model instances were loaded."
+                print(error_msg); self.processing_lock.release(); raise RuntimeError(error_msg)
+            print(f"Successfully loaded {len(self.models_list)} model instances.")
+            self.model = self.models_list[0] # For any legacy single-model references
 
             try:
                 start_date_dt=datetime.strptime(start_date_str, "%y%m%d"); time_part,ms_part=(start_time_str[:6], start_time_str[6:]) if len(start_time_str)>6 else (start_time_str,"0")
@@ -880,139 +914,286 @@ class VideoProcessor:
                 print(f"Video Start Timestamp: {start_datetime_obj_global.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
             except ValueError as e_ts: raise ValueError(f"Invalid date/time format: {e_ts}.")
 
+            # --- Video Properties & I/O Threads ---
             total_frames, original_fps = self._get_video_properties(actual_video_path_to_process)
             print(f"Video Properties: ~{total_frames} frames, {original_fps:.2f} FPS (Original)")
             if total_frames <= 0: raise ValueError("Cannot process video with zero or unreadable total frames.")
 
-            # --- Setup I/O Threads (UNCHANGED) ---
             print("Starting I/O threads...")
             reader_args = (actual_video_path_to_process, original_fps, total_frames) if self.actually_use_advanced_reader else (actual_video_path_to_process, original_fps)
             reader_target = self._frame_reader_task_pvr_segmented if self.actually_use_advanced_reader else self._frame_reader_task
             self.reader_thread = threading.Thread(target=reader_target, args=reader_args, daemon=True); self.reader_thread.start()
+            
             if ENABLE_VISUALIZATION:
                 os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True); ts_now=datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_filename_base_viz=f"output_{os.path.splitext(os.path.basename(actual_video_path_to_process))[0]}_{ts_now}"
                 output_path_viz=os.path.join(VIDEO_OUTPUT_DIR, f"{output_filename_base_viz}.mp4")
-                self.final_output_path = output_path_viz
-                self.video_write_queue = queue.Queue(maxsize=self.batch_size*4)
+                self.final_output_path = output_path_viz # Store for result message
+                self.video_write_queue = queue.Queue(maxsize=self.max_queue_size)
                 self.writer_thread = threading.Thread(target=self._frame_writer_task, args=(output_path_viz,), daemon=True); self.writer_thread.start()
-            else: self.video_write_queue = None; self.writer_thread = None; self.final_output_path = None
+            else: self.video_write_queue = None; self.writer_thread = None; self.final_output_path = None # Explicitly None
             
-            # --- Main Loop ---
-            # all_event_logs_final is no longer the primary source for excel report data
+            # --- Main Loop Logic ---
             frames_processed_count = 0
             frame_interval = max(1, round(original_fps / self.target_fps)) if self.target_fps > 0 and original_fps > 0 else 1
             total_target_frames_for_perf = total_frames // frame_interval if total_frames > 0 else 0
             if self.perf: self.perf.start_processing(total_target_frames_for_perf if total_target_frames_for_perf > 0 else total_frames)
             
             current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times = [], [], []
-            last_prog_print_time = time.monotonic();
+            last_prog_print_time = time.monotonic()
+            
+            effective_trigger_batch_size = self.batch_size * self.num_inference_streams
+            print(f"Effective trigger batch size for inference: {effective_trigger_batch_size} (batch_size={self.batch_size} * num_streams={self.num_inference_streams})")
 
-            while True: # Main processing loop (largely UNCHANGED from previous ByteTrack version)
+            # ==============================================================
+            # START OF: Main Processing `while True` Loop
+            # ==============================================================
+            while True:
                 try:
-                    frame_data_item = self.frame_read_queue.get(timeout=60)
-                    if frame_data_item is None: self.frame_read_queue.task_done(); break 
+                    frame_data_item = self.frame_read_queue.get(timeout=60) # Wait up to 60s for a frame
+                    if frame_data_item is None: # Sentinel from reader thread
+                        if not self.frame_read_queue.empty(): self.frame_read_queue.task_done()
+                        debug_print("Main loop: Reader sent None, exiting loop.")
+                        break 
+                    
                     if self.perf: self.perf.start_timer('video_read')
                     frame_content_raw, frame_num_raw, frame_time_s, frame_meta = frame_data_item
                     if self.perf: self.perf.end_timer('video_read')
-                    if frame_content_raw is None: self.frame_read_queue.task_done(); continue
+
+                    if frame_content_raw is None: # Should not happen if reader sends sentinel correctly
+                        if not self.frame_read_queue.empty(): self.frame_read_queue.task_done()
+                        continue
 
                     current_batch_frames_metadata.append((frame_content_raw, frame_meta))
                     current_batch_frame_numbers.append(frame_num_raw)
                     current_batch_frame_times.append(frame_time_s)
 
-                    if len(current_batch_frames_metadata) >= self.batch_size:
+                    # Check if we have accumulated enough frames for the effective batch
+                    if len(current_batch_frames_metadata) >= effective_trigger_batch_size:
                         batch_proc_start_time = time.monotonic()
+
                         if self.perf: self.perf.start_timer('preprocessing')
                         input_batch_tensor_model = self._preprocess_batch(current_batch_frames_metadata)
-                        self.perf.end_timer('preprocessing')
+                        if self.perf: self.perf.end_timer('preprocessing')
 
                         if input_batch_tensor_model is None or input_batch_tensor_model.nelement() == 0:
+                            debug_print("Skipping batch: Preprocessing returned None or empty tensor.")
+                            # Mark all frames from this failed attempt as done in the queue
+                            for _i_skip in range(len(current_batch_frames_metadata)):
+                                if not self.frame_read_queue.empty():
+                                    try: self.frame_read_queue.task_done()
+                                    except ValueError: pass # If already marked done due to earlier None
                             current_batch_frames_metadata.clear(); current_batch_frame_numbers.clear(); current_batch_frame_times.clear()
-                            for _i in range(len(current_batch_frames_metadata)): self.frame_read_queue.task_done() # Mark done if skipped
                             continue
                         
-                        with torch.no_grad():  # Ensure no_grad is always active for inference
-                            if self.device == 'cuda' and self.streams:
-                                current_stream = self.streams[self.current_stream_index % len(self.streams)]
-                                self.current_stream_index += 1
-                                with torch.cuda.stream(current_stream):
-                                    with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
-                                        if self.perf and self.perf.start_event:
-                                            self.perf.start_event.record(stream=current_stream)
-                                        yolo_results_batch = self.model(input_batch_tensor_model, verbose=False, imgsz=MODEL_INPUT_SIZE)
-                                        if self.perf and self.perf.end_event:
-                                            self.perf.end_event.record(stream=current_stream)
-                                # Consider if synchronization is truly needed here or can be deferred/more targeted.
-                                # For now, keeping it to ensure results are ready for CPU-based _process_inference_results
-                                if current_stream:
-                                    current_stream.synchronize() # This makes the batch processing serial at this point.
-                            else: # CPU or no streams
-                                with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')): # AMP on CPU has little to no effect
-                                    yolo_results_batch = self.model(input_batch_tensor_model, verbose=False, imgsz=MODEL_INPUT_SIZE)
+                        actual_frames_in_current_effective_batch = input_batch_tensor_model.shape[0]
+                        yolo_results_batch_ordered = [None] * actual_frames_in_current_effective_batch
+                        
+                        if self.perf and self.perf.cuda_events_enabled and self.device == 'cuda':
+                            overall_start_event = torch.cuda.Event(enable_timing=True)
+                            overall_end_event = torch.cuda.Event(enable_timing=True)
+                            overall_start_event.record()
 
-                        if self.perf and self.perf.start_event and self.perf.end_event and self.device == 'cuda' and self.streams: # Check if events were recorded
-                            self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_inference_streams) as executor:
+                            futures_to_original_indices_map = {} 
 
-                        # _process_inference_results now appends to self.finalized_paths_for_report internally
+                            for i in range(self.num_inference_streams):
+                                start_idx_for_model = i * self.batch_size
+                                end_idx_for_model = (i + 1) * self.batch_size
+
+                                if start_idx_for_model >= actual_frames_in_current_effective_batch: continue
+                                end_idx_for_model = min(end_idx_for_model, actual_frames_in_current_effective_batch)
+                                if start_idx_for_model >= end_idx_for_model: continue
+
+                                chunk_for_model = input_batch_tensor_model[start_idx_for_model:end_idx_for_model]
+                                original_global_indices_for_chunk = list(range(start_idx_for_model, end_idx_for_model))
+                                
+                                model_to_use = self.models_list[i]
+                                current_stream_for_model = None
+                                if self.device == 'cuda' and self.streams:
+                                     current_stream_for_model = self.streams[i % len(self.streams)]
+
+                                future = executor.submit(self._execute_single_model_inference,
+                                                         model_to_use, chunk_for_model, current_stream_for_model)
+                                futures_to_original_indices_map[future] = original_global_indices_for_chunk
+                            
+                            for future in concurrent.futures.as_completed(futures_to_original_indices_map):
+                                original_global_indices = futures_to_original_indices_map[future]
+                                try:
+                                    results_from_single_model_call = future.result() 
+                                    if results_from_single_model_call:
+                                        for res_idx_in_chunk, yolo_res_obj in enumerate(results_from_single_model_call):
+                                            global_idx = original_global_indices[res_idx_in_chunk]
+                                            yolo_results_batch_ordered[global_idx] = yolo_res_obj
+                                except Exception as e_infer:
+                                    print(f"\nError during concurrent inference (global_indices {original_global_indices}): {e_infer}")
+                                    for global_idx in original_global_indices:
+                                        yolo_results_batch_ordered[global_idx] = None
+                        
+                        if self.perf and self.perf.cuda_events_enabled and self.device == 'cuda':
+                            overall_end_event.record()
+                            overall_end_event.synchronize()
+                            duration_ms = overall_start_event.elapsed_time(overall_end_event)
+                            self.perf.timings['inference'] += duration_ms / 1000.0
+
+                        yolo_results_batch = yolo_results_batch_ordered if any(yolo_results_batch_ordered) else []
+                        
+                        # Application logic processing (tracking, zone checking, etc.)
                         _, processed_frames_for_viz = self._process_inference_results(
-                            yolo_results_batch, current_batch_frames_metadata, current_batch_frame_numbers, 
-                            current_batch_frame_times, start_datetime_obj_global
+                            yolo_results_batch, 
+                            current_batch_frames_metadata, 
+                            current_batch_frame_numbers, 
+                            current_batch_frame_times, 
+                            start_datetime_obj_global
                         )
-                        # all_event_logs_final.extend(batch_event_log_output) # Not primary for report
-                        if self.perf: self.perf.record_detection(sum(len(r.boxes) for r in yolo_results_batch if hasattr(r,'boxes') and r.boxes))
-
+                        
+                        # Send frames to writer if visualization is enabled
                         if ENABLE_VISUALIZATION and self.video_write_queue:
                             if self.perf: self.perf.start_timer('video_write')
                             for pf_viz in processed_frames_for_viz:
                                 if pf_viz is not None:
                                     try: self.video_write_queue.put(pf_viz, block=True, timeout=2.0)
-                                    except queue.Full: print("WARN: Video writer queue full.")
+                                    except queue.Full: print("WARN: Video writer queue full during main loop.")
                             if self.perf: self.perf.end_timer('video_write')
 
+                        # Performance recording for this effective batch
                         batch_proc_duration = time.monotonic() - batch_proc_start_time
-                        frames_in_this_batch = len(current_batch_frames_metadata)
-                        frames_processed_count += frames_in_this_batch
-                        if self.perf: self.perf.record_batch_processed(frames_in_this_batch, batch_proc_duration); self.perf.sample_system_metrics()
+                        # actual_frames_in_current_effective_batch is the count for this effective batch
+                        frames_processed_count += actual_frames_in_current_effective_batch
+                        if self.perf: 
+                            self.perf.record_batch_processed(actual_frames_in_current_effective_batch, batch_proc_duration)
+                            self.perf.sample_system_metrics() # Sample system metrics after each big batch
                         
-                        current_monotonic_time = time.monotonic()
-                        if current_monotonic_time - self.last_cleanup_time > MEMORY_CLEANUP_INTERVAL:
+                        # Record detections for all frames in the effective batch
+                        if self.perf: 
+                            num_detections_in_batch = 0
+                            for res_obj_list_item in yolo_results_batch:
+                                if res_obj_list_item: 
+                                     if hasattr(res_obj_list_item, 'boxes') and res_obj_list_item.boxes is not None:
+                                        num_detections_in_batch += len(res_obj_list_item.boxes)
+                            self.perf.record_detection(num_detections_in_batch)
+
+                        # Memory cleanup check
+                        current_monotonic_time_loop = time.monotonic()
+                        if current_monotonic_time_loop - self.last_cleanup_time > MEMORY_CLEANUP_INTERVAL:
                             if self.perf: self.perf.start_timer('memory_cleanup')
-                            last_frame_time_sec_in_batch = current_batch_frame_times[-1] if current_batch_frame_times else 0
-                            cleanup_tracking_data(self, last_frame_time_sec_in_batch); cleanup_memory()
-                            self.last_cleanup_time = current_monotonic_time
+                            last_frame_time_sec_in_batch_loop = current_batch_frame_times[-1] if current_batch_frame_times else 0
+                            cleanup_tracking_data(self, last_frame_time_sec_in_batch_loop) # Pass self
+                            cleanup_memory() # Global util
+                            self.last_cleanup_time = current_monotonic_time_loop
                             if self.perf: self.perf.end_timer('memory_cleanup')
 
-                        if self.perf and (current_monotonic_time - last_prog_print_time > 1.0):
+                        # Progress printing
+                        if self.perf and (current_monotonic_time_loop - last_prog_print_time > 1.0): # Print progress every second
                             prog_stats=self.perf.get_progress()
                             active_app_tracks = sum(1 for ad in self.active_track_data.values() if ad['status'] == 'active')
-                            print(f"\rProgress:{prog_stats['percent']:.1f}%|FPS:{prog_stats['fps']:.1f}|Active(App):{active_app_tracks}|ETA:{prog_stats['eta']} ", end="")
-                            last_prog_print_time = current_monotonic_time
-
+                            print(f"\rProgress:{prog_stats['percent']:.1f}%|FPS:{prog_stats['fps']:.1f}|Active(App):{active_app_tracks}|ETA:{prog_stats['eta']}      ", end="")
+                            last_prog_print_time = current_monotonic_time_loop
+                        
+                        # Mark all frames from this effective batch as done in the read queue
+                        for _i_done in range(len(current_batch_frames_metadata)): # Iterate for actual number of items taken
+                            if not self.frame_read_queue.empty():
+                                try: self.frame_read_queue.task_done()
+                                except ValueError: pass 
+                        
                         current_batch_frames_metadata.clear(); current_batch_frame_numbers.clear(); current_batch_frame_times.clear()
-                        del input_batch_tensor_model, yolo_results_batch; cleanup_memory()
-                    
-                    self.frame_read_queue.task_done()
+                        del input_batch_tensor_model, yolo_results_batch, yolo_results_batch_ordered; # Cleanup tensors
+                        # Don't call cleanup_memory() here too frequently, rely on the interval check
+
+                    else: # Not enough frames for a full effective_trigger_batch_size yet
+                        # We still need to mark the single frame_data_item as processed by the queue
+                        if not self.frame_read_queue.empty():
+                             try: self.frame_read_queue.task_done()
+                             except ValueError: pass
+
                 except queue.Empty: 
-                    if self.stop_event.is_set() and (self.frame_read_queue is None or self.frame_read_queue.empty()): break
-                    continue 
-                except Exception as e_loop: print(f"\nERROR during processing loop: {e_loop}"); import traceback; traceback.print_exc(); self.stop_event.set(); break
-            
-            if current_batch_frames_metadata: # Process Final Batch (UNCHANGED from previous ByteTrack version)
-                print("\nProcessing final batch...")
-                batch_proc_start_time_final=time.monotonic()
-                if self.perf: self.perf.start_timer('preprocessing'); input_batch_final=self._preprocess_batch(current_batch_frames_metadata); self.perf.end_timer('preprocessing')
+                    # This timeout (60s in get()) means the reader might be finished or stuck
+                    if self.stop_event.is_set() and (self.frame_read_queue is None or self.frame_read_queue.empty()):
+                        debug_print("Main loop: Queue empty and stop event set, breaking.")
+                        break # Exit loop if stop event is set and queue is truly empty
+                    debug_print("Main loop: Queue empty, continuing to wait...")
+                    continue # Continue waiting for frames
+                except Exception as e_loop:
+                    print(f"\nERROR during processing loop: {e_loop}")
+                    import traceback; traceback.print_exc()
+                    self.stop_event.set() # Signal all threads to stop
+                    break # Exit loop on critical error
+            # ==============================================================
+            # END OF: Main Processing `while True` Loop
+            # ==============================================================
+            print("\nVideo processing loop finished.")
+
+            # ==============================================================
+            # START OF: Final Batch Processing
+            # ==============================================================
+            if current_batch_frames_metadata: # Process any remaining frames
+                final_batch_size_actual = len(current_batch_frames_metadata)
+                print(f"\nProcessing final batch of {final_batch_size_actual} frames with multiple model instances...")
+                batch_proc_start_time_final = time.monotonic()
+
+                if self.perf: self.perf.start_timer('preprocessing')
+                input_batch_final = self._preprocess_batch(current_batch_frames_metadata)
+                if self.perf: self.perf.end_timer('preprocessing')
+
                 if input_batch_final is not None and input_batch_final.nelement() > 0:
-                    yolo_results_final=None; current_stream_final=None
-                    if self.device=='cuda' and self.streams: current_stream_final=self.streams[self.current_stream_index%len(self.streams)]; self.current_stream_index+=1
-                    with torch.cuda.stream(current_stream_final) if current_stream_final else torch.no_grad():
-                        with torch.amp.autocast(device_type=self.device,enabled=MIXED_PRECISION and self.device=='cuda'):
-                           if self.perf and self.perf.start_event: self.perf.start_event.record(stream=current_stream_final)
-                           yolo_results_final=self.model(input_batch_final,verbose=False,imgsz=MODEL_INPUT_SIZE)
-                           if self.perf and self.perf.end_event: self.perf.end_event.record(stream=current_stream_final)
-                        if current_stream_final: current_stream_final.synchronize()
-                        if self.perf and self.perf.start_event and self.perf.end_event: self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
-                    _, processed_frames_final_viz = self._process_inference_results(yolo_results_final, current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times, start_datetime_obj_global)
+                    actual_frames_in_final_input_batch = input_batch_final.shape[0] # Should match final_batch_size_actual
+                    yolo_results_final_ordered = [None] * actual_frames_in_final_input_batch
+                    
+                    if self.perf and self.perf.cuda_events_enabled and self.device == 'cuda':
+                        final_batch_start_event = torch.cuda.Event(enable_timing=True)
+                        final_batch_end_event = torch.cuda.Event(enable_timing=True)
+                        final_batch_start_event.record()
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_inference_streams) as executor:
+                        futures_to_original_indices_final_map = {}
+                        
+                        idx_offset_final = 0 # To track how many frames from input_batch_final have been assigned
+                        for i in range(self.num_inference_streams):
+                            if idx_offset_final >= actual_frames_in_final_input_batch: break
+
+                            num_frames_for_this_stream_final = min(self.batch_size, actual_frames_in_final_input_batch - idx_offset_final)
+                            if num_frames_for_this_stream_final <= 0: continue
+
+                            end_idx_for_model_final = idx_offset_final + num_frames_for_this_stream_final
+                            chunk_for_model_final = input_batch_final[idx_offset_final:end_idx_for_model_final]
+                            original_global_indices_final = list(range(idx_offset_final, end_idx_for_model_final))
+
+                            model_to_use_final = self.models_list[i]
+                            current_stream_final_model = None
+                            if self.device == 'cuda' and self.streams:
+                                 current_stream_final_model = self.streams[i % len(self.streams)]
+
+                            future_final = executor.submit(self._execute_single_model_inference,
+                                                           model_to_use_final, chunk_for_model_final, current_stream_final_model)
+                            futures_to_original_indices_final_map[future_final] = original_global_indices_final
+                            idx_offset_final += num_frames_for_this_stream_final
+                        
+                        for future_final in concurrent.futures.as_completed(futures_to_original_indices_final_map):
+                            original_global_indices_final = futures_to_original_indices_final_map[future_final]
+                            try:
+                                results_from_single_model_final = future_final.result()
+                                if results_from_single_model_final:
+                                    for res_idx_in_chunk_final, yolo_res_obj_final in enumerate(results_from_single_model_final):
+                                        global_idx_final = original_global_indices_final[res_idx_in_chunk_final]
+                                        yolo_results_final_ordered[global_idx_final] = yolo_res_obj_final
+                            except Exception as e_infer_final:
+                                print(f"\nError during concurrent final batch inference (global_indices {original_global_indices_final}): {e_infer_final}")
+                                for global_idx_final in original_global_indices_final:
+                                    yolo_results_final_ordered[global_idx_final] = None
+                    
+                    if self.perf and self.perf.cuda_events_enabled and self.device == 'cuda':
+                        final_batch_end_event.record()
+                        final_batch_end_event.synchronize()
+                        duration_ms_final = final_batch_start_event.elapsed_time(final_batch_end_event)
+                        self.perf.timings['inference'] += duration_ms_final / 1000.0
+
+                    yolo_results_final = yolo_results_final_ordered if any(yolo_results_final_ordered) else []
+                    
+                    # Process final batch results
+                    _, processed_frames_final_viz = self._process_inference_results(
+                        yolo_results_final, current_batch_frames_metadata, 
+                        current_batch_frame_numbers, current_batch_frame_times, start_datetime_obj_global)
+
                     if ENABLE_VISUALIZATION and self.video_write_queue:
                         if self.perf: self.perf.start_timer('video_write');
                         for pf_final_viz in processed_frames_final_viz:
@@ -1020,12 +1201,30 @@ class VideoProcessor:
                                 try: self.video_write_queue.put(pf_final_viz, block=True, timeout=2.0)
                                 except queue.Full: print("WARN: Vid writer Q full (final batch).")
                         if self.perf: self.perf.end_timer('video_write')
-                    batch_proc_duration_final=time.monotonic()-batch_proc_start_time_final
-                    frames_in_final_batch = len(current_batch_frames_metadata)
-                    frames_processed_count+=frames_in_final_batch
-                    if self.perf: self.perf.record_batch_processed(frames_in_final_batch, batch_proc_duration_final)
-                    del input_batch_final, yolo_results_final; cleanup_memory()
-            print("\nVideo processing loop finished.")
+                    
+                    # Performance for final batch
+                    batch_proc_duration_final = time.monotonic() - batch_proc_start_time_final
+                    frames_processed_count += actual_frames_in_final_input_batch # Add frames from final batch
+                    if self.perf: 
+                        self.perf.record_batch_processed(actual_frames_in_final_input_batch, batch_proc_duration_final)
+                        num_detections_final = 0
+                        for res_obj_list_f_item in yolo_results_final:
+                            if res_obj_list_f_item:
+                                 if hasattr(res_obj_list_f_item, 'boxes') and res_obj_list_f_item.boxes is not None:
+                                    num_detections_final += len(res_obj_list_f_item.boxes)
+                        self.perf.record_detection(num_detections_final)
+                    
+                    # Mark final batch frames as done in read queue
+                    for _i_f_done in range(len(current_batch_frames_metadata)):
+                        if not self.frame_read_queue.empty():
+                            try: self.frame_read_queue.task_done()
+                            except ValueError: pass
+
+                    del input_batch_final, yolo_results_final, yolo_results_final_ordered; cleanup_memory()
+            # ==============================================================
+            # END OF: Final Batch Processing
+            # ==============================================================
+
 
             if self.active_track_data: # Force finalize remaining tracks
                 print(f"Finalizing {sum(1 for d in self.active_track_data.values() if d['status'] == 'active')} remaining app-level active tracks...")
@@ -1039,7 +1238,7 @@ class VideoProcessor:
                             if self.perf: self.perf.record_vehicle_exit('forced_exit')
                     self.active_track_data.clear()
 
-            print("Signaling threads..."); self.stop_event.set() # Rest of thread cleanup (UNCHANGED)
+            print("Signaling threads..."); self.stop_event.set() # Rest of thread cleanup
             if ENABLE_VISUALIZATION and self.video_write_queue:
                 try: self.video_write_queue.put(None, timeout=5.0)
                 except queue.Full: print("WARN: Could not signal writer queue (full).")
@@ -1058,14 +1257,14 @@ class VideoProcessor:
             completed_paths_count_valid_excel = sum(1 for p in self.finalized_paths_for_report if p['status'] == 'exited')
 
             excel_path_result = create_excel_report(
-                completed_paths_data=self.finalized_paths_for_report, # Use the new list
+                completed_paths_data=self.finalized_paths_for_report,
                 start_datetime=start_datetime_obj_global, 
                 primary_direction=primary_direction, 
                 video_path=actual_video_path_to_process
             )
             if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: visualize_performance(self.perf)
 
-            result_msg_final=f"✅ Processing completed (ByteTrack, Report Parity).\n" # Rest of result message (UNCHANGED)
+            result_msg_final=f"✅ Processing completed (ByteTrack, Report Parity).\n" # Rest of result message
             if ENABLE_VISUALIZATION:
                 if self.final_output_path and "ERROR" not in self.final_output_path: result_msg_final+=f"Output video: '{self.final_output_path}'.\n"
                 elif self.final_output_path and "ERROR" in self.final_output_path: result_msg_final+=f"Output video generation FAILED: {self.final_output_path}.\n"
@@ -1075,12 +1274,12 @@ class VideoProcessor:
             result_msg_final+=f"\n--- Summary Stats ---\nSTAT_FRAMES_PROCESSED={frames_processed_count}\nSTAT_TIME_SECONDS={total_time_taken_final:.2f}\nSTAT_FPS={final_fps_overall:.2f}\nSTAT_COMPLETED_PATHS={completed_paths_count_valid_excel}\n--- End Stats ---"
             return result_msg_final
 
-        except (ValueError, RuntimeError, FileNotFoundError, Exception) as e_proc: # Final error handling (UNCHANGED)
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as e_proc: # Final error handling
             print(f"\nFATAL ERROR during setup or processing: {e_proc}")
             import traceback; traceback.print_exc()
             if hasattr(self, 'stop_event') and self.stop_event: self.stop_event.set()
             return f"❌ Error: {e_proc}"
-        finally: # Final cleanup (UNCHANGED)
+        finally: # Final cleanup
             try:
                 if hasattr(self, 'reader_thread') and self.reader_thread and self.reader_thread.is_alive(): self.reader_thread.join(timeout=1)
                 if hasattr(self, 'writer_thread') and self.writer_thread and self.writer_thread.is_alive(): self.writer_thread.join(timeout=1)
