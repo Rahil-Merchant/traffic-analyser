@@ -940,7 +940,7 @@ class VideoProcessor:
                                     with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
                                         if self.perf and self.perf.start_event:
                                             self.perf.start_event.record(stream=current_stream)
-                                        yolo_results_batch = self.model(input_batch_tensor_model, verbose=False)
+                                        yolo_results_batch = self.model(input_batch_tensor_model, verbose=False, imgsz=MODEL_INPUT_SIZE)
                                         if self.perf and self.perf.end_event:
                                             self.perf.end_event.record(stream=current_stream)
                                 # Consider if synchronization is truly needed here or can be deferred/more targeted.
@@ -949,7 +949,7 @@ class VideoProcessor:
                                     current_stream.synchronize() # This makes the batch processing serial at this point.
                             else: # CPU or no streams
                                 with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')): # AMP on CPU has little to no effect
-                                    yolo_results_batch = self.model(input_batch_tensor_model, verbose=False)
+                                    yolo_results_batch = self.model(input_batch_tensor_model, verbose=False, imgsz=MODEL_INPUT_SIZE)
 
                         if self.perf and self.perf.start_event and self.perf.end_event and self.device == 'cuda' and self.streams: # Check if events were recorded
                             self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
@@ -1008,12 +1008,11 @@ class VideoProcessor:
                     with torch.cuda.stream(current_stream_final) if current_stream_final else torch.no_grad():
                         with torch.amp.autocast(device_type=self.device,enabled=MIXED_PRECISION and self.device=='cuda'):
                            if self.perf and self.perf.start_event: self.perf.start_event.record(stream=current_stream_final)
-                           yolo_results_final=self.model(input_batch_final,verbose=False)
+                           yolo_results_final=self.model(input_batch_final,verbose=False,imgsz=MODEL_INPUT_SIZE)
                            if self.perf and self.perf.end_event: self.perf.end_event.record(stream=current_stream_final)
                         if current_stream_final: current_stream_final.synchronize()
                         if self.perf and self.perf.start_event and self.perf.end_event: self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
                     _, processed_frames_final_viz = self._process_inference_results(yolo_results_final, current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times, start_datetime_obj_global)
-                    # all_event_logs_final.extend(batch_log_final) # Not primary for report
                     if ENABLE_VISUALIZATION and self.video_write_queue:
                         if self.perf: self.perf.start_timer('video_write');
                         for pf_final_viz in processed_frames_final_viz:
