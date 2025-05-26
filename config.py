@@ -3,11 +3,9 @@ import os
 from datetime import datetime
 import torch # Import torch to check GPU capability
 
-LINE_MODE = 'interactive'
+LINE_MODE = 'hardcoded'
 ENABLE_VISUALIZATION = True
 
-# --- Input Settings (primarily for hardcoded mode) ---
-INPUT_VIDEO_PATH = r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 min test - Large FOV.mp4"
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -32,6 +30,11 @@ BYTETRACK_MIN_CONF = 0.1    # Minimum detection confidence for ByteTrack to cons
 BYTETRACK_TRACK_THRESH = 0.35   # Detection confidence threshold for high-confidence matching
 BYTETRACK_MATCH_THRESH = 0.8    # IoU threshold for matching detections to tracks
 BYTETRACK_TRACK_BUFFER_SECONDS = 15 # Seconds to keep a track alive if unmatched after it has stopped being associated with any new detections
+
+
+#*############## Video 1 #################
+# --- Input Settings (primarily for hardcoded mode) ---
+INPUT_VIDEO_PATH = r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 minute test - 4 Way Intersection.mp4"
 
 # --- Line & Zone Definitions ---
 LINE_POINTS = {
@@ -67,6 +70,51 @@ LINE_POINTS = {
     'east':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['east']],
     'west':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['west']],
 }
+#######################
+
+# # *############## Video 2 #################
+# # --- Input Settings (primarily for hardcoded mode) ---
+# INPUT_VIDEO_PATH = r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 min test - Large FOV.mp4"
+
+# # --- Line & Zone Definitions ---
+# LINE_POINTS = {'north': [[699, 529],
+#        [451, 486],
+#        [455, 422],
+#        [610, 455]],
+#        'south': [[ 425,  573],
+#        [ 881,  603],
+#        [1254,  765],
+#        [ 398,  819]],
+#        'west': [[405, 529],
+#        [416, 457],
+#        [152, 394],
+#        [ 49, 368],
+#        [ 51, 472],
+#        [285, 507]],
+#        'east': [[843, 590],
+#        [721, 544],
+#        [717, 536],
+#        [828, 527],
+#        [889, 562],
+#        [909, 590]]}
+
+# FRAME_HEIGHT = MODEL_INPUT_SIZE
+# FRAME_WIDTH = round(MODEL_INPUT_SIZE*(4/3))
+# FRAME_HEIGHT_VIZ = 800
+# FRAME_WIDTH_VIZ = 960
+
+# scale_x = 1
+# scale_y = 1
+
+# LINE_POINTS = {
+#     'north': [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['north']],
+#     'south': [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['south']],
+#     'east':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['east']],
+#     'west':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['west']],
+# }
+# ######################
+
+
 VALID_MOVEMENTS = { 'north': ['south','east','west'], 'south': ['north','east','west'], 'east': ['west','north','south'], 'west': ['east','north','south'] }
 
 # --- Hardware Optimizations ---

@@ -25,6 +25,7 @@ from config import (
 
 # Modules
 from core.utils import debug_print, is_valid_movement, cleanup_memory
+from core.image_processing import enhance_frame_for_detection
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
 from tracking.zone_tracker import ZoneTracker
@@ -436,7 +437,6 @@ class VideoProcessor:
                 try: self.video_write_queue.put(None, timeout=1.0)
                 except queue.Full: pass
 
-
     # --- Core Processing Logic ---
     @torch.no_grad()
     def _preprocess_batch(self, frames_batch_with_metadata): # Expects list of (frame_np, metadata_dict)
@@ -515,6 +515,7 @@ class VideoProcessor:
                 debug_print(f"Preprocess: Frame does not have 3 channels after processing! Shape: {img_rgb_model_sized.shape}. Skipping.")
                 continue
 
+            # img_rgb_model_sized = enhance_frame_for_detection(img_rgb_model_sized, 'medium')
             img_chw = img_rgb_model_sized.transpose(2, 0, 1) # HWC to CHW
             img_chw_contiguous = np.ascontiguousarray(img_chw) # Ensure memory is contiguous
             preprocessed_tensors_list.append(img_chw_contiguous)
