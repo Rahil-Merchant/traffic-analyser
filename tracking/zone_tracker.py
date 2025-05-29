@@ -24,7 +24,6 @@ class ZoneTracker:
 
     def _check_point_in_zone(self, point, zone_polygon):
         if zone_polygon is None or len(zone_polygon) < 3:
-            # print(f"DEBUG ZoneCheck: Invalid polygon received: {zone_polygon}") # Optional debug
             return False
         try:
             # Ensure point is tuple of standard Python ints for pointPolygonTest
