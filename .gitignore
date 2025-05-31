@@ -64,3 +64,4 @@ coverage.xml
 *.mp4
 
 models/weights/*
+output/intermediate

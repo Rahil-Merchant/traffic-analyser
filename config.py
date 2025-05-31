@@ -17,6 +17,77 @@ BASE_OUTPUT_DIR = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\o
 VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
+PIPELINE_CONTROL = {
+    'run_pass1_extraction': True,
+    'run_pass2_path_analysis': True, 
+    'run_pass3_fragment_stitching': True, # For next step
+    'run_pass4_final_report': False,
+}
+
+FILE_PATHS = {
+    'pass1_raw_track_output': os.path.join(BASE_OUTPUT_DIR, "intermediate", "pass1_raw_tracks.parquet"),
+    'pass1_image_patch_output_dir': os.path.join(BASE_OUTPUT_DIR, "intermediate", "image_patches"),
+    'pass2_initial_paths_output': os.path.join(BASE_OUTPUT_DIR, "intermediate", "pass2_initial_paths.parquet"),
+    'pass2_fragmented_tracks_output': os.path.join(BASE_OUTPUT_DIR, "intermediate", "pass2_fragmented_tracks.parquet"),
+    'pass3_stitched_paths_output': os.path.join(BASE_OUTPUT_DIR, "intermediate", "pass3_stitched_paths_and_segments.parquet"),
+    # ...
+}
+
+os.makedirs(os.path.join(BASE_OUTPUT_DIR, "intermediate"), exist_ok=True)
+os.makedirs(FILE_PATHS['pass1_image_patch_output_dir'], exist_ok=True) # Create if saving patches
+
+# --- NEW: Points-of-Interest (PoI) Strategies ---
+# Define how PoIs are calculated for different vehicle classes.
+# Methods can be: 'bottom_center', 'geometric_center', 'leading_edge_horizontal', 'trailing_edge_horizontal', 'leading_edge_vertical', 'trailing_edge_vertical'
+# More complex PoIs might need custom functions later.
+POI_STRATEGIES = {
+    'Light Vehicle': ['bottom_center', 'geometric_center'],
+    'Motorcycle': ['bottom_center', 'geometric_center'],
+    'Minibus Taxi': ['bottom_center', 'geometric_center', 'leading_edge_horizontal'], # Assuming primarily horizontal movement relative to camera
+    'Short Truck': ['bottom_center', 'geometric_center', 'leading_edge_horizontal', 'trailing_edge_horizontal'],
+    'Medium Truck': ['bottom_center', 'geometric_center', 'leading_edge_horizontal', 'trailing_edge_horizontal'],
+    'Long Truck': ['bottom_center', 'geometric_center', 'leading_edge_horizontal', 'trailing_edge_horizontal'],
+    'Bus': ['bottom_center', 'geometric_center', 'leading_edge_horizontal', 'trailing_edge_horizontal'],
+    'Pedestrian': ['bottom_center'], # Or just geometric_center
+    'Cyclist': ['bottom_center', 'geometric_center'],
+    'Animal drawn vehicle': ['bottom_center', 'geometric_center', 'leading_edge_horizontal'],
+    'Person with wheel barrow': ['bottom_center', 'geometric_center'],
+    'default': ['bottom_center', 'geometric_center'] # Fallback
+}
+
+# --- NEW: Re-ID Related (Placeholders for now, Pass 3 will use these) ---
+REID_MODEL_SETTINGS = {
+    'model_path': "C:/path/to/your/vehicle_reid_model.pt", # Or .onnx, .engine etc.
+    'input_size': (256, 128), # Example: (Height, Width)
+    'batch_size': 32,
+    'feature_dim': 512, # Example output embedding size
+    # 'model_type': 'pytorch', # Optional: if you need different loading logic
+    'patch_aggregation_method_reid': 'average_last_k', # 'average_last_k', 'use_best_quality_last_k'
+    'k_frames_for_reid_patch_aggregation': 5,
+}
+
+FRAGMENT_STITCHING_PARAMS = {
+    'max_temporal_gap_seconds_for_reid': 5.0,
+    'max_spatial_distance_pixels_for_reid': 250, # Distance between end_bbox of F1 and start_bbox of F2
+    'min_reid_similarity_stitch': 0.80,         # e.g., Cosine similarity
+    'min_motion_consistency_score_stitch': 0.3, # Optional, if using motion score
+    'stitch_score_weights': {'reid': 0.7, 'motion': 0.3}, # If combining
+    'final_stitch_score_threshold': 0.75, # If combining
+    # Heuristic for motion prediction if needed for spatial distance:
+    'assume_max_avg_speed_pixels_per_sec': 100 # For simple spatial gating
+}
+
+PASS1_SAVE_IMAGE_PATCHES = True # Set to False if you generate Re-ID features directly in Pass 1 later
+
+PATH_ANALYSIS_PARAMS = {
+    'poi_quorum_method': 'min_count',  # or 'percentage'
+    'poi_quorum_value_min_count': 1,   # If min_count, e.g., at least 1 PoI must be in zone
+                                       # For 'percentage', e.g., 0.51 (51% of PoIs)
+    'zone_occupancy_smoothing_window_frames': 5, # e.g., 5 frames smoothing window
+    'min_frames_for_stable_zone_stay': 5,      # e.g., must be in a zone for 5 frames to count as a stay
+}
+
+
 # --- Model Configuration ---
 MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082_960px_bs192_trt.engine"
 NUM_INFERENCE_STREAMS = 1
@@ -161,6 +232,8 @@ GRADIO_SERVER_PORT = 7862
 GRADIO_SHARE = False
 
 # --- Print Confirmation ---
+print(f"--- Configuration Loaded (Refactoring for Multi-Pass) ---")
+print(f"--------------------------------------------------------------------")
 print(f"--- Configuration Loaded (Tuned for Exit Accuracy) ---")
 print(f"Line Definition Mode: {LINE_MODE.upper()}")
 if LINE_MODE == 'hardcoded': print(f"Input Video: {INPUT_VIDEO_PATH}")
@@ -171,5 +244,8 @@ if LINE_MODE == 'hardcoded': print("Using Hardcoded Lines (config.py)")
 else: print("Using Interactive Lines (Gradio)")
 print(f"Target FPS: {TARGET_FPS}, Batch Size: {OPTIMAL_BATCH_SIZE}, Threads: {THREAD_COUNT}")
 print(f"Mixed Precision: {MIXED_PRECISION}, CUDA Streams: {PARALLEL_STREAMS}")
+print(f"Pass 1 Output (Raw Tracks): {FILE_PATHS['pass1_raw_track_output']}")
+if PASS1_SAVE_IMAGE_PATCHES:
+    print(f"Pass 1 Image Patch Dir: {FILE_PATHS['pass1_image_patch_output_dir']}")
 print(f"Detailed Perf Metrics: {ENABLE_DETAILED_PERFORMANCE_METRICS}, Debug Mode: {DEBUG_MODE}")
 print(f"--------------------------------------------------------------------")

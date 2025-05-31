@@ -78,3 +78,37 @@ def get_device():
         print("CUDA not available: Using CPU")
         # Note: TensorRT engines generally require a CUDA-enabled GPU.
     return device
+
+def load_reid_model(reid_config, device):
+    """Loads the Re-Identification model."""
+    model_path = reid_config.get('model_path')
+    model_type = reid_config.get('model_type', 'pytorch') # Default to PyTorch
+
+    print(f"Loading Re-ID model from: {model_path} onto device: {device}")
+    if not model_path or not os.path.exists(model_path):
+        raise FileNotFoundError(f"Re-ID model file not found at '{model_path}'")
+
+    try:
+        if model_type == 'pytorch': # Example for a PyTorch model
+            # This is highly dependent on how your Re-ID model is saved and structured.
+            # Option A: Model is a torch.nn.Module saved with torch.save(model.state_dict(), PATH)
+            # You'd need the model class definition here.
+            # from project.reid.models import YourReIDNet # Assuming you have this
+            # reid_model = YourReIDNet(feature_dim=reid_config.get('feature_dim', 512))
+            # reid_model.load_state_dict(torch.load(model_path, map_location=device))
+            
+            # Option B: Model saved entirely torch.save(model, PATH)
+            reid_model = torch.load(model_path, map_location=device)
+            
+            reid_model.to(device)
+            reid_model.eval() # Set to evaluation mode
+            print("PyTorch Re-ID model loaded successfully.")
+            return reid_model
+        # Add elif for other model types (ONNX, TensorRT for Re-ID if you have them)
+        else:
+            raise ValueError(f"Unsupported Re-ID model type: {model_type}")
+    except Exception as e:
+        print(f"FATAL ERROR loading Re-ID model '{model_path}': {e}")
+        import traceback
+        traceback.print_exc()
+        raise
