@@ -116,7 +116,7 @@ class VideoProcessor:
         img_copy = frame_to_draw_on.copy()
         colors = {'north': (255,0,0), 'south': (0,255,0), 'east': (0,0,255), 'west': (255,0,255)} # BGR
         default_color = (255, 255, 255); temp_color = (0, 255, 255)
-
+        
         # Draw completed polygons
         for direction, points in self.gradio_polygons.items():
             if points and len(points) >= 3:
@@ -150,14 +150,56 @@ class VideoProcessor:
         self.reset_gradio_polygons()
         if video_path is None: return None, "Please upload a video."
         try:
-            cap=cv2.VideoCapture(video_path); ret,frame=cap.read(); cap.release()
+            print("video path:",video_path)
+            cap=cv2.VideoCapture(video_path)
+            ret,frame=cap.read()
+            cap.release()
+            
             if ret:
                 frame = cv2.resize(frame, self.frame_shape)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
                 self.original_frame_for_gradio = frame.copy()
                 drawn_frame = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
                 return drawn_frame, "Video loaded. Select direction and click image to define zone vertices."
             else: return None, "Error: Could not read first frame."
-        except Exception as e: return None, f"Error loading video: {e}"
+        except Exception as e: 
+            print('got an error')
+            return None, f"Error loading video: {e}"
+
+    # def process_video_upload_for_gradio(self, video_paths):
+
+    #     if self.line_mode != 'interactive':
+    #         return None, "Zone definition mode is 'hardcoded'. Drawing disabled."
+    #     print('inside process upload')
+    #     self.reset_gradio_polygons()
+    #     if not video_paths:
+    #         return None, "Please upload at least one video."
+
+    #     self.uploaded_video_paths = video_paths  # Store all videos
+    #     try:
+    #         first_video_path = video_paths[0]
+    #         print(video_paths)
+    #         print(first_video_path)
+    #         cap = cv2.VideoCapture(first_video_path)
+    #         ret, frame = cap.read()
+    #         cap.release()
+
+    #         if ret:
+    #             print('ret success')
+    #             frame = cv2.resize(frame, self.frame_shape)
+    #             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    #             import imutils
+    #             cv2.imshow("frame1",imutils.resize(frame,width=500))
+    #             self.original_frame_for_gradio = frame.copy()
+    #             drawn_frame = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
+    #             return drawn_frame, "First video loaded. Define zones here; they'll apply to all uploaded videos."
+    #         else:
+    #             print('ret fail')
+    #             return None, "Error: Could not read first frame."
+    #     except Exception as e:
+    #         return None, f"Error loading first video: {e}"
+
 
     def set_gradio_polygon_direction(self, direction):
         if self.line_mode != 'interactive': return self.last_drawn_polygons_frame, "Drawing disabled."
@@ -172,9 +214,12 @@ class VideoProcessor:
         return frame_to_show, status
 
     def handle_gradio_polygon_click(self, evt: 'gr.SelectData'):
-        if self.line_mode != 'interactive': return self.last_drawn_polygons_frame, "Drawing disabled."
-        if self.current_gradio_direction is None: return self.last_drawn_polygons_frame, "Select a direction first."
-        if self.original_frame_for_gradio is None: return None, "No video loaded."
+        if self.line_mode != 'interactive': 
+            return self.last_drawn_polygons_frame, "Drawing disabled."
+        if self.current_gradio_direction is None: 
+            return self.last_drawn_polygons_frame, "Select a direction first."
+        if self.original_frame_for_gradio is None: 
+            return None, "No video loaded."
         point = (evt.index[0], evt.index[1])
         self.gradio_temp_points.append(point)
         status = f"Added point {len(self.gradio_temp_points)} for {self.current_gradio_direction.capitalize()}. Click more points or 'Finish Polygon'."
@@ -213,84 +258,92 @@ class VideoProcessor:
         return frame_to_show, status
 
     # --- Video Reading/Writing Threads ---
-    def _get_video_properties(self, video_path):
+    def _get_video_properties(self, video_paths):
         """Gets total frames and original FPS, trying PyVideoReader first if enabled."""
         total_frames = 0
         original_fps = 0.0
 
         if self.actually_use_advanced_reader:
             temp_reader_rs = None
+            total_frames = 0
             try:
                 # For getting properties, no need for device='cuda' or specific resize
-                temp_reader_rs = PyVideoReader(video_path)
-                info = temp_reader_rs.get_info()
-                total_frames = int(info.get('frame_count', 0))
-                fps_str = info.get('fps', '0.0')
-                if fps_str:
-                    try: original_fps = float(fps_str)
-                    except ValueError: pass
-                del temp_reader_rs 
+                for video_path in video_paths:
+                    temp_reader_rs = PyVideoReader(video_path)
+                    info = temp_reader_rs.get_info()
+                    total_frames += int(info.get('frame_count', 0))
+                    fps_str = info.get('fps', '0.0')
+                    if fps_str:
+                        try: original_fps = float(fps_str)
+                        except ValueError: pass
+                    del temp_reader_rs 
             except Exception as e:
                 debug_print(f"PyVideoReader property fetch failed: {e}. Falling back to OpenCV for props.")
-                if temp_reader_rs: del temp_reader_rs
+                if temp_reader_rs: 
+                    del temp_reader_rs
         
         if total_frames <= 0 or original_fps <= 0: # If PyVideoReader failed or wasn't used
+            _total_frames_cv = 0
             cap_check = None
             try:
-                cap_check = cv2.VideoCapture(video_path)
-                if not cap_check.isOpened():
-                    raise FileNotFoundError(f"OpenCV: Cannot open video for properties: {video_path}")
-                
-                _total_frames_cv = int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
-                _original_fps_cv = cap_check.get(cv2.CAP_PROP_FPS)
-                
-                if total_frames <= 0: total_frames = _total_frames_cv
-                if original_fps <= 0: original_fps = _original_fps_cv
+                for video_path in video_paths:
+                    cap_check = cv2.VideoCapture(video_path)
+                    if not cap_check.isOpened():
+                        raise FileNotFoundError(f"OpenCV: Cannot open video for properties: {video_path}")
+                    
+                    _total_frames_cv += int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
+                    _original_fps_cv = cap_check.get(cv2.CAP_PROP_FPS)
+                    
+                    if total_frames <= 0: total_frames = _total_frames_cv
+                    if original_fps <= 0: original_fps = _original_fps_cv
             except Exception as e:
                 print(f"Error getting video properties with OpenCV: {e}")
             finally:
-                if cap_check: cap_check.release()
+                if cap_check: 
+                    cap_check.release()
 
         if original_fps <= 0: original_fps = 30.0 # Final fallback
         if total_frames <= 0:
             print("WARNING: Could not determine total_frames accurately. Progress calculation might be affected.")   
         return total_frames, original_fps
 
-    def _frame_reader_task(self, video_path, original_fps):
+    def _frame_reader_task(self, video_paths, original_fps):
         cap = None
         try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened(): print("ERROR: Reader failed to open video."); self.frame_read_queue.put(None); return
-            frame_interval = max(1, round(original_fps / self.target_fps))
-            frame_count_raw = 0
-            frames_yielded = 0
-            while not self.stop_event.is_set():
-                ret, frame_bgr_orig_size = cap.read() # frame is BGR HWC NumPy array
-                if not ret: 
-                    debug_print("OpenCV Reader: End of video or read error.")
-                    break # End of video or error
-                if frame_count_raw  % frame_interval == 0:
-                    frame_time_seconds = frame_count_raw  / original_fps
-                    # Metadata for OpenCV frames: not RGB, source is opencv
-                    metadata = {'is_rgb': False, 'source': 'opencv'}
-                    try:
-                        # Add frame to queue for processing
-                        self.frame_read_queue.put((frame_bgr_orig_size, frame_count_raw , frame_time_seconds, metadata), block=True, timeout=5.0)
-                        frames_yielded += 1
-                    except queue.Full:
-                        debug_print("Reader queue full, waiting...")
-                        time.sleep(0.1)
-                        if self.stop_event.is_set(): break
-                        try: # Retry put
+            for video_path in video_paths:
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened(): print("ERROR: Reader failed to open video."); self.frame_read_queue.put(None); return
+                frame_interval = max(1, round(original_fps / self.target_fps))
+                frame_count_raw = 0
+                frames_yielded = 0
+                while not self.stop_event.is_set():
+                    ret, frame_bgr_orig_size = cap.read() # frame is BGR HWC NumPy array
+                    if not ret: 
+                        debug_print("OpenCV Reader: End of video or read error.")
+                        break # End of video or error
+                    if frame_count_raw  % frame_interval == 0:
+                        frame_time_seconds = frame_count_raw  / original_fps
+                        # Metadata for OpenCV frames: not RGB, source is opencv
+                        metadata = {'is_rgb': False, 'source': 'opencv'}
+                        try:
+                            # Add frame to queue for processing
                             self.frame_read_queue.put((frame_bgr_orig_size, frame_count_raw , frame_time_seconds, metadata), block=True, timeout=5.0)
                             frames_yielded += 1
-                        except queue.Full: print("ERROR: Reader queue persistently full."); self.stop_event.set(); break
-                    except Exception as q_e: 
-                        debug_print(f"OpenCV Reader: Queue put error: {q_e}")
-                        self.stop_event.set() # Signal main loop
-                        break
-                frame_count_raw  += 1
-            debug_print(f"OpenCV Reader finished. Raw frames read: {frame_count_raw}. Frames yielded to queue: {frames_yielded}.")
+                        except queue.Full:
+                            debug_print("Reader queue full, waiting...")
+                            time.sleep(0.1)
+                            if self.stop_event.is_set(): break
+                            try: # Retry put
+                                self.frame_read_queue.put((frame_bgr_orig_size, frame_count_raw , frame_time_seconds, metadata), block=True, timeout=5.0)
+                                frames_yielded += 1
+                            except queue.Full: print("ERROR: Reader queue persistently full."); self.stop_event.set(); break
+                        except Exception as q_e: 
+                            debug_print(f"OpenCV Reader: Queue put error: {q_e}")
+                            self.stop_event.set() # Signal main loop
+                            break
+                    frame_count_raw  += 1
+                debug_print(f"OpenCV Reader finished. Raw frames read: {frame_count_raw}. Frames yielded to queue: {frames_yielded}.")
+        
         except Exception as e: 
             print(f"FATAL ERROR in _frame_reader_task (OpenCV): {e}")
             import traceback
@@ -306,78 +359,83 @@ class VideoProcessor:
                 except Exception as e_fin:
                     debug_print(f"OpenCV Reader: Error on final None put: {e_fin}")
 
-    def _frame_reader_task_pvr_segmented(self, video_path, original_fps_from_props, total_frames_from_props):
+    def _frame_reader_task_pvr_segmented(self, video_paths, original_fps_from_props, total_frames_from_props):
         """Frame reader using PyVideoReader, decoding in segments, then selecting frames."""
         pvr_instance = None
         try:
             target_dim_model = self.model_input_size_config
             debug_print(f"PVR SegReader: Init PyVideoReader: device='cuda', target_size=({target_dim_model}x{target_dim_model})")
             
-            pvr_instance = PyVideoReader(video_path, device='cuda', 
-                                         resize_shorter_side=target_dim_model,
-                                         resize_longer_side=target_dim_model)
-            
-            frame_interval = max(1, round(original_fps_from_props / self.target_fps))
-            queued_frame_count = 0
-            
             num_segments = math.ceil(total_frames_from_props / self.pvr_decode_segment_size) if total_frames_from_props > 0 else 1
             if total_frames_from_props == 0 : num_segments = 0 # No frames to read
 
-            debug_print(f"PVR SegReader: Video Length={total_frames_from_props} frames, "
-                        f"Segment Size={self.pvr_decode_segment_size}, Num Segments={num_segments}")
-
-            for i in range(num_segments):
-                if self.stop_event.is_set(): break
-
-                segment_start_raw_idx = i * self.pvr_decode_segment_size
-                # For PyVideoReader.decode, end_frame is exclusive
-                segment_end_raw_idx = min((i + 1) * self.pvr_decode_segment_size, total_frames_from_props)
-
-                if segment_start_raw_idx >= segment_end_raw_idx : continue # Segment is empty or invalid
-
-                debug_print(f"PVR SegReader: Decoding segment {i+1}/{num_segments} "
-                            f"(raw frames {segment_start_raw_idx} to {segment_end_raw_idx-1})...")
+            for video_path in video_paths:
+                print('video_path:',video_path)
+                pvr_instance = PyVideoReader(video_path, device='cuda', 
+                                            resize_shorter_side=target_dim_model,
+                                            resize_longer_side=target_dim_model)
                 
-                # Frames are RGB, (model_input_size, model_input_size, 3)
-                segment_frames_np = pvr_instance.decode(start_frame=segment_start_raw_idx, 
-                                                        end_frame=segment_end_raw_idx)
+                frame_interval = max(1, round(original_fps_from_props / self.target_fps))
+                queued_frame_count = 0
 
-                if segment_frames_np is None or segment_frames_np.shape[0] == 0:
-                    debug_print(f"PVR SegReader: Segment {i+1} returned no frames. Video might have ended or error.")
-                    continue # Try next segment if any, or loop will end.
+                debug_print(f"PVR SegReader: Stitched Video Length={total_frames_from_props} frames, "
+                            f"Segment Size={self.pvr_decode_segment_size}, Num Segments={num_segments}")
 
-                # Select frames from this decoded segment based on frame_interval
-                for frame_in_segment_idx in range(segment_frames_np.shape[0]):
+                for i in range(num_segments):
                     if self.stop_event.is_set(): break
 
-                    # This is the original, absolute frame index in the video
-                    current_overall_raw_frame_idx = segment_start_raw_idx + frame_in_segment_idx
+                    segment_start_raw_idx = i * self.pvr_decode_segment_size
+                    print('segment_id:',i)
+                    # For PyVideoReader.decode, end_frame is exclusive
+                    segment_end_raw_idx = min((i + 1) * self.pvr_decode_segment_size, total_frames_from_props)
+
+                    if segment_start_raw_idx >= segment_end_raw_idx :
+                        continue # Segment is empty or invalid
+
+                    debug_print(f"PVR SegReader: Decoding segment {i+1}/{num_segments} "
+                                f"(raw frames {segment_start_raw_idx} to {segment_end_raw_idx-1})...")
                     
-                    if current_overall_raw_frame_idx % frame_interval == 0:
-                        frame_content = segment_frames_np[frame_in_segment_idx]
-                        current_frame_time_sec = current_overall_raw_frame_idx / original_fps_from_props
-                        metadata = {'is_rgb': True, 'source': 'pvr_cuda_segmented'}
+                    # Frames are RGB, (model_input_size, model_input_size, 3)
+                    segment_frames_np = pvr_instance.decode(start_frame=segment_start_raw_idx, 
+                                                            end_frame=segment_end_raw_idx)
+                    # print("segment_frame:",segment_frames_np)
+                
+                    if segment_frames_np is None or segment_frames_np.shape[0] == 0:
+                        debug_print(f"PVR SegReader: Segment {i+1} returned no frames. Video might have ended or error.")
+                        continue # Try next segment if any, or loop will end.
+
+                    # Select frames from this decoded segment based on frame_interval
+                    for frame_in_segment_idx in range(segment_frames_np.shape[0]):
+                        if self.stop_event.is_set(): break
+
+                        # This is the original, absolute frame index in the video
+                        current_overall_raw_frame_idx = segment_start_raw_idx + frame_in_segment_idx
                         
-                        try:
-                            self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
-                                                      block=True, timeout=5.0)
-                            queued_frame_count += 1
-                        except queue.Full:
-                            debug_print("PVR SegReader: Queue full, retrying...")
-                            time.sleep(0.1);
-                            if self.stop_event.is_set(): break
+                        if current_overall_raw_frame_idx % frame_interval == 0:
+                            frame_content = segment_frames_np[frame_in_segment_idx]
+                            current_frame_time_sec = current_overall_raw_frame_idx / original_fps_from_props
+                            metadata = {'is_rgb': True, 'source': 'pvr_cuda_segmented'}
+                            
                             try:
                                 self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
-                                                           block=True, timeout=5.0)
+                                                        block=True, timeout=5.0)
                                 queued_frame_count += 1
-                            except queue.Full: print("ERROR: PVR SegReader queue persistently full."); self.stop_event.set(); break # Stop reader
-                        except Exception as q_e: debug_print(f"PVR SegReader queue put error: {q_e}"); self.stop_event.set(); break
-                
-                # Release segment memory if possible (NumPy array will be dereferenced when loop iterates)
-                del segment_frames_np 
-                gc.collect() # Suggest garbage collection
+                            except queue.Full:
+                                debug_print("PVR SegReader: Queue full, retrying...")
+                                time.sleep(0.1);
+                                if self.stop_event.is_set(): break
+                                try:
+                                    self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
+                                                            block=True, timeout=5.0)
+                                    queued_frame_count += 1
+                                except queue.Full: print("ERROR: PVR SegReader queue persistently full."); self.stop_event.set(); break # Stop reader
+                            except Exception as q_e: debug_print(f"PVR SegReader queue put error: {q_e}"); self.stop_event.set(); break
+                    
+                    # Release segment memory if possible (NumPy array will be dereferenced when loop iterates)
+                    del segment_frames_np 
+                    gc.collect() # Suggest garbage collection
 
-            debug_print(f"PVR SegReader finished. Queued {queued_frame_count} frames.")
+                debug_print(f"PVR SegReader finished. Queued {queued_frame_count} frames.")
 
         except Exception as e:
             print(f"FATAL ERROR in _frame_reader_task_pvr_segmented: {e}")
@@ -810,8 +868,337 @@ class VideoProcessor:
             }
             self.finalized_paths_for_report.append(path_report_entry)
 
+
+    def run_processing_on_all_videos(self, start_date_str, start_time_str, primary_direction):
+        if not self.uploaded_video_paths:
+            return "No videos uploaded."
+
+        if not self.gradio_polygons:
+            return "Zones not defined."
+
+        status_messages = []
+        for idx, video_path in enumerate(self.uploaded_video_paths):
+            msg = f"Processing video {idx+1}/{len(self.uploaded_video_paths)}: {os.path.basename(video_path)}"
+            print(msg)
+            status_messages.append(msg)
+
+            # Call your frame reading and model processing pipeline here
+            try:
+                self.process_video(video_path, start_date_str, start_time_str, primary_direction)
+            except Exception as e:
+                error_msg = f"Error processing {video_path}: {e}"
+                print(error_msg)
+                status_messages.append(error_msg)
+
+        return "\n".join(status_messages)
+
     # --- Main Processing Function ---
-    def process_video(self, video_path, start_date_str, start_time_str, primary_direction):
+    # def process_video(self, video_path, start_date_str, start_time_str, primary_direction):
+    #     if not self.processing_lock.acquire(blocking=False):
+    #         print("Warning: Processing lock already acquired."); return "Processing is already in progress."
+
+    #     self.bytetracker = ByteTrack(
+    #         min_conf=BYTETRACK_MIN_CONF, track_thresh=BYTETRACK_TRACK_THRESH, match_thresh=BYTETRACK_MATCH_THRESH,
+    #         track_buffer=BYTETRACK_TRACK_BUFFER_SECONDS, frame_rate=self.target_fps, per_class=False
+    #     )
+    #     self.current_bytetrack_frame_id = 0
+    #     self.active_track_data.clear()
+    #     self.finalized_paths_for_report = [] # Reset for new video
+
+    #     self.zone_tracker = None
+    #     self.perf = PerformanceTracker(enabled=ENABLE_DETAILED_PERFORMANCE_METRICS)
+    #     self.stop_event = threading.Event()
+    #     self.frame_read_queue = queue.Queue(maxsize=max(self.batch_size * 4, 64))
+    #     self.last_cleanup_time = time.monotonic()
+    #     self.detection_zones_polygons = None
+    #     self.final_output_path = None
+    #     self.writer_thread = None
+    #     self.video_write_queue = None
+
+    #     print(f"--- Starting New Video Processing Run (with ByteTrack for Report Parity) ---")
+
+    #     actual_video_path_to_process = video_path; 
+    #     temp_converted_dav_mp4 = None
+    #     if video_path.lower().endswith(".dav"):
+    #         print(f"Input is .dav: {video_path}. Converting...")
+    #         # TODO - FIX THIS
+    #         converted_path = convert_dav_to_mp4_internal(video_path)
+    #         if converted_path and os.path.exists(converted_path):
+    #             actual_video_path_to_process = converted_path
+    #             temp_converted_dav_mp4 = converted_path
+    #             print(f".dav converted to: {actual_video_path_to_process}")
+    #             time.sleep(0.5) 
+    #         else:
+    #             error_msg = f"Failed to convert .dav file: {video_path}"
+    #             print(error_msg); self.processing_lock.release(); raise RuntimeError(error_msg)
+
+    #     try:
+    #         # --- Zone Definition (UNCHANGED) ---
+    #         self.detection_zones_polygons = None
+    #         if self.line_mode == 'hardcoded':
+    #             if 'LINE_POINTS' not in globals() or not isinstance(LINE_POINTS, dict) or not LINE_POINTS: raise ValueError("Hardcoded: LINE_POINTS missing/empty.")
+    #             valid_polygons_hc = {dir: pts for dir, pts in LINE_POINTS.items() if isinstance(pts, list) and len(pts) >= 3}
+    #             if not valid_polygons_hc: raise ValueError("Hardcoded: No valid polygons in LINE_POINTS.")
+    #             self.detection_zones_polygons = {dir: np.array(pts, dtype=np.int32) for dir, pts in valid_polygons_hc.items()}
+    #         elif self.line_mode == 'interactive':
+    #             if not self.gradio_polygons: raise ValueError("Interactive: No zone polygons defined.")
+    #             valid_polygons = {dir: pts for dir, pts in self.gradio_polygons.items() if pts and len(pts) >= 3}
+    #             if len(valid_polygons) < 1: raise ValueError(f"Interactive: Need >= 1 valid zone. Found {len(valid_polygons)}.")
+    #             self.detection_zones_polygons = {dir: np.array(pts, dtype=np.int32) for dir, pts in valid_polygons.items()}
+    #         else: raise ValueError(f"Invalid LINE_MODE '{self.line_mode}'.")
+    #         if not self.detection_zones_polygons: raise ValueError("Zone polygon data missing for ZoneTracker.")
+    #         self.zone_tracker = ZoneTracker(self.detection_zones_polygons)
+    #         if not self.zone_tracker or not self.zone_tracker.zones: raise RuntimeError("CRITICAL: ZoneTracker failed to initialize.")
+
+    #         if self.model is None:
+    #             effective_model_conf_for_detections = 0.05
+    #             self.model = load_model(MODEL_PATH, self.device, effective_model_conf_for_detections, IOU_THRESHOLD)
+    #         if self.model is None: raise RuntimeError(f"Failed to load model {MODEL_PATH}")
+
+    #         try:
+    #             start_date_dt=datetime.strptime(start_date_str, "%y%m%d"); time_part,ms_part=(start_time_str[:6], start_time_str[6:]) if len(start_time_str)>6 else (start_time_str,"0")
+    #             base_time_dt=datetime.strptime(time_part,"%H%M%S").time(); microseconds_val=int(ms_part.ljust(3,'0'))*1000
+    #             start_time_dt=base_time_dt.replace(microsecond=microseconds_val); start_datetime_obj_global=datetime.combine(start_date_dt.date(), start_time_dt) # Renamed for clarity
+    #             print(f"Video Start Timestamp: {start_datetime_obj_global.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+    #         except ValueError as e_ts: 
+    #             raise ValueError(f"Invalid date/time format: {e_ts}.")
+
+    #         total_frames, original_fps = self._get_video_properties(actual_video_path_to_process)
+    #         print(f"Video Properties: ~{total_frames} frames, {original_fps:.2f} FPS (Original)")
+    #         if total_frames <= 0: raise ValueError("Cannot process video with zero or unreadable total frames.")
+
+    #         # --- Setup I/O Threads (UNCHANGED) ---
+    #         print("Starting I/O threads...")
+    #         reader_args = (actual_video_path_to_process, original_fps, total_frames) if self.actually_use_advanced_reader else (actual_video_path_to_process, original_fps)
+    #         reader_target = self._frame_reader_task_pvr_segmented if self.actually_use_advanced_reader else self._frame_reader_task
+    #         self.reader_thread = threading.Thread(target=reader_target, args=reader_args, daemon=True); self.reader_thread.start()
+    #         if ENABLE_VISUALIZATION:
+    #             os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True); ts_now=datetime.now().strftime("%Y%m%d_%H%M%S")
+    #             output_filename_base_viz=f"output_{os.path.splitext(os.path.basename(actual_video_path_to_process))[0]}_{ts_now}"
+    #             output_path_viz=os.path.join(VIDEO_OUTPUT_DIR, f"{output_filename_base_viz}.mp4")
+    #             self.final_output_path = output_path_viz
+    #             self.video_write_queue = queue.Queue(maxsize=self.batch_size*4)
+    #             self.writer_thread = threading.Thread(target=self._frame_writer_task, args=(output_path_viz,), daemon=True); self.writer_thread.start()
+    #         else: self.video_write_queue = None; self.writer_thread = None; self.final_output_path = None
+            
+    #         # --- Main Loop ---
+    #         # all_event_logs_final is no longer the primary source for excel report data
+    #         frames_processed_count = 0
+    #         frame_interval = max(1, round(original_fps / self.target_fps)) if self.target_fps > 0 and original_fps > 0 else 1
+    #         total_target_frames_for_perf = total_frames // frame_interval if total_frames > 0 else 0
+    #         if self.perf: self.perf.start_processing(total_target_frames_for_perf if total_target_frames_for_perf > 0 else total_frames)
+            
+    #         current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times = [], [], []
+    #         last_prog_print_time = time.monotonic()
+
+    #         while True: # Main processing loop (largely UNCHANGED from previous ByteTrack version)
+    #             try:
+    #                 frame_data_item = self.frame_read_queue.get(timeout=60)
+    #                 if frame_data_item is None: 
+    #                     self.frame_read_queue.task_done()
+    #                     break 
+    #                 if self.perf: self.perf.start_timer('video_read')
+    #                 frame_content_raw, frame_num_raw, frame_time_s, frame_meta = frame_data_item
+    #                 if self.perf: 
+    #                     self.perf.end_timer('video_read')
+    #                 if frame_content_raw is None: 
+    #                     self.frame_read_queue.task_done()
+    #                     continue
+
+    #                 current_batch_frames_metadata.append((frame_content_raw, frame_meta))
+    #                 current_batch_frame_numbers.append(frame_num_raw)
+    #                 current_batch_frame_times.append(frame_time_s)
+
+    #                 if len(current_batch_frames_metadata) >= self.batch_size:
+    #                     batch_proc_start_time = time.monotonic()
+    #                     if self.perf: 
+    #                         self.perf.start_timer('preprocessing')
+    #                     input_batch_tensor_model = self._preprocess_batch(current_batch_frames_metadata)
+    #                     self.perf.end_timer('preprocessing')
+
+    #                     if input_batch_tensor_model is None or input_batch_tensor_model.nelement() == 0:
+    #                         current_batch_frames_metadata.clear(); current_batch_frame_numbers.clear(); current_batch_frame_times.clear()
+    #                         for _i in range(len(current_batch_frames_metadata)): self.frame_read_queue.task_done() # Mark done if skipped
+    #                         continue
+                        
+    #                     with torch.no_grad():  # Ensure no_grad is always active for inference
+    #                         if self.device == 'cuda' and self.streams:
+    #                             current_stream = self.streams[self.current_stream_index % len(self.streams)]
+    #                             self.current_stream_index += 1
+    #                             with torch.cuda.stream(current_stream):
+    #                                 with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
+    #                                     if self.perf and self.perf.start_event:
+    #                                         self.perf.start_event.record(stream=current_stream)
+    #                                     yolo_results_batch = self.model(input_batch_tensor_model, verbose=False)
+    #                                     if self.perf and self.perf.end_event:
+    #                                         self.perf.end_event.record(stream=current_stream)
+    #                             # Consider if synchronization is truly needed here or can be deferred/more targeted.
+    #                             # For now, keeping it to ensure results are ready for CPU-based _process_inference_results
+    #                             if current_stream:
+    #                                 current_stream.synchronize() # This makes the batch processing serial at this point.
+    #                         else: # CPU or no streams
+    #                             with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')): # AMP on CPU has little to no effect
+    #                                 yolo_results_batch = self.model(input_batch_tensor_model, verbose=False)
+
+    #                     if self.perf and self.perf.start_event and self.perf.end_event and self.device == 'cuda' and self.streams: # Check if events were recorded
+    #                         self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
+
+    #                     # _process_inference_results now appends to self.finalized_paths_for_report internally
+    #                     _, processed_frames_for_viz = self._process_inference_results(
+    #                         yolo_results_batch, current_batch_frames_metadata, current_batch_frame_numbers, 
+    #                         current_batch_frame_times, start_datetime_obj_global
+    #                     )
+    #                     # all_event_logs_final.extend(batch_event_log_output) # Not primary for report
+    #                     if self.perf: self.perf.record_detection(sum(len(r.boxes) for r in yolo_results_batch if hasattr(r,'boxes') and r.boxes))
+
+    #                     if ENABLE_VISUALIZATION and self.video_write_queue:
+    #                         if self.perf: 
+    #                             self.perf.start_timer('video_write')
+    #                         for pf_viz in processed_frames_for_viz:
+    #                             if pf_viz is not None:
+    #                                 try: 
+    #                                     self.video_write_queue.put(pf_viz, block=True, timeout=2.0)
+    #                                 except queue.Full: 
+    #                                     print("WARN: Video writer queue full.")
+    #                         if self.perf: 
+    #                             self.perf.end_timer('video_write')
+
+    #                     batch_proc_duration = time.monotonic() - batch_proc_start_time
+    #                     frames_in_this_batch = len(current_batch_frames_metadata)
+    #                     frames_processed_count += frames_in_this_batch
+    #                     if self.perf: self.perf.record_batch_processed(frames_in_this_batch, batch_proc_duration); self.perf.sample_system_metrics()
+                        
+    #                     current_monotonic_time = time.monotonic()
+    #                     if current_monotonic_time - self.last_cleanup_time > MEMORY_CLEANUP_INTERVAL:
+    #                         if self.perf: self.perf.start_timer('memory_cleanup')
+    #                         last_frame_time_sec_in_batch = current_batch_frame_times[-1] if current_batch_frame_times else 0
+    #                         cleanup_tracking_data(self, last_frame_time_sec_in_batch); cleanup_memory()
+    #                         self.last_cleanup_time = current_monotonic_time
+    #                         if self.perf: self.perf.end_timer('memory_cleanup')
+
+    #                     if self.perf and (current_monotonic_time - last_prog_print_time > 1.0):
+    #                         prog_stats=self.perf.get_progress()
+    #                         active_app_tracks = sum(1 for ad in self.active_track_data.values() if ad['status'] == 'active')
+    #                         print(f"\rProgress:{prog_stats['percent']:.1f}%|FPS:{prog_stats['fps']:.1f}|Active(App):{active_app_tracks}|ETA:{prog_stats['eta']} ", end="")
+    #                         last_prog_print_time = current_monotonic_time
+
+    #                     current_batch_frames_metadata.clear(); current_batch_frame_numbers.clear(); current_batch_frame_times.clear()
+    #                     del input_batch_tensor_model, yolo_results_batch; cleanup_memory()
+                    
+    #                 self.frame_read_queue.task_done()
+    #             except queue.Empty: 
+    #                 if self.stop_event.is_set() and (self.frame_read_queue is None or self.frame_read_queue.empty()): break
+    #                 continue 
+    #             except Exception as e_loop: print(f"\nERROR during processing loop: {e_loop}"); import traceback; traceback.print_exc(); self.stop_event.set(); break
+            
+    #         if current_batch_frames_metadata: # Process Final Batch (UNCHANGED from previous ByteTrack version)
+    #             print("\nProcessing final batch...")
+    #             batch_proc_start_time_final=time.monotonic()
+    #             if self.perf: self.perf.start_timer('preprocessing'); input_batch_final=self._preprocess_batch(current_batch_frames_metadata); self.perf.end_timer('preprocessing')
+    #             if input_batch_final is not None and input_batch_final.nelement() > 0:
+    #                 yolo_results_final=None; current_stream_final=None
+    #                 if self.device=='cuda' and self.streams: current_stream_final=self.streams[self.current_stream_index%len(self.streams)]; self.current_stream_index+=1
+    #                 with torch.cuda.stream(current_stream_final) if current_stream_final else torch.no_grad():
+    #                     with torch.amp.autocast(device_type=self.device,enabled=MIXED_PRECISION and self.device=='cuda'):
+    #                        if self.perf and self.perf.start_event: self.perf.start_event.record(stream=current_stream_final)
+    #                        yolo_results_final=self.model(input_batch_final,verbose=False)
+    #                        if self.perf and self.perf.end_event: self.perf.end_event.record(stream=current_stream_final)
+    #                     if current_stream_final: current_stream_final.synchronize()
+    #                     if self.perf and self.perf.start_event and self.perf.end_event: self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
+    #                 _, processed_frames_final_viz = self._process_inference_results(yolo_results_final, current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times, start_datetime_obj_global)
+    #                 # all_event_logs_final.extend(batch_log_final) # Not primary for report
+    #                 if ENABLE_VISUALIZATION and self.video_write_queue:
+    #                     if self.perf: 
+    #                         self.perf.start_timer('video_write')
+    #                     for pf_final_viz in processed_frames_final_viz:
+    #                         if pf_final_viz is not None:
+    #                             try: 
+    #                                 self.video_write_queue.put(pf_final_viz, block=True, timeout=2.0)
+    #                             except queue.Full:
+    #                                 print("WARN: Vid writer Q full (final batch).")
+    #                     if self.perf: self.perf.end_timer('video_write')
+    #                 batch_proc_duration_final=time.monotonic()-batch_proc_start_time_final
+    #                 frames_in_final_batch = len(current_batch_frames_metadata)
+    #                 frames_processed_count+=frames_in_final_batch
+    #                 if self.perf: self.perf.record_batch_processed(frames_in_final_batch, batch_proc_duration_final)
+    #                 del input_batch_final, yolo_results_final; cleanup_memory()
+    #         print("\nVideo processing loop finished.")
+
+    #         if self.active_track_data: # Force finalize remaining tracks
+    #             print(f"Finalizing {sum(1 for d in self.active_track_data.values() if d['status'] == 'active')} remaining app-level active tracks...")
+    #             last_ts_overall = start_datetime_obj_global + timedelta(seconds=current_batch_frame_times[-1]) if current_batch_frame_times else start_datetime_obj_global
+                
+    #             with self.tracker_lock:
+    #                 for track_id_force_end, data_force_end in list(self.active_track_data.items()):
+    #                     if data_force_end['status'] == 'active':
+    #                         time_in_int_at_end = (last_ts_overall - data_force_end['entry_time']).total_seconds()
+    #                         self._add_to_finalized_paths(track_id_force_end, data_force_end, 'forced_exit', 'FORCED_EXIT', last_ts_overall, time_in_int_at_end)
+    #                         if self.perf: self.perf.record_vehicle_exit('forced_exit')
+    #                 self.active_track_data.clear()
+
+    #         print("Signaling threads..."); self.stop_event.set() # Rest of thread cleanup (UNCHANGED)
+    #         if ENABLE_VISUALIZATION and self.video_write_queue:
+    #             try: self.video_write_queue.put(None, timeout=5.0)
+    #             except queue.Full: print("WARN: Could not signal writer queue (full).")
+    #         if self.frame_read_queue:
+    #             try: self.frame_read_queue.put_nowait(None)
+    #             except queue.Full: pass
+    #         print("Waiting for threads..."); t_wait_start=time.monotonic()
+    #         if self.writer_thread and self.writer_thread.is_alive():
+    #             self.writer_thread.join(timeout=30)
+    #         if self.reader_thread and self.reader_thread.is_alive(): 
+    #             self.reader_thread.join(timeout=5)
+    #         print(f"Threads joined/timed out in {time.monotonic()-t_wait_start:.2f}s")
+
+    #         if self.perf: 
+    #             self.perf.end_processing()
+    #             self.perf.print_summary()
+    #         total_time_taken_final=self.perf.total_time if self.perf else 0.0
+    #         final_fps_overall=frames_processed_count/total_time_taken_final if total_time_taken_final>0 else 0.0
+            
+    #         completed_paths_count_valid_excel = sum(1 for p in self.finalized_paths_for_report if p['status'] == 'exited')
+
+    #         excel_path_result = create_excel_report(
+    #             completed_paths_data=self.finalized_paths_for_report, # Use the new list
+    #             start_datetime=start_datetime_obj_global, 
+    #             primary_direction=primary_direction, 
+    #             video_path=actual_video_path_to_process
+    #         )
+    #         if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: visualize_performance(self.perf)
+
+    #         result_msg_final=f"✅ Processing completed (ByteTrack, Report Parity).\n" # Rest of result message (UNCHANGED)
+    #         if ENABLE_VISUALIZATION:
+    #             if self.final_output_path and "ERROR" not in self.final_output_path: result_msg_final+=f"Output video: '{self.final_output_path}'.\n"
+    #             elif self.final_output_path and "ERROR" in self.final_output_path: result_msg_final+=f"Output video generation FAILED: {self.final_output_path}.\n"
+    #             else: result_msg_final+=f"Output video status unknown.\n"
+    #         if excel_path_result: result_msg_final+=f"Excel report: {excel_path_result}\n"
+    #         if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: result_msg_final+=f"Perf charts: 'performance_charts/'\n"
+    #         result_msg_final+=f"\n--- Summary Stats ---\nSTAT_FRAMES_PROCESSED={frames_processed_count}\nSTAT_TIME_SECONDS={total_time_taken_final:.2f}\nSTAT_FPS={final_fps_overall:.2f}\nSTAT_COMPLETED_PATHS={completed_paths_count_valid_excel}\n--- End Stats ---"
+    #         return result_msg_final
+
+    #     except (ValueError, RuntimeError, FileNotFoundError, Exception) as e_proc: # Final error handling (UNCHANGED)
+    #         print(f"\nFATAL ERROR during setup or processing: {e_proc}")
+    #         import traceback; traceback.print_exc()
+    #         if hasattr(self, 'stop_event') and self.stop_event: self.stop_event.set()
+    #         return f"❌ Error: {e_proc}"
+    #     finally: # Final cleanup (UNCHANGED)
+    #         try:
+    #             if hasattr(self, 'reader_thread') and self.reader_thread and self.reader_thread.is_alive(): self.reader_thread.join(timeout=1)
+    #             if hasattr(self, 'writer_thread') and self.writer_thread and self.writer_thread.is_alive(): self.writer_thread.join(timeout=1)
+    #         except Exception as join_e: print(f"Error joining threads: {join_e}")
+    #         if temp_converted_dav_mp4:
+    #             try: debug_print(f"Cleaning up temp DAV: {temp_converted_dav_mp4}"); os.remove(temp_converted_dav_mp4)
+    #             except OSError as e_del_dav: debug_print(f"Error deleting temp DAV: {e_del_dav}")
+    #         self.model=None; self.zone_tracker=None; self.perf=None; self.detection_zones_polygons=None
+    #         self.frame_read_queue=None; self.video_write_queue=None; self.reader_thread=None; self.writer_thread=None; self.stop_event=None
+    #         self.final_output_path = None; self.active_track_data.clear(); self.finalized_paths_for_report.clear()
+    #         cleanup_memory()
+    #         if self.processing_lock.locked():
+    #             try: self.processing_lock.release(); print("Processing finished, lock released.")
+    #             except RuntimeError as release_err: print(f"Warn: Error releasing lock: {release_err}")
+    #         else: print("Processing finished (lock not held or already released).")
+
+    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction):
         if not self.processing_lock.acquire(blocking=False):
             print("Warning: Processing lock already acquired."); return "Processing is already in progress."
 
@@ -835,19 +1222,23 @@ class VideoProcessor:
 
         print(f"--- Starting New Video Processing Run (with ByteTrack for Report Parity) ---")
 
-        actual_video_path_to_process = video_path; temp_converted_dav_mp4 = None
-        if video_path.lower().endswith(".dav"):
-            print(f"Input is .dav: {video_path}. Converting...")
-            # TODO - FIX THIS
-            converted_path = convert_dav_to_mp4_internal(video_path)
-            if converted_path and os.path.exists(converted_path):
-                actual_video_path_to_process = converted_path
-                temp_converted_dav_mp4 = converted_path
-                print(f".dav converted to: {actual_video_path_to_process}")
-                time.sleep(0.5) 
+        # actual_video_paths_to_process = video_path;
+        actual_video_path_to_process = [] 
+        temp_converted_dav_mp4 = []
+        for video_path in video_paths:
+            if video_path.lower().endswith(".dav"):
+                print(f"Input is .dav: {video_path}. Converting...")
+                converted_path = convert_dav_to_mp4_internal(video_path)
+                if converted_path and os.path.exists(converted_path):
+                    actual_video_path_to_process.append(converted_path)
+                    temp_converted_dav_mp4.append(converted_path)
+                    print(f".dav converted to: {actual_video_path_to_process}")
+                    time.sleep(0.5) 
+                else:
+                    error_msg = f"Failed to convert .dav file: {video_path}"
+                    print(error_msg); self.processing_lock.release(); raise RuntimeError(error_msg)
             else:
-                error_msg = f"Failed to convert .dav file: {video_path}"
-                print(error_msg); self.processing_lock.release(); raise RuntimeError(error_msg)
+                actual_video_path_to_process.append(video_path)
 
         try:
             # --- Zone Definition (UNCHANGED) ---
@@ -877,7 +1268,8 @@ class VideoProcessor:
                 base_time_dt=datetime.strptime(time_part,"%H%M%S").time(); microseconds_val=int(ms_part.ljust(3,'0'))*1000
                 start_time_dt=base_time_dt.replace(microsecond=microseconds_val); start_datetime_obj_global=datetime.combine(start_date_dt.date(), start_time_dt) # Renamed for clarity
                 print(f"Video Start Timestamp: {start_datetime_obj_global.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
-            except ValueError as e_ts: raise ValueError(f"Invalid date/time format: {e_ts}.")
+            except ValueError as e_ts: 
+                raise ValueError(f"Invalid date/time format: {e_ts}.")
 
             total_frames, original_fps = self._get_video_properties(actual_video_path_to_process)
             print(f"Video Properties: ~{total_frames} frames, {original_fps:.2f} FPS (Original)")
@@ -887,10 +1279,13 @@ class VideoProcessor:
             print("Starting I/O threads...")
             reader_args = (actual_video_path_to_process, original_fps, total_frames) if self.actually_use_advanced_reader else (actual_video_path_to_process, original_fps)
             reader_target = self._frame_reader_task_pvr_segmented if self.actually_use_advanced_reader else self._frame_reader_task
+            # reader_args = (actual_video_path_to_process, original_fps)
+            # reader_target = self._frame_reader_task
             self.reader_thread = threading.Thread(target=reader_target, args=reader_args, daemon=True); self.reader_thread.start()
             if ENABLE_VISUALIZATION:
+                
                 os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True); ts_now=datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename_base_viz=f"output_{os.path.splitext(os.path.basename(actual_video_path_to_process))[0]}_{ts_now}"
+                output_filename_base_viz=f"output_{os.path.splitext(os.path.basename(actual_video_path_to_process[0]))[0]}_{ts_now}"
                 output_path_viz=os.path.join(VIDEO_OUTPUT_DIR, f"{output_filename_base_viz}.mp4")
                 self.final_output_path = output_path_viz
                 self.video_write_queue = queue.Queue(maxsize=self.batch_size*4)
@@ -905,16 +1300,21 @@ class VideoProcessor:
             if self.perf: self.perf.start_processing(total_target_frames_for_perf if total_target_frames_for_perf > 0 else total_frames)
             
             current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times = [], [], []
-            last_prog_print_time = time.monotonic();
+            last_prog_print_time = time.monotonic()
 
             while True: # Main processing loop (largely UNCHANGED from previous ByteTrack version)
                 try:
                     frame_data_item = self.frame_read_queue.get(timeout=60)
-                    if frame_data_item is None: self.frame_read_queue.task_done(); break 
+                    if frame_data_item is None: 
+                        self.frame_read_queue.task_done()
+                        break 
                     if self.perf: self.perf.start_timer('video_read')
                     frame_content_raw, frame_num_raw, frame_time_s, frame_meta = frame_data_item
-                    if self.perf: self.perf.end_timer('video_read')
-                    if frame_content_raw is None: self.frame_read_queue.task_done(); continue
+                    if self.perf: 
+                        self.perf.end_timer('video_read')
+                    if frame_content_raw is None: 
+                        self.frame_read_queue.task_done()
+                        continue
 
                     current_batch_frames_metadata.append((frame_content_raw, frame_meta))
                     current_batch_frame_numbers.append(frame_num_raw)
@@ -922,7 +1322,8 @@ class VideoProcessor:
 
                     if len(current_batch_frames_metadata) >= self.batch_size:
                         batch_proc_start_time = time.monotonic()
-                        if self.perf: self.perf.start_timer('preprocessing')
+                        if self.perf: 
+                            self.perf.start_timer('preprocessing')
                         input_batch_tensor_model = self._preprocess_batch(current_batch_frames_metadata)
                         self.perf.end_timer('preprocessing')
 
@@ -962,12 +1363,16 @@ class VideoProcessor:
                         if self.perf: self.perf.record_detection(sum(len(r.boxes) for r in yolo_results_batch if hasattr(r,'boxes') and r.boxes))
 
                         if ENABLE_VISUALIZATION and self.video_write_queue:
-                            if self.perf: self.perf.start_timer('video_write')
+                            if self.perf: 
+                                self.perf.start_timer('video_write')
                             for pf_viz in processed_frames_for_viz:
                                 if pf_viz is not None:
-                                    try: self.video_write_queue.put(pf_viz, block=True, timeout=2.0)
-                                    except queue.Full: print("WARN: Video writer queue full.")
-                            if self.perf: self.perf.end_timer('video_write')
+                                    try: 
+                                        self.video_write_queue.put(pf_viz, block=True, timeout=2.0)
+                                    except queue.Full: 
+                                        print("WARN: Video writer queue full.")
+                            if self.perf: 
+                                self.perf.end_timer('video_write')
 
                         batch_proc_duration = time.monotonic() - batch_proc_start_time
                         frames_in_this_batch = len(current_batch_frames_metadata)
@@ -1014,11 +1419,14 @@ class VideoProcessor:
                     _, processed_frames_final_viz = self._process_inference_results(yolo_results_final, current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times, start_datetime_obj_global)
                     # all_event_logs_final.extend(batch_log_final) # Not primary for report
                     if ENABLE_VISUALIZATION and self.video_write_queue:
-                        if self.perf: self.perf.start_timer('video_write');
+                        if self.perf: 
+                            self.perf.start_timer('video_write')
                         for pf_final_viz in processed_frames_final_viz:
                             if pf_final_viz is not None:
-                                try: self.video_write_queue.put(pf_final_viz, block=True, timeout=2.0)
-                                except queue.Full: print("WARN: Vid writer Q full (final batch).")
+                                try: 
+                                    self.video_write_queue.put(pf_final_viz, block=True, timeout=2.0)
+                                except queue.Full:
+                                    print("WARN: Vid writer Q full (final batch).")
                         if self.perf: self.perf.end_timer('video_write')
                     batch_proc_duration_final=time.monotonic()-batch_proc_start_time_final
                     frames_in_final_batch = len(current_batch_frames_metadata)
@@ -1047,11 +1455,15 @@ class VideoProcessor:
                 try: self.frame_read_queue.put_nowait(None)
                 except queue.Full: pass
             print("Waiting for threads..."); t_wait_start=time.monotonic()
-            if self.writer_thread and self.writer_thread.is_alive(): self.writer_thread.join(timeout=30)
-            if self.reader_thread and self.reader_thread.is_alive(): self.reader_thread.join(timeout=5)
+            if self.writer_thread and self.writer_thread.is_alive():
+                self.writer_thread.join(timeout=30)
+            if self.reader_thread and self.reader_thread.is_alive(): 
+                self.reader_thread.join(timeout=5)
             print(f"Threads joined/timed out in {time.monotonic()-t_wait_start:.2f}s")
 
-            if self.perf: self.perf.end_processing(); self.perf.print_summary()
+            if self.perf: 
+                self.perf.end_processing()
+                self.perf.print_summary()
             total_time_taken_final=self.perf.total_time if self.perf else 0.0
             final_fps_overall=frames_processed_count/total_time_taken_final if total_time_taken_final>0 else 0.0
             
@@ -1061,7 +1473,7 @@ class VideoProcessor:
                 completed_paths_data=self.finalized_paths_for_report, # Use the new list
                 start_datetime=start_datetime_obj_global, 
                 primary_direction=primary_direction, 
-                video_path=actual_video_path_to_process
+                video_path=actual_video_path_to_process[0]
             )
             if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: visualize_performance(self.perf)
 
