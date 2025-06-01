@@ -154,14 +154,22 @@ class VideoProcessor:
         self.reset_gradio_polygons()
         if video_path is None: return None, "Please upload a video."
         try:
-            cap=cv2.VideoCapture(video_path); ret,frame=cap.read(); cap.release()
+            print("video path:",video_path)
+            cap=cv2.VideoCapture(video_path)
+            ret,frame=cap.read()
+            cap.release()
+            
             if ret:
                 frame = cv2.resize(frame, self.frame_shape)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
                 self.original_frame_for_gradio = frame.copy()
                 drawn_frame = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
                 return drawn_frame, "Video loaded. Select direction and click image to define zone vertices."
             else: return None, "Error: Could not read first frame."
-        except Exception as e: return None, f"Error loading video: {e}"
+        except Exception as e: 
+            print(f"Error loading video: {e}")
+            return None, f"Error loading video: {e}"
 
     def set_gradio_polygon_direction(self, direction):
         if self.line_mode != 'interactive': return self.last_drawn_polygons_frame, "Drawing disabled."
@@ -217,84 +225,92 @@ class VideoProcessor:
         return frame_to_show, status
 
     # --- Video Reading/Writing Threads ---
-    def _get_video_properties(self, video_path):
+    def _get_video_properties(self, video_paths):
         """Gets total frames and original FPS, trying PyVideoReader first if enabled."""
         total_frames = 0
         original_fps = 0.0
 
         if self.actually_use_advanced_reader:
             temp_reader_rs = None
+            total_frames = 0
             try:
                 # For getting properties, no need for device='cuda' or specific resize
-                temp_reader_rs = PyVideoReader(video_path)
-                info = temp_reader_rs.get_info()
-                total_frames = int(info.get('frame_count', 0))
-                fps_str = info.get('fps', '0.0')
-                if fps_str:
-                    try: original_fps = float(fps_str)
-                    except ValueError: pass
-                del temp_reader_rs 
+                for video_path in video_paths:
+                    temp_reader_rs = PyVideoReader(video_path)
+                    info = temp_reader_rs.get_info()
+                    total_frames += int(info.get('frame_count', 0))
+                    fps_str = info.get('fps', '0.0')
+                    if fps_str:
+                        try: original_fps = float(fps_str)
+                        except ValueError: pass
+                    del temp_reader_rs 
             except Exception as e:
                 debug_print(f"PyVideoReader property fetch failed: {e}. Falling back to OpenCV for props.")
-                if temp_reader_rs: del temp_reader_rs
+                if temp_reader_rs: 
+                    del temp_reader_rs
         
         if total_frames <= 0 or original_fps <= 0: # If PyVideoReader failed or wasn't used
+            _total_frames_cv = 0
             cap_check = None
             try:
-                cap_check = cv2.VideoCapture(video_path)
-                if not cap_check.isOpened():
-                    raise FileNotFoundError(f"OpenCV: Cannot open video for properties: {video_path}")
-                
-                _total_frames_cv = int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
-                _original_fps_cv = cap_check.get(cv2.CAP_PROP_FPS)
-                
-                if total_frames <= 0: total_frames = _total_frames_cv
-                if original_fps <= 0: original_fps = _original_fps_cv
+                for video_path in video_paths:
+                    cap_check = cv2.VideoCapture(video_path)
+                    if not cap_check.isOpened():
+                        raise FileNotFoundError(f"OpenCV: Cannot open video for properties: {video_path}")
+                    
+                    _total_frames_cv += int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
+                    _original_fps_cv = cap_check.get(cv2.CAP_PROP_FPS)
+                    
+                    if total_frames <= 0: total_frames = _total_frames_cv
+                    if original_fps <= 0: original_fps = _original_fps_cv
             except Exception as e:
                 print(f"Error getting video properties with OpenCV: {e}")
             finally:
-                if cap_check: cap_check.release()
+                if cap_check: 
+                    cap_check.release()
 
         if original_fps <= 0: original_fps = 30.0 # Final fallback
         if total_frames <= 0:
             print("WARNING: Could not determine total_frames accurately. Progress calculation might be affected.")   
         return total_frames, original_fps
 
-    def _frame_reader_task(self, video_path, original_fps):
+    def _frame_reader_task(self, video_paths, original_fps):
         cap = None
         try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened(): print("ERROR: Reader failed to open video."); self.frame_read_queue.put(None); return
-            frame_interval = max(1, round(original_fps / self.target_fps))
-            frame_count_raw = 0
-            frames_yielded = 0
-            while not self.stop_event.is_set():
-                ret, frame_bgr_orig_size = cap.read() # frame is BGR HWC NumPy array
-                if not ret: 
-                    debug_print("OpenCV Reader: End of video or read error.")
-                    break # End of video or error
-                if frame_count_raw  % frame_interval == 0:
-                    frame_time_seconds = frame_count_raw  / original_fps
-                    # Metadata for OpenCV frames: not RGB, source is opencv
-                    metadata = {'is_rgb': False, 'source': 'opencv'}
-                    try:
-                        # Add frame to queue for processing
-                        self.frame_read_queue.put((frame_bgr_orig_size, frame_count_raw , frame_time_seconds, metadata), block=True, timeout=5.0)
-                        frames_yielded += 1
-                    except queue.Full:
-                        debug_print("Reader queue full, waiting...")
-                        time.sleep(0.1)
-                        if self.stop_event.is_set(): break
-                        try: # Retry put
+            for video_path in video_paths:
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened(): print("ERROR: Reader failed to open video."); self.frame_read_queue.put(None); return
+                frame_interval = max(1, round(original_fps / self.target_fps))
+                frame_count_raw = 0
+                frames_yielded = 0
+                while not self.stop_event.is_set():
+                    ret, frame_bgr_orig_size = cap.read() # frame is BGR HWC NumPy array
+                    if not ret: 
+                        debug_print("OpenCV Reader: End of video or read error.")
+                        break # End of video or error
+                    if frame_count_raw  % frame_interval == 0:
+                        frame_time_seconds = frame_count_raw  / original_fps
+                        # Metadata for OpenCV frames: not RGB, source is opencv
+                        metadata = {'is_rgb': False, 'source': 'opencv'}
+                        try:
+                            # Add frame to queue for processing
                             self.frame_read_queue.put((frame_bgr_orig_size, frame_count_raw , frame_time_seconds, metadata), block=True, timeout=5.0)
                             frames_yielded += 1
-                        except queue.Full: print("ERROR: Reader queue persistently full."); self.stop_event.set(); break
-                    except Exception as q_e: 
-                        debug_print(f"OpenCV Reader: Queue put error: {q_e}")
-                        self.stop_event.set() # Signal main loop
-                        break
-                frame_count_raw  += 1
-            debug_print(f"OpenCV Reader finished. Raw frames read: {frame_count_raw}. Frames yielded to queue: {frames_yielded}.")
+                        except queue.Full:
+                            debug_print("Reader queue full, waiting...")
+                            time.sleep(0.1)
+                            if self.stop_event.is_set(): break
+                            try: # Retry put
+                                self.frame_read_queue.put((frame_bgr_orig_size, frame_count_raw , frame_time_seconds, metadata), block=True, timeout=5.0)
+                                frames_yielded += 1
+                            except queue.Full: print("ERROR: Reader queue persistently full."); self.stop_event.set(); break
+                        except Exception as q_e: 
+                            debug_print(f"OpenCV Reader: Queue put error: {q_e}")
+                            self.stop_event.set() # Signal main loop
+                            break
+                    frame_count_raw  += 1
+                debug_print(f"OpenCV Reader finished. Raw frames read: {frame_count_raw}. Frames yielded to queue: {frames_yielded}.")
+        
         except Exception as e: 
             print(f"FATAL ERROR in _frame_reader_task (OpenCV): {e}")
             import traceback
@@ -310,78 +326,83 @@ class VideoProcessor:
                 except Exception as e_fin:
                     debug_print(f"OpenCV Reader: Error on final None put: {e_fin}")
 
-    def _frame_reader_task_pvr_segmented(self, video_path, original_fps_from_props, total_frames_from_props):
+    def _frame_reader_task_pvr_segmented(self, video_paths, original_fps_from_props, total_frames_from_props):
         """Frame reader using PyVideoReader, decoding in segments, then selecting frames."""
         pvr_instance = None
         try:
             target_dim_model = self.model_input_size_config
             debug_print(f"PVR SegReader: Init PyVideoReader: device='cuda', target_size=({target_dim_model}x{target_dim_model})")
             
-            pvr_instance = PyVideoReader(video_path, device='cuda', 
-                                         resize_shorter_side=target_dim_model,
-                                         resize_longer_side=target_dim_model)
-            
-            frame_interval = max(1, round(original_fps_from_props / self.target_fps))
-            queued_frame_count = 0
-            
             num_segments = math.ceil(total_frames_from_props / self.pvr_decode_segment_size) if total_frames_from_props > 0 else 1
             if total_frames_from_props == 0 : num_segments = 0 # No frames to read
 
-            debug_print(f"PVR SegReader: Video Length={total_frames_from_props} frames, "
-                        f"Segment Size={self.pvr_decode_segment_size}, Num Segments={num_segments}")
-
-            for i in range(num_segments):
-                if self.stop_event.is_set(): break
-
-                segment_start_raw_idx = i * self.pvr_decode_segment_size
-                # For PyVideoReader.decode, end_frame is exclusive
-                segment_end_raw_idx = min((i + 1) * self.pvr_decode_segment_size, total_frames_from_props)
-
-                if segment_start_raw_idx >= segment_end_raw_idx : continue # Segment is empty or invalid
-
-                debug_print(f"PVR SegReader: Decoding segment {i+1}/{num_segments} "
-                            f"(raw frames {segment_start_raw_idx} to {segment_end_raw_idx-1})...")
+            for video_path in video_paths:
+                print('video_path:',video_path)
+                pvr_instance = PyVideoReader(video_path, device='cuda', 
+                                            resize_shorter_side=target_dim_model,
+                                            resize_longer_side=target_dim_model)
                 
-                # Frames are RGB, (model_input_size, model_input_size, 3)
-                segment_frames_np = pvr_instance.decode(start_frame=segment_start_raw_idx, 
-                                                        end_frame=segment_end_raw_idx)
+                frame_interval = max(1, round(original_fps_from_props / self.target_fps))
+                queued_frame_count = 0
 
-                if segment_frames_np is None or segment_frames_np.shape[0] == 0:
-                    debug_print(f"PVR SegReader: Segment {i+1} returned no frames. Video might have ended or error.")
-                    continue # Try next segment if any, or loop will end.
+                debug_print(f"PVR SegReader: Stitched Video Length={total_frames_from_props} frames, "
+                            f"Segment Size={self.pvr_decode_segment_size}, Num Segments={num_segments}")
 
-                # Select frames from this decoded segment based on frame_interval
-                for frame_in_segment_idx in range(segment_frames_np.shape[0]):
+                for i in range(num_segments):
                     if self.stop_event.is_set(): break
 
-                    # This is the original, absolute frame index in the video
-                    current_overall_raw_frame_idx = segment_start_raw_idx + frame_in_segment_idx
+                    segment_start_raw_idx = i * self.pvr_decode_segment_size
+                    print('segment_id:',i)
+                    # For PyVideoReader.decode, end_frame is exclusive
+                    segment_end_raw_idx = min((i + 1) * self.pvr_decode_segment_size, total_frames_from_props)
+
+                    if segment_start_raw_idx >= segment_end_raw_idx :
+                        continue # Segment is empty or invalid
+
+                    debug_print(f"PVR SegReader: Decoding segment {i+1}/{num_segments} "
+                                f"(raw frames {segment_start_raw_idx} to {segment_end_raw_idx-1})...")
                     
-                    if current_overall_raw_frame_idx % frame_interval == 0:
-                        frame_content = segment_frames_np[frame_in_segment_idx]
-                        current_frame_time_sec = current_overall_raw_frame_idx / original_fps_from_props
-                        metadata = {'is_rgb': True, 'source': 'pvr_cuda_segmented'}
+                    # Frames are RGB, (model_input_size, model_input_size, 3)
+                    segment_frames_np = pvr_instance.decode(start_frame=segment_start_raw_idx, 
+                                                            end_frame=segment_end_raw_idx)
+                    # print("segment_frame:",segment_frames_np)
+                
+                    if segment_frames_np is None or segment_frames_np.shape[0] == 0:
+                        debug_print(f"PVR SegReader: Segment {i+1} returned no frames. Video might have ended or error.")
+                        continue # Try next segment if any, or loop will end.
+
+                    # Select frames from this decoded segment based on frame_interval
+                    for frame_in_segment_idx in range(segment_frames_np.shape[0]):
+                        if self.stop_event.is_set(): break
+
+                        # This is the original, absolute frame index in the video
+                        current_overall_raw_frame_idx = segment_start_raw_idx + frame_in_segment_idx
                         
-                        try:
-                            self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
-                                                      block=True, timeout=5.0)
-                            queued_frame_count += 1
-                        except queue.Full:
-                            debug_print("PVR SegReader: Queue full, retrying...")
-                            time.sleep(0.1)
-                            if self.stop_event.is_set(): break
+                        if current_overall_raw_frame_idx % frame_interval == 0:
+                            frame_content = segment_frames_np[frame_in_segment_idx]
+                            current_frame_time_sec = current_overall_raw_frame_idx / original_fps_from_props
+                            metadata = {'is_rgb': True, 'source': 'pvr_cuda_segmented'}
+                            
                             try:
                                 self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
-                                                           block=True, timeout=5.0)
+                                                        block=True, timeout=5.0)
                                 queued_frame_count += 1
-                            except queue.Full: print("ERROR: PVR SegReader queue persistently full."); self.stop_event.set(); break # Stop reader
-                        except Exception as q_e: debug_print(f"PVR SegReader queue put error: {q_e}"); self.stop_event.set(); break
-                
-                # Release segment memory if possible (NumPy array will be dereferenced when loop iterates)
-                del segment_frames_np 
-                gc.collect() # Suggest garbage collection
+                            except queue.Full:
+                                debug_print("PVR SegReader: Queue full, retrying...")
+                                time.sleep(0.1);
+                                if self.stop_event.is_set(): break
+                                try:
+                                    self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
+                                                            block=True, timeout=5.0)
+                                    queued_frame_count += 1
+                                except queue.Full: print("ERROR: PVR SegReader queue persistently full."); self.stop_event.set(); break # Stop reader
+                            except Exception as q_e: debug_print(f"PVR SegReader queue put error: {q_e}"); self.stop_event.set(); break
+                    
+                    # Release segment memory if possible (NumPy array will be dereferenced when loop iterates)
+                    del segment_frames_np 
+                    gc.collect() # Suggest garbage collection
 
-            debug_print(f"PVR SegReader finished. Queued {queued_frame_count} frames.")
+                debug_print(f"PVR SegReader finished. Queued {queued_frame_count} frames.")
 
         except Exception as e:
             print(f"FATAL ERROR in _frame_reader_task_pvr_segmented: {e}")
@@ -814,6 +835,30 @@ class VideoProcessor:
         }
         self.finalized_paths_for_report.append(path_report_entry)
 
+    def run_processing_on_all_videos(self, start_date_str, start_time_str, primary_direction):
+        if not self.uploaded_video_paths:
+            return "No videos uploaded."
+
+        if not self.gradio_polygons:
+            return "Zones not defined."
+
+        status_messages = []
+        for idx, video_path in enumerate(self.uploaded_video_paths):
+            msg = f"Processing video {idx+1}/{len(self.uploaded_video_paths)}: {os.path.basename(video_path)}"
+            print(msg)
+            status_messages.append(msg)
+
+            # Call your frame reading and model processing pipeline here
+            try:
+                self.process_video(video_path, start_date_str, start_time_str, primary_direction)
+            except Exception as e:
+                error_msg = f"Error processing {video_path}: {e}"
+                print(error_msg)
+                status_messages.append(error_msg)
+
+        return "\n".join(status_messages)
+    
+
     def _execute_single_model_inference(self, model_instance, input_tensor_chunk, stream_to_use=None):
         # It should take a chunk of frames (e.g., self.batch_size frames) and return a list of results.
         # Remember the stream_to_use.synchronize() inside it if stream_to_use is not None.
@@ -829,7 +874,7 @@ class VideoProcessor:
             return results
 
     # --- Main Processing Function ---
-    def process_video(self, video_path, start_date_str, start_time_str, primary_direction):
+    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction):
         if not self.processing_lock.acquire(blocking=False):
             print("Warning: Processing lock already acquired."); return "Processing is already in progress."
 
@@ -846,7 +891,6 @@ class VideoProcessor:
         self.zone_tracker = None
         self.perf = PerformanceTracker(enabled=ENABLE_DETAILED_PERFORMANCE_METRICS)
         self.stop_event = threading.Event()
-        # todo: improve queue size selection logic - config import
         self.frame_read_queue = queue.Queue(maxsize=self.max_queue_size)
         self.last_cleanup_time = time.monotonic()
         self.detection_zones_polygons = None
@@ -857,20 +901,22 @@ class VideoProcessor:
 
         print(f"--- Starting New Video Processing Run (with ByteTrack for Report Parity) ---")
 
-        actual_video_path_to_process = video_path
-        temp_converted_dav_mp4 = None
-        if video_path.lower().endswith(".dav"):
-            print(f"Input is .dav: {video_path}. Converting...")
-            # TODO - FIX THIS
-            converted_path = convert_dav_to_mp4_internal(video_path)
-            if converted_path and os.path.exists(converted_path):
-                actual_video_path_to_process = converted_path
-                temp_converted_dav_mp4 = converted_path
-                print(f".dav converted to: {actual_video_path_to_process}")
-                time.sleep(0.5) 
+        actual_video_path_to_process = [] 
+        temp_converted_dav_mp4 = []
+        for video_path in video_paths:
+            if video_path.lower().endswith(".dav"):
+                print(f"Input is .dav: {video_path}. Converting...")
+                converted_path = convert_dav_to_mp4_internal(video_path)
+                if converted_path and os.path.exists(converted_path):
+                    actual_video_path_to_process.append(converted_path)
+                    temp_converted_dav_mp4.append(converted_path)
+                    print(f".dav converted to: {actual_video_path_to_process}")
+                    time.sleep(0.5) 
+                else:
+                    error_msg = f"Failed to convert .dav file: {video_path}"
+                    print(error_msg); self.processing_lock.release(); raise RuntimeError(error_msg)
             else:
-                error_msg = f"Failed to convert .dav file: {video_path}"
-                print(error_msg); self.processing_lock.release(); raise RuntimeError(error_msg)
+                actual_video_path_to_process.append(video_path)
 
         try:
             # --- Zone Definition ---
@@ -926,7 +972,7 @@ class VideoProcessor:
             
             if ENABLE_VISUALIZATION:
                 os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True); ts_now=datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename_base_viz=f"output_{os.path.splitext(os.path.basename(actual_video_path_to_process))[0]}_{ts_now}"
+                output_filename_base_viz=f"output_{os.path.splitext(os.path.basename(actual_video_path_to_process[0]))[0]}_{ts_now}"
                 output_path_viz=os.path.join(VIDEO_OUTPUT_DIR, f"{output_filename_base_viz}.mp4")
                 self.final_output_path = output_path_viz # Store for result message
                 self.video_write_queue = queue.Queue(maxsize=self.max_queue_size)

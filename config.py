@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-LINE_MODE = 'hardcoded'
+LINE_MODE = 'interactive'
 ENABLE_VISUALIZATION = True
 
 _now = datetime.now()

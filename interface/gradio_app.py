@@ -27,12 +27,15 @@ except Exception as e:
 # --- Gradio Event Handlers ---
 
 # Handle video upload - gets first frame for drawing
-def handle_upload(video_file_obj_for_preview): # Renamed to avoid confusion with main processing
-    debug_print(f"Gradio: Handling video upload for preview/drawing: {video_file_obj_for_preview}")
+def handle_upload(video_files_list): # Renamed to avoid confusion with main processing
+    debug_print(f"Gradio: Handling video upload for preview/drawing: {video_files_list}")
     video_path_for_preview = None
-    if video_file_obj_for_preview:
-        video_path_for_preview = video_file_obj_for_preview.name # Get path from Gradio file object
-    # Processor method should now reset polygon state and prepare frame
+    # if video_file_obj_for_preview:
+    #     video_path_for_preview = video_file_obj_for_preview.name # Get path from Gradio file object
+    # # Processor method should now reset polygon state and prepare frame
+    # return processor.process_video_upload_for_gradio(video_path_for_preview)
+    if video_files_list:
+        video_path_for_preview = video_files_list[0] 
     return processor.process_video_upload_for_gradio(video_path_for_preview) 
 
 # Set the direction for drawing the *next* polygon
@@ -91,6 +94,7 @@ def handle_process(video_file_obj, start_date, start_time, primary_direction_str
     # Run the processing - processor.process_video uses self.gradio_polygons
     # Add a try-except block here to catch potential errors during processing setup (like zone validation)
     # and report them back to the Gradio UI gracefully.
+    
     try:
         progress(0.05, desc="Starting video processing engine...")
         result_message_raw = processor.process_video(video_path_from_gradio, start_date, start_time, primary_direction=primary_direction_str.lower())
@@ -201,7 +205,8 @@ def create_interface():
                         gr.Markdown("### Upload Video Source")
                         video_input = gr.File(
                             label="Video File (.mp4, .avi, .mkv, .mov, .dav etc.)",
-                            file_types=['video', '.dav'], # Suggest accepted types
+                            file_types=['video', '.dav'], # Suggest accepted types,
+                            file_count="multiple",
                             height = 360
                         )
                     with gr.Column(scale=1):
@@ -261,7 +266,8 @@ def create_interface():
                              label="Click Image to Define Polygon Vertices",
                              type="numpy",
                              interactive=True, # Enable clicks
-                             height=480 # Make drawing area prominent
+                             height=640 ,# Make drawing area prominent,
+                             width=800
                          )
 
 
@@ -340,6 +346,11 @@ def create_interface():
             inputs=[video_input, start_date, start_time, primary_direction_input],
             outputs=process_outputs # All result components
         )
-
+        
+        # process_btn.click(
+        #     fn=processor.run_processing_on_all_videos,
+        #     inputs=[ start_date, start_time, primary_direction_input],
+        #     outputs=process_outputs # All result components
+        # )
     print("Gradio interface created (Polygon Mode).")
     return interface

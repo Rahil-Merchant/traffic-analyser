@@ -37,18 +37,19 @@ def run_app():
     elif LINE_MODE == 'hardcoded':
         print("\nStarting hardcoded processing...")
         # --- Validate required config values ---
-        if not os.path.exists(INPUT_VIDEO_PATH):
-             print(f"ERROR: Input video file not found at: {INPUT_VIDEO_PATH}", file=sys.stderr)
-             sys.exit(1)
+        for PATH in INPUT_VIDEO_PATH:
+            if not os.path.exists(PATH):
+                print(f"ERROR: Input video file not found at: {PATH}", file=sys.stderr)
+                sys.exit(1)
 
-        print(f"Using Input Video: {INPUT_VIDEO_PATH}")
+        print(f"Using Input Video(s): {INPUT_VIDEO_PATH}")
         print(f"Using Start Date:  {START_DATE}")
         print(f"Using Start Time:  {START_TIME}")
 
         try:
             processor = VideoProcessor()
             result_message = processor.process_video(
-                video_path=INPUT_VIDEO_PATH,
+                video_paths=INPUT_VIDEO_PATH,
                 start_date_str=START_DATE,
                 start_time_str=START_TIME,
                 primary_direction=DEFAULT_PRIMARY_DIRECTION
