@@ -25,6 +25,7 @@ from config import (
 
 # Modules
 from core.utils import debug_print, is_valid_movement, cleanup_memory
+from core.image_processing import enhance_frame_for_detection
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
 from tracking.zone_tracker import ZoneTracker
@@ -494,7 +495,6 @@ class VideoProcessor:
                 try: self.video_write_queue.put(None, timeout=1.0)
                 except queue.Full: pass
 
-
     # --- Core Processing Logic ---
     @torch.no_grad()
     def _preprocess_batch(self, frames_batch_with_metadata): # Expects list of (frame_np, metadata_dict)
@@ -573,6 +573,7 @@ class VideoProcessor:
                 debug_print(f"Preprocess: Frame does not have 3 channels after processing! Shape: {img_rgb_model_sized.shape}. Skipping.")
                 continue
 
+            # img_rgb_model_sized = enhance_frame_for_detection(img_rgb_model_sized, 'medium')
             img_chw = img_rgb_model_sized.transpose(2, 0, 1) # HWC to CHW
             img_chw_contiguous = np.ascontiguousarray(img_chw) # Ensure memory is contiguous
             preprocessed_tensors_list.append(img_chw_contiguous)
@@ -1340,7 +1341,7 @@ class VideoProcessor:
                                     with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
                                         if self.perf and self.perf.start_event:
                                             self.perf.start_event.record(stream=current_stream)
-                                        yolo_results_batch = self.model(input_batch_tensor_model, verbose=False)
+                                        yolo_results_batch = self.model(input_batch_tensor_model, verbose=False, imgsz=MODEL_INPUT_SIZE)
                                         if self.perf and self.perf.end_event:
                                             self.perf.end_event.record(stream=current_stream)
                                 # Consider if synchronization is truly needed here or can be deferred/more targeted.
@@ -1349,7 +1350,7 @@ class VideoProcessor:
                                     current_stream.synchronize() # This makes the batch processing serial at this point.
                             else: # CPU or no streams
                                 with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')): # AMP on CPU has little to no effect
-                                    yolo_results_batch = self.model(input_batch_tensor_model, verbose=False)
+                                    yolo_results_batch = self.model(input_batch_tensor_model, verbose=False, imgsz=MODEL_INPUT_SIZE)
 
                         if self.perf and self.perf.start_event and self.perf.end_event and self.device == 'cuda' and self.streams: # Check if events were recorded
                             self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
@@ -1412,12 +1413,11 @@ class VideoProcessor:
                     with torch.cuda.stream(current_stream_final) if current_stream_final else torch.no_grad():
                         with torch.amp.autocast(device_type=self.device,enabled=MIXED_PRECISION and self.device=='cuda'):
                            if self.perf and self.perf.start_event: self.perf.start_event.record(stream=current_stream_final)
-                           yolo_results_final=self.model(input_batch_final,verbose=False)
+                           yolo_results_final=self.model(input_batch_final,verbose=False,imgsz=MODEL_INPUT_SIZE)
                            if self.perf and self.perf.end_event: self.perf.end_event.record(stream=current_stream_final)
                         if current_stream_final: current_stream_final.synchronize()
                         if self.perf and self.perf.start_event and self.perf.end_event: self.perf.record_inference_time_gpu(self.perf.start_event, self.perf.end_event)
                     _, processed_frames_final_viz = self._process_inference_results(yolo_results_final, current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times, start_datetime_obj_global)
-                    # all_event_logs_final.extend(batch_log_final) # Not primary for report
                     if ENABLE_VISUALIZATION and self.video_write_queue:
                         if self.perf: 
                             self.perf.start_timer('video_write')

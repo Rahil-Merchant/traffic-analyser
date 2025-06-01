@@ -1,0 +1,1 @@
+trtexec --onnx="C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082.onnx" --saveEngine="C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082_960px_bs256_trt.engine" --optShapes=input:1x3x960x960 --minShapes=input:1x3x960x960 --maxShapes=input:256x3x960x960 --fp16 --verbose

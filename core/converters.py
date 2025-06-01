@@ -54,9 +54,6 @@ def convert_dav_to_mp4_internal(dav_filepath):
             try: os.remove(output_mp4_filepath)
             except OSError: pass
         return None
-    except FileNotFoundError:
-        print(f"ERROR: [convert_dav] FFmpeg command '{ffmpeg_executable}' not found during subprocess run.")
-        return None
     except Exception as e_gen:
         print(f"ERROR: [convert_dav] An unexpected error occurred during DAV conversion: {e_gen}")
         import traceback

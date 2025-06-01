@@ -57,6 +57,9 @@ coverage.xml
 *.log
 
 *.pt
+*.engine
+*.onnx
+*.trt
 
 *.mp4
 
