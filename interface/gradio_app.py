@@ -1,42 +1,38 @@
 # project/interface/gradio_app.py
-# This file is now only loaded and used if LINE_MODE == 'interactive'
-
+# This file is only loaded and used if LINE_MODE == 'interactive'
 import gradio as gr
 import os
 import re
-import time
 from config import (
-    START_DATE, START_TIME, VIDEO_OUTPUT_DIR, LINE_MODE
+    START_DATE, START_TIME, VIDEO_OUTPUT_DIR
 )
 from core.video_processor import VideoProcessor
 from core.utils import debug_print
 
-# --- Global Instance ---
-# Initialize processor as before
-print("Initializing VideoProcessor for Gradio (interactive mode)...")
-try:
-    processor = VideoProcessor() # Assumes VideoProcessor is updated for polygons
-    print(f"VideoProcessor Initialized (Line Mode: '{processor.line_mode}').")
-    if processor.line_mode != 'interactive':
-        print("WARNING: Gradio app loaded, but LINE_MODE is not 'interactive'. UI might not function as expected.")
-except Exception as e:
-    print(f"FATAL ERROR: Could not initialize VideoProcessor for Gradio. Error: {e}")
-    import sys
-    sys.exit(1)
+processor = VideoProcessor() # Assumes VideoProcessor is updated for polygons
 
 # --- Gradio Event Handlers ---
 
 # Handle video upload - gets first frame for drawing
-def handle_upload(video_files_list): # Renamed to avoid confusion with main processing
+def handle_upload(video_files_list):
     debug_print(f"Gradio: Handling video upload for preview/drawing: {video_files_list}")
     video_path_for_preview = None
-    # if video_file_obj_for_preview:
-    #     video_path_for_preview = video_file_obj_for_preview.name # Get path from Gradio file object
-    # # Processor method should now reset polygon state and prepare frame
-    # return processor.process_video_upload_for_gradio(video_path_for_preview)
-    if video_files_list:
-        video_path_for_preview = video_files_list[0] 
-    return processor.process_video_upload_for_gradio(video_path_for_preview) 
+    if video_files_list and len(video_files_list) > 0:
+        first_file_obj = video_files_list[0]
+        # Check if the first element is a valid file object with a .name
+        if first_file_obj and hasattr(first_file_obj, 'name'):
+            video_path_for_preview = first_file_obj.name
+            debug_print(f"Gradio handle_upload: Using preview path: {video_path_for_preview}")
+        else:
+            debug_print(f"Gradio handle_upload: First file object is invalid or has no name: {first_file_obj}")
+            return None, "Error: First uploaded file is invalid for preview."
+    else:
+        debug_print("Gradio handle_upload: No files provided in video_files_list for preview.")
+        # Return current state if no video is uploaded, or an appropriate message
+        return processor.last_drawn_polygons_frame, "Please upload a video to define zones."
+
+    # Processor method should now reset polygon state and prepare frame
+    return processor.process_video_upload_for_gradio(video_path_for_preview)
 
 # Set the direction for drawing the *next* polygon
 def handle_set_direction(direction):
@@ -73,21 +69,29 @@ def handle_clear_polygons():
     return frame_with_polys, status
 
 # Process the video (uses finalized polygons)
-def handle_process(video_file_obj, start_date, start_time, primary_direction_str, progress=gr.Progress(track_tqdm=True)):
+def handle_process(video_files_list, start_date, start_time, primary_direction_str, progress=gr.Progress(track_tqdm=True)):
     progress(0, desc="Initializing...") 
-    debug_print(f"Gradio handle_process: Received video object: {video_file_obj}")
+    debug_print(f"Gradio handle_process: Received video object: {video_files_list}")
     debug_print(f"Gradio handle_process: Primary Direction selected: {primary_direction_str}")
 
-    if video_file_obj is None:
-        return "Please upload a video file first.", None, "N/A", "N/A", "N/A", "N/A"
+    if not video_files_list:
+        return "Please upload at least one video file.", None, "N/A", "N/A", "N/A", "N/A"
     
     if not primary_direction_str:
          return "Please select a Primary Direction.", None, "N/A", "N/A", "N/A", "N/A"
 
-    # Get the actual filepath from the Gradio File object
-    # Gradio uploads files to a temporary location accessible via .name
-    video_path_from_gradio = video_file_obj.name 
-    debug_print(f"Gradio handle_process: Video path from Gradio object: {video_path_from_gradio}")
+    video_paths_from_gradio = []
+    for video_file_obj_item in video_files_list: # Iterate through the list
+        if video_file_obj_item is not None and hasattr(video_file_obj_item, 'name'):
+            video_paths_from_gradio.append(video_file_obj_item.name)
+        else:
+            debug_print(f"Gradio handle_process: Skipped an invalid item in video_files_list: {video_file_obj_item}")
+
+    # MODIFIED: Check if any valid paths were extracted
+    if not video_paths_from_gradio:
+        return "No valid video files found in the upload. Please ensure files are uploaded correctly.", None, "N/A", "N/A", "N/A", "N/A"
+
+    debug_print(f"Gradio handle_process: Video paths from Gradio objects: {video_paths_from_gradio}")
 
     result_message_raw = ""
 
@@ -97,7 +101,7 @@ def handle_process(video_file_obj, start_date, start_time, primary_direction_str
     
     try:
         progress(0.05, desc="Starting video processing engine...")
-        result_message_raw = processor.process_video(video_path_from_gradio, start_date, start_time, primary_direction=primary_direction_str.lower())
+        result_message_raw = processor.process_video(video_paths_from_gradio, start_date, start_time, primary_direction=primary_direction_str.lower())
         debug_print(f"Gradio: Processing finished.")
     except RuntimeError as rte: 
          # Catch specific errors VideoProcessor might raise (e.g., for DAV/FFmpeg issues)
@@ -131,10 +135,10 @@ def handle_process(video_file_obj, start_date, start_time, primary_direction_str
         if match_fps: fps = match_fps.group(1)
         if match_paths: completed_paths = match_paths.group(1)
         # Clean up the log message for display
-        output_log_text = re.sub(r"--- Summary Stats ---.*", "", result_message_raw, flags=re.DOTALL).strip()
-        output_log_text = re.sub(r"STAT_.*", "", output_log_text, flags=re.MULTILINE).strip() # Remove individual STAT lines too
+        output_log = re.sub(r"--- Summary Stats ---.*", "", result_message_raw, flags=re.DOTALL).strip()
+        output_log = re.sub(r"STAT_.*", "", output_log, flags=re.MULTILINE).strip() # Remove individual STAT lines too
     elif isinstance(result_message_raw, str) and (result_message_raw.startswith("❌ Error:") or "Error:" in result_message_raw):
-         output_log_text = result_message_raw # Already an error message
+         output_log = result_message_raw # Already an error message
          if progress.total is None or progress.current < progress.total:
             try:
                 current_progress_val = 0.0 
@@ -149,7 +153,7 @@ def handle_process(video_file_obj, start_date, start_time, primary_direction_str
             except Exception as e_prog:
                 debug_print(f"Gradio: Could not update progress bar on error: {e_prog}")
     else: # Should not happen if VideoProcessor always returns one of the above formats
-        output_log_text = f"Processing finished, but result format unexpected: {str(result_message_raw)[:300]}"
+        output_log = f"Processing finished, but result format unexpected: {str(result_message_raw)[:300]}"
         progress(1.0, desc="Finished (Unknown Result State)")
 
 
@@ -232,16 +236,16 @@ def create_interface():
                             value="Upload video and go to 'Draw Zones' tab.",
                             interactive=False,
                             lines=3, # Keep slightly larger
-                            visible=(LINE_MODE == 'interactive')
+                            visible=True
                         )
                         gr.Markdown(
-                            "➡️ Proceed to **Draw Zones** tab (if interactive) or **Process** tab." if LINE_MODE == 'interactive' else "➡️ Proceed to the **Process** tab.",
+                            "➡️ Proceed to **Draw Zones** tab (if interactive) or **Process** tab.",
                             visible=True
                         )
 
 
             # --- Tab 2: Draw Zones (Conditional) ---
-            with gr.TabItem("✍️ Draw Zones", id=1, visible=(LINE_MODE == 'interactive')):
+            with gr.TabItem("✍️ Draw Zones", id=1, visible=True):
                  gr.Markdown("### Define Detection Zones (Polygons)")
                  # Updated Instructions
                  gr.Markdown(
@@ -291,48 +295,35 @@ def create_interface():
                     video_output = gr.Video(label="🎬 Processed Video", interactive=False, height=480)
 
         # --- Event Listeners (Connecting UI to Handlers) ---
-        # Define outputs commonly updated by drawing actions
-        drawing_outputs = []
-        if LINE_MODE == 'interactive':
-            drawing_outputs = [image_display, status_text_draw]
-
-        # Upload Action: Updates image display and drawing status text
-        video_input.change(
+        drawing_outputs = [image_display, status_text_draw]
+        video_input.change( # Or .upload if you prefer that trigger
             fn=handle_upload,
-            inputs=[video_input],
-            outputs=drawing_outputs, # Use defined list
+            inputs=[video_input], # Pass the gr.File object
+            outputs=drawing_outputs, 
+            show_progress="minimal"
+        )
+        
+        # Direction Button Actions: Update image display and drawing status text
+        north_btn.click(lambda: handle_set_direction("north"), outputs=drawing_outputs, show_progress="minimal")
+        south_btn.click(lambda: handle_set_direction("south"), outputs=drawing_outputs, show_progress="minimal")
+        east_btn.click(lambda: handle_set_direction("east"), outputs=drawing_outputs, show_progress="minimal")
+        west_btn.click(lambda: handle_set_direction("west"), outputs=drawing_outputs, show_progress="minimal")
+
+        # Image Click Action: Updates image display and drawing status text
+        image_display.select(
+            fn=handle_click,
+            outputs=drawing_outputs,
             show_progress="minimal"
         )
 
-        if LINE_MODE == 'interactive':
-            video_input.change( # Or .upload if you prefer that trigger
-                fn=handle_upload,
-                inputs=[video_input], # Pass the gr.File object
-                outputs=drawing_outputs, 
-                show_progress="minimal"
-            )
-            
-            # Direction Button Actions: Update image display and drawing status text
-            north_btn.click(lambda: handle_set_direction("north"), outputs=drawing_outputs, show_progress="minimal")
-            south_btn.click(lambda: handle_set_direction("south"), outputs=drawing_outputs, show_progress="minimal")
-            east_btn.click(lambda: handle_set_direction("east"), outputs=drawing_outputs, show_progress="minimal")
-            west_btn.click(lambda: handle_set_direction("west"), outputs=drawing_outputs, show_progress="minimal")
+        # Finish Polygon Button: Finalize points and update display/status
+        finish_poly_btn.click(fn=handle_finish_polygon, outputs=drawing_outputs, show_progress="minimal")
 
-            # Image Click Action: Updates image display and drawing status text
-            image_display.select(
-                fn=handle_click,
-                outputs=drawing_outputs,
-                show_progress="minimal"
-            )
+        # Undo Point Button: Remove last point and update display/status
+        undo_point_btn.click(fn=handle_undo_point, outputs=drawing_outputs, show_progress="minimal")
 
-            # Finish Polygon Button: Finalize points and update display/status
-            finish_poly_btn.click(fn=handle_finish_polygon, outputs=drawing_outputs, show_progress="minimal")
-
-            # Undo Point Button: Remove last point and update display/status
-            undo_point_btn.click(fn=handle_undo_point, outputs=drawing_outputs, show_progress="minimal")
-
-            # Clear All Button: Reset polygons and update display/status
-            clear_all_btn.click(fn=handle_clear_polygons, outputs=drawing_outputs, show_progress="minimal")
+        # Clear All Button: Reset polygons and update display/status
+        clear_all_btn.click(fn=handle_clear_polygons, outputs=drawing_outputs, show_progress="minimal")
 
 
         # Process Button Action: Runs processing and updates all result components

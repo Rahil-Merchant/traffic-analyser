@@ -24,14 +24,11 @@ def run_app():
 
     if LINE_MODE == 'interactive':
         # --- Run Gradio Interface ---
-        if create_interface is None:
-             print("ERROR: Gradio components not loaded.", file=sys.stderr); sys.exit(1)
         try:
             print("\nStarting Gradio interface for interactive setup...")
             interface = create_interface()
             interface.launch(server_name="127.0.0.1", server_port=GRADIO_SERVER_PORT, share=GRADIO_SHARE)
             print("Gradio server stopped.")
-        except ImportError as e: print(f"Error: Missing Gradio: {e}", file=sys.stderr); sys.exit(1)
         except Exception as e: print(f"Error launching Gradio: {e}", file=sys.stderr); import traceback; traceback.print_exc(); sys.exit(1)
 
     elif LINE_MODE == 'hardcoded':

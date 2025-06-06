@@ -62,5 +62,9 @@ coverage.xml
 *.trt
 
 *.mp4
+*.jpg
 
 models/weights/*
+utility_scripts/*.jpg
+utility_scripts/*.json
+utility_scripts/*.txt

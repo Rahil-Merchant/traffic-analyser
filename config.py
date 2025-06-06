@@ -18,11 +18,13 @@ VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082_960px_bs192_trt.engine"
+MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082_original_640px_bs416.engine"
+DATA_YAML_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract.yaml"
 NUM_INFERENCE_STREAMS = 1
 CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
-MODEL_INPUT_SIZE = 960 # Keep smaller size for performance
+MODEL_INPUT_SIZE = 640 # Keep smaller size for performance
+TTA = False # Enables test-time augmentation (TTA) for predictions
 
 # --- Tracking Configuration --- 
 BYTETRACK_MIN_CONF = 0.1    # Minimum detection confidence for ByteTrack to consider
@@ -31,9 +33,9 @@ BYTETRACK_MATCH_THRESH = 0.8    # IoU threshold for matching detections to track
 BYTETRACK_TRACK_BUFFER_SECONDS = 15 # Seconds to keep a track alive if unmatched after it has stopped being associated with any new detections
 
 
-#*############## Video 1 #################
-# --- Input Settings (primarily for hardcoded mode) ---
-INPUT_VIDEO_PATH = r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 minute test - 4 Way Intersection.mp4"
+# #*############## Video 1 #################
+# # --- Input Settings (primarily for hardcoded mode) ---
+INPUT_VIDEO_PATH = [r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 minute test - 4 Way Intersection.mp4"]
 
 # --- Line & Zone Definitions ---
 LINE_POINTS = {
@@ -69,11 +71,11 @@ LINE_POINTS = {
     'east':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['east']],
     'west':  [(int(x * scale_x), int(y * scale_y)) for (x, y) in LINE_POINTS['west']],
 }
-#######################
+# #######################
 
 # # *############## Video 2 #################
 # --- Input Settings (primarily for hardcoded mode) ---
-# INPUT_VIDEO_PATH = r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 min test - Large FOV.mp4"
+# INPUT_VIDEO_PATH = [r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 min test - Large FOV.mp4"]
 
 # # --- Line & Zone Definitions ---
 # LINE_POINTS = {'north': [[699, 529],
@@ -127,7 +129,7 @@ elif MODEL_INPUT_SIZE<=960:
 else:
     OPTIMAL_BATCH_SIZE = 16
     
-OPTIMAL_BATCH_SIZE = 192
+OPTIMAL_BATCH_SIZE = 416
 USE_ADVANCED_VIDEO_READER = True 
 PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7600
 

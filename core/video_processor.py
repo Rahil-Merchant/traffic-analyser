@@ -8,6 +8,7 @@ import threading
 import queue
 import gc
 import math
+import yaml
 from datetime import datetime, timedelta
 import concurrent.futures
 from boxmot.trackers.bytetrack.bytetrack import ByteTrack
@@ -16,9 +17,9 @@ from boxmot.trackers.bytetrack.bytetrack import ByteTrack
 from config import (
     TARGET_FPS, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH_VIZ, FRAME_HEIGHT_VIZ,
     VIDEO_OUTPUT_DIR, ENABLE_DETAILED_PERFORMANCE_METRICS, OPTIMAL_BATCH_SIZE,
-    MIXED_PRECISION, PARALLEL_STREAMS, THREAD_COUNT, IOU_THRESHOLD,
+    MIXED_PRECISION, PARALLEL_STREAMS, THREAD_COUNT, IOU_THRESHOLD, TTA,
     MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
-    LINE_MODE, LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION,
+    LINE_MODE, LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
     USE_ADVANCED_VIDEO_READER, PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS,
     BYTETRACK_MATCH_THRESH, BYTETRACK_MIN_CONF, BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH
 )
@@ -86,6 +87,19 @@ class VideoProcessor:
         self.active_track_data = {} # {track_id: {'entry_direction': str, 'entry_time': datetime, 'type': str, 'last_seen_frame': int, ...}}
         self.finalized_paths_for_report = []
 
+        if DATA_YAML_PATH and os.path.exists(DATA_YAML_PATH):
+            try:
+                with open(DATA_YAML_PATH, 'r', encoding='utf-8') as f: # Added encoding
+                    data_yaml = yaml.safe_load(f)
+                if data_yaml and 'names' in data_yaml and isinstance(data_yaml['names'], list):
+                    self.class_id_to_name_map = {i: str(name) for i, name in enumerate(data_yaml['names'])}
+                    debug_print(f"VideoProcessor: Successfully loaded class names from '{DATA_YAML_PATH}': {self.class_id_to_name_map}")
+                else:
+                    debug_print(f"VideoProcessor: Warning - 'names' key (as a list) not found or invalid in '{DATA_YAML_PATH}'. Check YAML format.")
+            except Exception as e:
+                debug_print(f"VideoProcessor: Error loading class names from YAML '{DATA_YAML_PATH}': {e}")
+        else:
+            debug_print(f"VideoProcessor: Warning - DATA_YAML_PATH ('{DATA_YAML_PATH}') not found or not specified. Class names will be default.")
 
         # Threading & Queues
         self.frame_read_queue = None
@@ -326,67 +340,94 @@ class VideoProcessor:
                 except Exception as e_fin:
                     debug_print(f"OpenCV Reader: Error on final None put: {e_fin}")
 
-    def _frame_reader_task_pvr_segmented(self, video_paths, original_fps_from_props, total_frames_from_props):
+    def _frame_reader_task_pvr_segmented(self, video_paths, original_fps_from_props, total_frames_from_props): # total_frames_from_props IS THE AGGREGATE
         """Frame reader using PyVideoReader, decoding in segments, then selecting frames."""
         pvr_instance = None
         try:
             target_dim_model = self.model_input_size_config
             debug_print(f"PVR SegReader: Init PyVideoReader: device='cuda', target_size=({target_dim_model}x{target_dim_model})")
-            
-            num_segments = math.ceil(total_frames_from_props / self.pvr_decode_segment_size) if total_frames_from_props > 0 else 1
-            if total_frames_from_props == 0 : num_segments = 0 # No frames to read
 
-            for video_path in video_paths:
-                print('video_path:',video_path)
-                pvr_instance = PyVideoReader(video_path, device='cuda', 
+            # num_segments is based on the AGGREGATE total_frames_from_props
+            num_segments = math.ceil(total_frames_from_props / self.pvr_decode_segment_size) if total_frames_from_props > 0 else 1
+            if total_frames_from_props == 0 : num_segments = 0
+
+            # This variable will keep track of the frame offset as we process multiple videos
+            cumulative_frames_processed_so_far = 0
+
+            for video_idx, video_path in enumerate(video_paths): # Iterate through each video
+                print(f"PVR SegReader: Processing video {video_idx+1}/{len(video_paths)}: {video_path}")
+                # Get properties for the CURRENT video
+                current_video_total_frames = 0
+                current_video_original_fps = original_fps_from_props # Assume FPS is consistent, or get it per video
+                try:
+                    temp_pvr = PyVideoReader(video_path)
+                    info = temp_pvr.get_info()
+                    current_video_total_frames = int(info.get('frame_count', 0))
+                    # You might want to get current_video_original_fps here too if it can vary
+                    del temp_pvr
+                except Exception as e_info:
+                    print(f"PVR SegReader: Error getting info for {video_path}: {e_info}. Skipping this video.")
+                    continue # Skip to the next video
+
+                if current_video_total_frames == 0:
+                    print(f"PVR SegReader: Video {video_path} has 0 frames. Skipping.")
+                    continue
+
+                pvr_instance = PyVideoReader(video_path, device='cuda',
                                             resize_shorter_side=target_dim_model,
                                             resize_longer_side=target_dim_model)
-                
-                frame_interval = max(1, round(original_fps_from_props / self.target_fps))
-                queued_frame_count = 0
 
-                debug_print(f"PVR SegReader: Stitched Video Length={total_frames_from_props} frames, "
-                            f"Segment Size={self.pvr_decode_segment_size}, Num Segments={num_segments}")
+                frame_interval = max(1, round(current_video_original_fps / self.target_fps))
+                queued_frame_count_for_this_video = 0
 
-                for i in range(num_segments):
+                # Calculate segments for the CURRENT video
+                num_segments_for_current_video = math.ceil(current_video_total_frames / self.pvr_decode_segment_size)
+
+                debug_print(f"PVR SegReader (Video: {os.path.basename(video_path)}): "
+                            f"Length={current_video_total_frames} frames, "
+                            f"Segment Size={self.pvr_decode_segment_size}, Num Segments={num_segments_for_current_video}")
+
+                for i in range(num_segments_for_current_video): # Iterate segments for THIS video
                     if self.stop_event.is_set(): break
 
-                    segment_start_raw_idx = i * self.pvr_decode_segment_size
-                    print('segment_id:',i)
-                    # For PyVideoReader.decode, end_frame is exclusive
-                    segment_end_raw_idx = min((i + 1) * self.pvr_decode_segment_size, total_frames_from_props)
+                    # Segment indices are relative to the CURRENT video
+                    segment_start_current_video_idx = i * self.pvr_decode_segment_size
+                    segment_end_current_video_idx = min((i + 1) * self.pvr_decode_segment_size, current_video_total_frames)
 
-                    if segment_start_raw_idx >= segment_end_raw_idx :
-                        continue # Segment is empty or invalid
+                    if segment_start_current_video_idx >= segment_end_current_video_idx :
+                        continue
 
-                    debug_print(f"PVR SegReader: Decoding segment {i+1}/{num_segments} "
-                                f"(raw frames {segment_start_raw_idx} to {segment_end_raw_idx-1})...")
-                    
-                    # Frames are RGB, (model_input_size, model_input_size, 3)
-                    segment_frames_np = pvr_instance.decode(start_frame=segment_start_raw_idx, 
-                                                            end_frame=segment_end_raw_idx)
-                    # print("segment_frame:",segment_frames_np)
-                
+                    debug_print(f"PVR SegReader (Video: {os.path.basename(video_path)}): Decoding segment {i+1}/{num_segments_for_current_video} "
+                                f"(frames {segment_start_current_video_idx} to {segment_end_current_video_idx-1} of current video)...")
+
+                    segment_frames_np = pvr_instance.decode(start_frame=segment_start_current_video_idx,
+                                                            end_frame=segment_end_current_video_idx)
+
                     if segment_frames_np is None or segment_frames_np.shape[0] == 0:
-                        debug_print(f"PVR SegReader: Segment {i+1} returned no frames. Video might have ended or error.")
-                        continue # Try next segment if any, or loop will end.
+                        debug_print(f"PVR SegReader: Segment {i+1} (current video) returned no frames. Video might have ended or error.")
+                        continue
 
-                    # Select frames from this decoded segment based on frame_interval
                     for frame_in_segment_idx in range(segment_frames_np.shape[0]):
                         if self.stop_event.is_set(): break
 
-                        # This is the original, absolute frame index in the video
-                        current_overall_raw_frame_idx = segment_start_raw_idx + frame_in_segment_idx
-                        
-                        if current_overall_raw_frame_idx % frame_interval == 0:
+                        # This is the original, absolute frame index in the *current individual video*
+                        frame_idx_in_current_video = segment_start_current_video_idx + frame_in_segment_idx
+
+                        if frame_idx_in_current_video % frame_interval == 0:
                             frame_content = segment_frames_np[frame_in_segment_idx]
+
+                            # Global frame number and time need to account for previous videos
+                            current_overall_raw_frame_idx = cumulative_frames_processed_so_far + frame_idx_in_current_video
+                            # Assume original_fps_from_props is the FPS for the primary video or a consistent FPS
                             current_frame_time_sec = current_overall_raw_frame_idx / original_fps_from_props
+
                             metadata = {'is_rgb': True, 'source': 'pvr_cuda_segmented'}
-                            
+
                             try:
                                 self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
                                                         block=True, timeout=5.0)
-                                queued_frame_count += 1
+                                queued_frame_count_for_this_video += 1
+                            # ... (rest of queue put logic) ...
                             except queue.Full:
                                 debug_print("PVR SegReader: Queue full, retrying...")
                                 time.sleep(0.1);
@@ -394,25 +435,32 @@ class VideoProcessor:
                                 try:
                                     self.frame_read_queue.put((frame_content, current_overall_raw_frame_idx, current_frame_time_sec, metadata),
                                                             block=True, timeout=5.0)
-                                    queued_frame_count += 1
+                                    queued_frame_count_for_this_video += 1
                                 except queue.Full: print("ERROR: PVR SegReader queue persistently full."); self.stop_event.set(); break # Stop reader
                             except Exception as q_e: debug_print(f"PVR SegReader queue put error: {q_e}"); self.stop_event.set(); break
-                    
-                    # Release segment memory if possible (NumPy array will be dereferenced when loop iterates)
-                    del segment_frames_np 
-                    gc.collect() # Suggest garbage collection
 
-                debug_print(f"PVR SegReader finished. Queued {queued_frame_count} frames.")
+
+                    del segment_frames_np
+                    gc.collect()
+
+                debug_print(f"PVR SegReader: Finished video {os.path.basename(video_path)}. Queued {queued_frame_count_for_this_video} frames.")
+                if pvr_instance:
+                    del pvr_instance # Explicitly delete to release resources for this video
+                    pvr_instance = None
+                gc.collect()
+                cumulative_frames_processed_so_far += current_video_total_frames # Add this video's total frames to the cumulative count
+
+            debug_print(f"PVR SegReader finished all videos.")
 
         except Exception as e:
             print(f"FATAL ERROR in _frame_reader_task_pvr_segmented: {e}")
             import traceback; traceback.print_exc()
         finally:
-            if pvr_instance: del pvr_instance # PyVideoReader typically doesn't have explicit close
+            if pvr_instance: del pvr_instance
             if self.frame_read_queue:
                 try: self.frame_read_queue.put(None, block=False, timeout=1.0)
                 except queue.Full: pass
-
+                
     def _frame_writer_task(self, output_path):
         # This task will only run if ENABLE_VISUALIZATION is True
         out = None; writer_initialized = False; frames_written = 0
@@ -647,7 +695,7 @@ class VideoProcessor:
                     track_id = str(int(target_data[4]))
                     track_cls_id = int(target_data[6])
                     current_frame_active_track_ids_bytetrack.add(track_id)
-                    vehicle_type_name = yolo_result_obj.names.get(track_cls_id, f"CLS_{track_cls_id}")
+                    vehicle_type_name = self.class_id_to_name_map.get(track_cls_id, 'Light Vehicle')
 
                     model_h_orig, model_w_orig = yolo_result_obj.orig_shape
                     draw_h_target, draw_w_target = self.frame_shape[1], self.frame_shape[0]
@@ -865,7 +913,7 @@ class VideoProcessor:
         if stream_to_use and self.device == 'cuda':
             with torch.cuda.stream(stream_to_use):
                 with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
-                    results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE)
+                    results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA)
             stream_to_use.synchronize() # Crucial for ThreadPoolExecutor
             return results
         else: 
@@ -1306,7 +1354,7 @@ class VideoProcessor:
                 completed_paths_data=self.finalized_paths_for_report,
                 start_datetime=start_datetime_obj_global, 
                 primary_direction=primary_direction, 
-                video_path=actual_video_path_to_process
+                video_path=actual_video_path_to_process[0]      # If multiple videos were processed, use the name of the first one.
             )
             if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: visualize_performance(self.perf)
 
