@@ -1,0 +1,137 @@
+import os
+import uvicorn
+import cv2
+from typing import List, Dict
+from fastapi import FastAPI, WebSocket, BackgroundTasks, HTTPException, WebSocketDisconnect, UploadFile, File, Form
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import asyncio
+
+from config import GRADIO_SERVER_PORT
+from core.utils import setup_torch_global_settings, setup_thread_affinity
+from core.video_processor import VideoProcessor
+
+print("--- Initializing EMAAN AURA DEVELOPMENT Server (File System Access API) ---")
+
+app = FastAPI(title="EMAAN AURA API", version="5.0.0")
+processor = VideoProcessor()
+job_queues: Dict[str, asyncio.Queue] = {}
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    This function will be executed ONCE when the FastAPI application starts up.
+    This is the CORRECT place to run initialization code.
+    """
+    print("--- Server is starting up. Running initial configurations... ---")
+    setup_torch_global_settings()
+    setup_thread_affinity()
+    print("--- Configurations applied. Server is ready. ---")
+
+
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+)
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(SCRIPT_DIR, "output", "static_previews")
+os.makedirs(STATIC_DIR, exist_ok=True)
+app.mount("/previews", StaticFiles(directory=STATIC_DIR), name="previews")
+
+# --- Define Pydantic Models for structured JSON data from frontend ---
+class FilePathPayload(BaseModel):
+    path: str
+
+class AnalysisConfigPayload(BaseModel):
+    video_paths: List[str]
+    start_date: str
+    start_time: str
+    primary_direction: str
+    report_type: str
+    polygons: dict
+
+# --- API Endpoints ---
+@app.get("/api/v1/health", tags=["System"])
+async def health_check(): return {"status": "ok"}
+
+@app.post("/api/v1/video-preview", tags=["Setup"])
+async def get_video_preview(payload: FilePathPayload):
+    """
+    Reads a video file directly from disk using the provided path.
+    This works with real filesystem paths from Tauri.
+    """
+    video_path = payload.path
+    try:
+        print(f"[DEBUG] Attempting to read video from: {video_path}")
+        
+        if not os.path.exists(video_path):
+            raise HTTPException(status_code=404, detail=f"Video file not found: {video_path}")
+        
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise HTTPException(status_code=500, detail="OpenCV could not open video file.")
+        
+        success, frame = cap.read()
+        cap.release()
+        if not success:
+            raise HTTPException(status_code=400, detail="Could not read the first frame.")
+        
+        preview_image_name = f"preview_{os.urandom(8).hex()}.jpg"
+        preview_image_path = os.path.join(STATIC_DIR, preview_image_name)
+        cv2.imwrite(preview_image_path, frame)
+        
+        full_image_url = f"http://127.0.0.1:{GRADIO_SERVER_PORT}/previews/{preview_image_name}"
+        print(f"[DEBUG] Preview generated successfully: {full_image_url}")
+        
+        return {"preview_image_url": full_image_url}
+    except Exception as e:
+        print(f"[ERROR] Preview generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing preview: {e}")
+
+@app.post("/api/v1/process", tags=["Processing"])
+async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfigPayload):
+    """Processes video files directly from disk using real filesystem paths."""
+    print(f"Received new job. Processing videos: {config.video_paths}")
+
+    # Validate all video files exist
+    for video_path in config.video_paths:
+        if not os.path.exists(video_path):
+            raise HTTPException(status_code=404, detail=f"Video file not found: {video_path}")
+
+    job_id = f"job_{os.urandom(4).hex()}"
+    progress_queue = asyncio.Queue()
+    job_queues[job_id] = progress_queue
+    
+    processor.gradio_polygons = config.polygons
+    
+    background_tasks.add_task(
+        processor.process_video,
+        video_paths=config.video_paths,
+        start_date_str=config.start_date,
+        start_time_str=config.start_time,
+        primary_direction=config.primary_direction.lower(),
+        generate_link_count_report_flag=(config.report_type == "Standard + Bi-directional Report"),
+        progress_queue=progress_queue
+    )
+    background_tasks.add_task(lambda: job_queues.pop(job_id, None))
+    
+    return {"status": "processing_started", "job_id": job_id}
+
+
+@app.websocket("/ws/progress/{job_id}")
+async def websocket_progress_endpoint(websocket: WebSocket, job_id: str):
+    await websocket.accept()
+    queue = job_queues.get(job_id)
+    if not queue:
+        await websocket.send_json({"error": f"Job ID '{job_id}' not found."}); await websocket.close(); return
+    try:
+        while True:
+            data = await queue.get()
+            await websocket.send_json(data)
+            if data.get("status") in ["complete", "error", "finished"]: break
+    except WebSocketDisconnect: print(f"Frontend for job '{job_id}' disconnected.")
+    finally: job_queues.pop(job_id, None); print(f"WebSocket for job '{job_id}' closed.")
+
+if __name__ == "__main__":
+    uvicorn.run("dev_server:app", host="127.0.0.1", port=GRADIO_SERVER_PORT, reload=True)

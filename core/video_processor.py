@@ -61,12 +61,8 @@ class VideoProcessor:
         self.line_mode = LINE_MODE # Controls zone definition method
         self.max_workers = THREAD_COUNT
 
-        # Gradio Polygon State
+        # Polygon State
         self.gradio_polygons = {} # Stores {direction: List[tuple(x,y)]}
-        self.current_gradio_direction = None
-        self.gradio_temp_points = []
-        self.original_frame_for_gradio = None
-        self.last_drawn_polygons_frame = None
 
         # Core components
         self.device = get_device()
@@ -127,116 +123,6 @@ class VideoProcessor:
                 print("Configuration: Advanced video reader was requested but is not available. Using OpenCV.")
             else: # USE_ADVANCED_VIDEO_READER is False
                 print("Configuration: Using OpenCV video reader.")
-
-    # --- Gradio Polygon Related Methods ---
-    def _draw_polygons_for_gradio(self, frame_to_draw_on):
-        if frame_to_draw_on is None: return None
-        img_copy = frame_to_draw_on.copy()
-        colors = {'north': (255,0,0), 'south': (0,255,0), 'east': (0,0,255), 'west': (255,0,255)} # BGR
-        default_color = (255, 255, 255); temp_color = (0, 255, 255)
-
-        # Draw completed polygons
-        for direction, points in self.gradio_polygons.items():
-            if points and len(points) >= 3:
-                pts_np = np.array(points, dtype=np.int32)
-                color = colors.get(direction, default_color)
-                cv2.polylines(img_copy, [pts_np], isClosed=True, color=color, thickness=2)
-                try:
-                    if len(pts_np) > 0:
-                        M = cv2.moments(pts_np)
-                        if M["m00"] != 0:
-                            cX = int(M["m10"] / M["m00"]); cY = int(M["m01"] / M["m00"])
-                            cv2.putText(img_copy, direction.upper(), (cX-15, cY+10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                except Exception: pass # Ignore label drawing errors
-
-        # Draw temporary points
-        if self.current_gradio_direction and self.gradio_temp_points:
-            current_temp_color = colors.get(self.current_gradio_direction, temp_color)
-            for i, pt in enumerate(self.gradio_temp_points):
-                cv2.circle(img_copy, pt, 5, current_temp_color, -1)
-                if i > 0: cv2.line(img_copy, self.gradio_temp_points[i-1], pt, current_temp_color, 2)
-            if len(self.gradio_temp_points) >= 2: # Closing hint
-                last_pt = self.gradio_temp_points[-1]; first_pt = self.gradio_temp_points[0]
-                hint_color = tuple(c // 2 for c in current_temp_color)
-                cv2.line(img_copy, last_pt, first_pt, hint_color, 1, cv2.LINE_AA)
-
-        self.last_drawn_polygons_frame = img_copy
-        return img_copy
-
-    def process_video_upload_for_gradio(self, video_path):
-        if self.line_mode != 'interactive': return None, "Zone definition mode is 'hardcoded'. Drawing disabled."
-        self.reset_gradio_polygons()
-        if video_path is None: return None, "Please upload a video."
-        try:
-            print("video path:",video_path)
-            cap=cv2.VideoCapture(video_path)
-            ret,frame=cap.read()
-            cap.release()
-            
-            if ret:
-                frame = cv2.resize(frame, self.frame_shape)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                self.original_frame_for_gradio = frame.copy()
-                drawn_frame = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
-                return drawn_frame, "Video loaded. Select direction and click image to define zone vertices."
-            else: return None, "Error: Could not read first frame."
-        except Exception as e: 
-            print(f"Error loading video: {e}")
-            return None, f"Error loading video: {e}"
-
-    def set_gradio_polygon_direction(self, direction):
-        if self.line_mode != 'interactive': return self.last_drawn_polygons_frame, "Drawing disabled."
-        direction_lower = direction.lower()
-        if direction_lower in self.gradio_polygons:
-             del self.gradio_polygons[direction_lower]
-             print(f"Cleared existing polygon for {direction.capitalize()} to redraw.")
-        self.current_gradio_direction = direction_lower
-        self.gradio_temp_points = []
-        status = f"Selected '{direction.capitalize()}'. Click points on image to define zone polygon."
-        frame_to_show = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
-        return frame_to_show, status
-
-    def handle_gradio_polygon_click(self, evt: 'gr.SelectData'):
-        if self.line_mode != 'interactive': return self.last_drawn_polygons_frame, "Drawing disabled."
-        if self.current_gradio_direction is None: return self.last_drawn_polygons_frame, "Select a direction first."
-        if self.original_frame_for_gradio is None: return None, "No video loaded."
-        point = (evt.index[0], evt.index[1])
-        self.gradio_temp_points.append(point)
-        status = f"Added point {len(self.gradio_temp_points)} for {self.current_gradio_direction.capitalize()}. Click more points or 'Finish Polygon'."
-        frame_to_show = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
-        return frame_to_show, status
-
-    def finalize_current_polygon(self):
-        if self.line_mode != 'interactive': return self.last_drawn_polygons_frame, "Drawing disabled."
-        if not self.current_gradio_direction: return self.last_drawn_polygons_frame, "No direction selected to finalize."
-        if len(self.gradio_temp_points) < 3:
-            status = f"Error: Need at least 3 points for a polygon (got {len(self.gradio_temp_points)})."
-            frame_to_show = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
-            return frame_to_show, status
-        self.gradio_polygons[self.current_gradio_direction] = self.gradio_temp_points.copy()
-        status = f"Polygon for {self.current_gradio_direction.capitalize()} saved. Select next direction or Process."
-        self.current_gradio_direction = None
-        self.gradio_temp_points = []
-        frame_to_show = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
-        return frame_to_show, status
-
-    def undo_last_polygon_point(self):
-        if self.line_mode != 'interactive': return self.last_drawn_polygons_frame, "Drawing disabled."
-        if not self.current_gradio_direction: status = "Select a direction first."
-        elif not self.gradio_temp_points: status = f"No points added yet for {self.current_gradio_direction.capitalize()}."
-        else:
-            removed_point = self.gradio_temp_points.pop()
-            status = f"Removed last point for {self.current_gradio_direction.capitalize()}."
-        frame_to_show = self._draw_polygons_for_gradio(self.original_frame_for_gradio)
-        return frame_to_show, status
-
-    def reset_gradio_polygons(self):
-        self.gradio_polygons = {}; self.current_gradio_direction = None
-        self.gradio_temp_points = []; status = "All polygons cleared."
-        frame_to_show = self._draw_polygons_for_gradio(self.original_frame_for_gradio) if self.original_frame_for_gradio is not None else None
-        self.last_drawn_polygons_frame = frame_to_show
-        return frame_to_show, status
 
     # --- Video Reading/Writing Threads ---
     def _get_video_properties(self, video_paths):
@@ -922,7 +808,7 @@ class VideoProcessor:
             return results
 
     # --- Main Processing Function ---
-    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction, generate_link_count_report_flag=False, link_count_to_dir1=None, link_count_to_dir2=None):
+    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction, generate_link_count_report_flag=False, progress_queue=None):
         if not self.processing_lock.acquire(blocking=False):
             print("Warning: Processing lock already acquired."); return "Processing is already in progress."
 
@@ -967,6 +853,10 @@ class VideoProcessor:
                 actual_video_path_to_process.append(video_path)
 
         try:
+            # --- ADD A STARTING MESSAGE ---
+            if progress_queue:
+                progress_queue.put_nowait({"progress": 2, "status": "Initializing processor..."})
+
             # --- Zone Definition ---
             self.detection_zones_polygons = None
             if self.line_mode == 'hardcoded':
@@ -1012,6 +902,9 @@ class VideoProcessor:
             total_frames, original_fps = self._get_video_properties(actual_video_path_to_process)
             print(f"Video Properties: ~{total_frames} frames, {original_fps:.2f} FPS (Original)")
             if total_frames <= 0: raise ValueError("Cannot process video with zero or unreadable total frames.")
+
+            if progress_queue:
+                progress_queue.put_nowait({"progress": 5, "status": "Starting I/O threads..."})
 
             print("Starting I/O threads...")
             reader_args = (actual_video_path_to_process, original_fps, total_frames) if self.actually_use_advanced_reader else (actual_video_path_to_process, original_fps)
@@ -1180,8 +1073,13 @@ class VideoProcessor:
                         # Progress printing
                         if self.perf and (current_monotonic_time_loop - last_prog_print_time > 1.0): # Print progress every second
                             prog_stats=self.perf.get_progress()
-                            active_app_tracks = sum(1 for ad in self.active_track_data.values() if ad['status'] == 'active')
-                            print(f"\rProgress:{prog_stats['percent']:.1f}%|FPS:{prog_stats['fps']:.1f}|Active(App):{active_app_tracks}|ETA:{prog_stats['eta']}      ", end="")
+                            if progress_queue:
+                                progress_queue.put_nowait({
+                                    "progress": round(prog_stats.get('percent', 0)),
+                                    "status": f"{prog_stats['fps']:.1f} FPS",
+                                    "eta": str(prog_stats.get('eta', '...'))
+                                })
+                            print(f"\rProgress:{prog_stats['percent']:.1f}%|FPS:{prog_stats['fps']:.1f}|ETA:{prog_stats['eta']}      ", end="")
                             last_prog_print_time = current_monotonic_time_loop
                         
                         # Mark all frames from this effective batch as done in the read queue
@@ -1385,14 +1283,30 @@ class VideoProcessor:
             if excel_path_result: result_msg_final+=f"Excel report: {excel_path_result}\n"
             if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: result_msg_final+=f"Perf charts: 'performance_charts/'\n"
             result_msg_final+=f"\n--- Summary Stats ---\nSTAT_FRAMES_PROCESSED={frames_processed_count}\nSTAT_TIME_SECONDS={total_time_taken_final:.2f}\nSTAT_FPS={final_fps_overall:.2f}\nSTAT_COMPLETED_PATHS={completed_paths_count_valid_excel}\n--- End Stats ---"
+            if progress_queue:
+                progress_queue.put_nowait({
+                    "progress": 100,
+                    "status": "complete",
+                    # We can send back the paths to the final reports!
+                    "results": {
+                        "video_path": self.final_output_path,
+                        "excel_path": excel_path_result,
+                        "bidirectional_excel_path": excel_link_count_report_path
+                    }
+                })
             return result_msg_final
 
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as e_proc: # Final error handling
             print(f"\nFATAL ERROR during setup or processing: {e_proc}")
+            if progress_queue:
+                progress_queue.put_nowait({"progress": 100, "status": "error", "message": str(e_proc)})
             import traceback; traceback.print_exc()
             if hasattr(self, 'stop_event') and self.stop_event: self.stop_event.set()
             return f"❌ Error: {e_proc}"
         finally: # Final cleanup
+            # This ensures the WebSocket knows the queue is done, even on cleanup.
+            if progress_queue:
+                progress_queue.put_nowait({"status": "finished"})
             try:
                 if hasattr(self, 'reader_thread') and self.reader_thread and self.reader_thread.is_alive(): self.reader_thread.join(timeout=1)
                 if hasattr(self, 'writer_thread') and self.writer_thread and self.writer_thread.is_alive(): self.writer_thread.join(timeout=1)

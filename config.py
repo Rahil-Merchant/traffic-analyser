@@ -154,7 +154,7 @@ REPORTING_DIRECTIONS = { 'From South': ['To North', 'To West', 'To East'], 'From
 
 # --- Performance & Debugging ---
 ENABLE_DETAILED_PERFORMANCE_METRICS = True
-DEBUG_MODE = False # Keep False for performance runs
+DEBUG_MODE = True # Keep False for performance runs
 PERFORMANCE_SAMPLE_INTERVAL = 15.0   # In seconds
 MEMORY_CLEANUP_INTERVAL = 300   # In seconds
 
