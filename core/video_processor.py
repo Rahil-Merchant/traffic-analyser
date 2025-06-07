@@ -32,7 +32,7 @@ from models.model_loader import load_model, get_device
 from tracking.zone_tracker import ZoneTracker
 from tracking.cleanup import cleanup_tracking_data
 from visualization import overlay as visual_overlay
-from reporting.excel_report import create_excel_report
+from reporting.excel_report import create_excel_report, create_bidirectional_link_count_report
 from core.converters import convert_dav_to_mp4_internal
 
 # Conditional imports
@@ -922,7 +922,7 @@ class VideoProcessor:
             return results
 
     # --- Main Processing Function ---
-    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction):
+    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction, generate_link_count_report_flag=False, link_count_to_dir1=None, link_count_to_dir2=None):
         if not self.processing_lock.acquire(blocking=False):
             print("Warning: Processing lock already acquired."); return "Processing is already in progress."
 
@@ -1356,6 +1356,25 @@ class VideoProcessor:
                 primary_direction=primary_direction, 
                 video_path=actual_video_path_to_process[0]      # If multiple videos were processed, use the name of the first one.
             )
+
+            # --- Conditionally create Bi-directional Link Count Report ---
+            excel_link_count_report_path = None
+            if generate_link_count_report_flag:
+                if not self.finalized_paths_for_report:
+                    print("Skipping Bi-directional Link Count Report: No completed paths data available.")
+                else:
+                    excel_link_count_report_path = create_bidirectional_link_count_report(
+                        completed_paths_data=self.finalized_paths_for_report,
+                        start_datetime_video=start_datetime_obj_global,
+                        video_path=actual_video_path_to_process[0],
+                        primary_direction=primary_direction,
+                        secondary_direction=[direction for direction in self.gradio_polygons.keys() if direction!=primary_direction][0]
+                    )
+                    if excel_link_count_report_path:
+                        result_msg += f"Bi-directional Link Count report: {excel_link_count_report_path}\n"
+                    else:
+                        result_msg += "Bi-directional Link Count report generation failed or produced no data.\n"
+        
             if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: visualize_performance(self.perf)
 
             result_msg_final=f"✅ Processing completed (ByteTrack, Report Parity).\n" # Rest of result message

@@ -303,3 +303,255 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
         return None
 
     return excel_created_path
+
+def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction):
+    """
+    Creates a separate Excel report for bi-directional link counts based on user-selected "To" directions.
+    The report includes individual and cumulative counts for specific vehicle categories over a 24-hour period.
+    """
+
+    if not completed_paths_data:
+        print("WARNING (Bi-directional Report): No completed paths data received. Report will be empty or not generated.")
+        return None
+
+    # --- 1. Define New Vehicle Categories and Column Order ---
+    NEW_REPORT_CATEGORIES = {
+        'Light': ['Light Vehicle', 'Motorcycle'],
+        'Heavy': ['Short Truck', 'Medium Truck', 'Long Truck'],
+        'Buses': ['Bus'],
+        'Mini-buses': ['Minibus Taxi']
+    }
+    # This is the order they will appear under each direction in the Excel sheet
+    NEW_REPORT_COLUMN_ORDER = ['Light', 'Heavy', 'Buses', 'Mini-buses']
+
+    # --- 2. Prepare 24-Hour Time Bins ---
+    # Report starts from 00:00 of the video's start day
+    report_start_date = start_datetime_video.date()
+    day_start_dt = datetime.combine(report_start_date, time.min) # 00:00:00
+    
+    time_bins_24hr = []
+    time_bin_labels_24hr = []
+    current_interval_start_dt = day_start_dt
+    for _ in range(96): # 24 hours * 4 intervals/hour
+        interval_end_dt = current_interval_start_dt + timedelta(minutes=15)
+        time_bins_24hr.append(current_interval_start_dt)
+        # Label for the start of the interval, as in the template (e.g., "6:00")
+        time_bin_labels_24hr.append(current_interval_start_dt.strftime('%H:%M'))
+        current_interval_start_dt = interval_end_dt
+    time_bins_24hr.append(current_interval_start_dt) # Add the final end time for pd.cut
+
+    # --- 3. Filter and Categorize Data for the Two Selected "To" Directions ---
+    processed_for_report = []
+    for path in completed_paths_data:
+        if path.get('status') != 'exited' or not path.get('exit_time'):
+            continue
+
+        exit_time_dt = path['exit_time']
+        vehicle_type_orig = path.get('type')
+        exit_direction_norm = path.get('exit_direction', '').lower()
+
+        matched_to_direction_label = None
+        if exit_direction_norm == primary_direction:
+            matched_to_direction_label = 'Dir1' # Internal label
+        elif exit_direction_norm == secondary_direction:
+            matched_to_direction_label = 'Dir2' # Internal label
+        
+        if matched_to_direction_label:
+            assigned_new_category = None
+            for new_cat, orig_types_list in NEW_REPORT_CATEGORIES.items():
+                if vehicle_type_orig in orig_types_list:
+                    assigned_new_category = new_cat
+                    break
+            
+            if assigned_new_category:
+                processed_for_report.append({
+                    'timestamp': exit_time_dt,
+                    'to_direction_label': matched_to_direction_label,
+                    'new_category': assigned_new_category
+                })
+
+    if not processed_for_report:
+        print("WARNING (Bi-directional Report): No relevant vehicle movements found for the selected 'To' directions and categories.")
+        # Still create an empty report structure if desired, or return None
+        # For now, let's proceed to create the structure.
+        
+    df_processed = pd.DataFrame(processed_for_report)
+
+    # --- 4. Create DataFrame with Time Bins and Pivot for Individual Counts ---
+    if not df_processed.empty:
+        # Bin timestamps into 15-minute intervals using the generated labels
+        # We use the start times (time_bin_labels_24hr) as the labels for the bins
+        df_processed['Time Bin Start'] = pd.cut(
+            df_processed['timestamp'],
+            bins=time_bins_24hr,
+            labels=time_bin_labels_24hr, # Use the H:MM labels
+            right=False, # [start, end) interval
+            ordered=True
+        )
+        
+        # Pivot table for individual counts
+        individual_counts_pivot = pd.pivot_table(
+            df_processed,
+            index='Time Bin Start',
+            columns=['to_direction_label', 'new_category'],
+            aggfunc='size',
+            fill_value=0
+        )
+    else: # Create an empty pivot table structure if no data
+        multi_index_cols = pd.MultiIndex.from_product(
+            [['Dir1', 'Dir2'], NEW_REPORT_COLUMN_ORDER],
+            names=['to_direction_label', 'new_category']
+        )
+        empty_idx = pd.CategoricalIndex(time_bin_labels_24hr, categories=time_bin_labels_24hr, ordered=True, name='Time Bin Start')
+        individual_counts_pivot = pd.DataFrame(0, index=empty_idx, columns=multi_index_cols)
+
+
+    # Reindex to ensure all 96 time bins and all categories/directions are present
+    # And ensure correct column order for Dir1 and Dir2 categories
+    final_columns_ordered = []
+    for d_label, d_name_user in [('Dir1', primary_direction), ('Dir2', secondary_direction)]:
+        for cat in NEW_REPORT_COLUMN_ORDER:
+            final_columns_ordered.append((d_label, cat))
+    
+    individual_counts_pivot = individual_counts_pivot.reindex(
+        index=time_bin_labels_24hr, # Ensure all time bins are rows
+        columns=pd.MultiIndex.from_tuples(final_columns_ordered, names=['to_direction_label', 'new_category']),
+        fill_value=0
+    )
+
+    # Calculate Totals for Individual Counts sheet
+    df_individual_with_totals = individual_counts_pivot.copy()
+    totals_row = df_individual_with_totals.sum(axis=0)
+    totals_row.name = "Total" # Name for the new row's index
+    # df_individual_with_totals = df_individual_with_totals.append(totals_row) # Older pandas
+    df_individual_with_totals.loc["Total"] = totals_row # Newer pandas
+
+
+    # --- 5. Calculate Cumulative Counts ---
+    # Cumulative sum is calculated on the pivot table *without* the 'Total' row
+    df_cumulative_counts = individual_counts_pivot.cumsum(axis=0)
+
+
+    # --- 6. Write to Excel using xlsxwriter ---
+    video_basename = os.path.splitext(os.path.basename(video_path))[0]
+    timestamp_str = start_datetime_video.strftime("%Y%m%d_%H%M%S")
+    # New filename format
+    excel_filename = f"bidirectional_path_analysis_{video_basename}_{timestamp_str}.xlsx"
+    excel_full_path = os.path.join(REPORT_OUTPUT_DIR, excel_filename)
+
+    try:
+        with pd.ExcelWriter(excel_full_path, engine='xlsxwriter') as writer:
+            workbook = writer.book
+            
+            # Common header data
+            header_info_static = [
+                ("12-Hour Link Count Sheet ",), # A1, merged later
+                ("Station Number", ""), ("Road Number", ""), ("KM", ""), ("Region", ""),
+                ("Location Description", ""),
+                ("Direction 1", get_display_direction(primary_direction)), # Use formatted display name
+                ("Direction 2", get_display_direction(secondary_direction)), # Use formatted display name
+                ("Date", start_datetime_video.strftime("%Y-%m-%d")),
+                ("Day of week", start_datetime_video.strftime("%A")),
+                ("Duration of count", "24 Hours"), # Corrected to 24 hours
+                ("Supervisor", ""), ("Classification System", ""),
+                ("", "", "", "", "", "Link layout and travel directions", "", ""), # Row for this text
+                ("",) # Empty row
+            ]
+            # Column headers for the data part
+            data_column_headers_L1 = ["Start Time"]
+            data_column_headers_L2 = [""] # For "Start Time"
+            
+            # Build data column headers dynamically
+            dir1_display_name = get_display_direction(primary_direction)
+            dir2_display_name = get_display_direction(secondary_direction)
+
+            for _ in NEW_REPORT_COLUMN_ORDER: data_column_headers_L1.append(f"To {dir1_display_name}")
+            for cat_name in NEW_REPORT_COLUMN_ORDER: data_column_headers_L2.append(cat_name)
+            
+            for _ in NEW_REPORT_COLUMN_ORDER: data_column_headers_L1.append(f"To {dir2_display_name}")
+            for cat_name in NEW_REPORT_COLUMN_ORDER: data_column_headers_L2.append(cat_name)
+            
+            num_data_cols = 1 + len(NEW_REPORT_COLUMN_ORDER) * 2 # StartTime + (Cats * 2 Dirs)
+
+            # --- Helper to write a sheet ---
+            def write_sheet_content(sheet_name_ws, df_to_write, include_total_row):
+                ws = workbook.add_worksheet(sheet_name_ws)
+                
+                # Formatting
+                bold_format = workbook.add_format({'bold': True})
+                center_format = workbook.add_format({'align': 'center'})
+                header_merge_format = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter'})
+
+                # Write static header block
+                current_row_excel = 0
+                ws.merge_range(current_row_excel, 0, current_row_excel, num_data_cols -1 , header_info_static[0][0], header_merge_format) # Title
+                current_row_excel += 1
+                for i in range(1, len(header_info_static) -2): # Up to "Link layout"
+                    ws.write(current_row_excel, 0, header_info_static[i][0], bold_format)
+                    if len(header_info_static[i]) > 1 and header_info_static[i][1]:
+                        ws.write(current_row_excel, 1, header_info_static[i][1])
+                    current_row_excel += 1
+                # "Link layout..." row - merge across several cells
+                ws.merge_range(current_row_excel, 0, current_row_excel, num_data_cols -1, header_info_static[-2][5], center_format) # Link layout
+                current_row_excel += 2 # Skip one empty row and move to data headers
+
+                # Write data column headers (L1 - Merged Direction Names)
+                header_row_l1_excel = current_row_excel
+                ws.write(header_row_l1_excel, 0, data_column_headers_L1[0], bold_format) # "Start Time"
+                ws.write(header_row_l1_excel + 1, 0, data_column_headers_L2[0], bold_format) # Empty under "Start Time"
+                
+                # "To Direction 1" merged header
+                ws.merge_range(header_row_l1_excel, 1, header_row_l1_excel, len(NEW_REPORT_COLUMN_ORDER), 
+                               f"To {dir1_display_name}", header_merge_format)
+                # "To Direction 2" merged header
+                ws.merge_range(header_row_l1_excel, 1 + len(NEW_REPORT_COLUMN_ORDER), 
+                               header_row_l1_excel, len(NEW_REPORT_COLUMN_ORDER) * 2,
+                               f"To {dir2_display_name}", header_merge_format)
+                
+                # Write data column headers (L2 - Vehicle Categories)
+                header_row_l2_excel = current_row_excel + 1
+                for col_idx, header_text in enumerate(data_column_headers_L2[1:], start=1):
+                    ws.write(header_row_l2_excel, col_idx, header_text, bold_format)
+                
+                current_row_excel += 2 # Move to data start
+
+                # Write data
+                # df_to_write index is 'Time Bin Start' (HH:MM labels)
+                # df_to_write columns are MultiIndex: (('Dir1'/'Dir2'), ('Light'/'Heavy'/...))
+                for time_bin_label, row_data in df_to_write.iterrows():
+                    if not include_total_row and time_bin_label == "Total": # Skip Total for cumulative
+                        continue
+                    ws.write(current_row_excel, 0, time_bin_label) # Time bin label (e.g., "06:00")
+                    
+                    col_offset = 1
+                    # Dir1 data
+                    for cat in NEW_REPORT_COLUMN_ORDER:
+                        ws.write(current_row_excel, col_offset, row_data[('Dir1', cat)])
+                        col_offset += 1
+                    # Dir2 data
+                    for cat in NEW_REPORT_COLUMN_ORDER:
+                        ws.write(current_row_excel, col_offset, row_data[('Dir2', cat)])
+                        col_offset += 1
+                    current_row_excel += 1
+                
+                # Autofit column widths (basic)
+                ws.set_column(0, 0, 12) # Start Time column
+                for i in range(1, num_data_cols):
+                    ws.set_column(i, i, 10) # Data columns
+
+            # --- Sheet 1: Individual Counts ---
+            write_sheet_content("Individual Counts", df_individual_with_totals, include_total_row=True)
+            debug_print("(Bi-directional Report) Writing 'Individual Counts' sheet.")
+
+            # --- Sheet 2: Cumulative Counts ---
+            write_sheet_content("Cumulative Counts", df_cumulative_counts, include_total_row=False)
+            debug_print("(Bi-directional Report) Writing 'Cumulative Counts' sheet.")
+
+        print(f"Bi-directional Link Count report generated: {excel_full_path}")
+        return excel_full_path
+
+    except Exception as e:
+        print(f"Error creating Bi-directional Link Count report: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
