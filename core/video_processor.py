@@ -26,7 +26,6 @@ from config import (
 
 # Modules
 from core.utils import debug_print, is_valid_movement, cleanup_memory
-from core.image_processing import enhance_frame_for_detection
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
 from tracking.zone_tracker import ZoneTracker
@@ -100,7 +99,7 @@ class VideoProcessor:
         # Threading & Queues
         self.frame_read_queue = None
         self.video_write_queue = None # Will be None if visualization is disabled
-        self.max_queue_size = max(self.batch_size * self.num_inference_streams * 8, 128)
+        self.max_queue_size = max(self.batch_size * self.num_inference_streams * 32, 128)
         self.stop_event = None
         self.reader_thread = None
         self.writer_thread = None # Will be None if visualization is disabled
@@ -417,7 +416,7 @@ class VideoProcessor:
             if self.frame_read_queue:
                 try: self.frame_read_queue.put(None, block=False, timeout=1.0)
                 except queue.Full: 
-                    if i==num_segments_for_current_video-1:     #setting this to avoid getting stuck in main loop when no other frames are available to add in queue
+                    if i==num_segments_for_current_video-1 and cumulative_frames_processed_so_far:     #setting this to avoid getting stuck in main loop when no other frames are available to add in queue
                         print("Queue is full and it is the last segment: Setting stop event")
                         self.stop_event.set()
                     pass
@@ -1216,26 +1215,13 @@ class VideoProcessor:
                              try: self.frame_read_queue.task_done()
                              except ValueError: pass
 
-                except queue.Empty: # This timeout (60s in get()) means the reader might be finished or stuck
-                    # More robust queue timeout handling
-                    if self.stop_event.is_set():
-                        debug_print("Main loop: Stop event set during queue timeout, breaking.")
-                        break
-                    
-                    # Check if reader thread is still alive
-                    if hasattr(self, 'reader_thread') and self.reader_thread and not self.reader_thread.is_alive():
-                        debug_print("Main loop: Reader thread died, processing any remaining frames...")
-                        # Try to process any remaining frames in the current batch
-                        if current_batch_frames_metadata:
-                            debug_print(f"Main loop: Processing final {len(current_batch_frames_metadata)} frames before exit...")
-                            continue  # This will trigger the batch processing logic
-                        debug_print("Main loop: No remaining frames, breaking.")
-                        break
-                    
-                    # Add a small yield to prevent CPU spinning
-                    time.sleep(0.01)  # 10ms yield
+                except queue.Empty: 
+                    # This timeout (60s in get()) means the reader might be finished or stuck
+                    if self.stop_event.is_set() and (self.frame_read_queue is None or self.frame_read_queue.empty()):
+                        debug_print("Main loop: Queue empty and stop event set, breaking.")
+                        break # Exit loop if stop event is set and queue is truly empty
                     debug_print("Main loop: Queue empty, continuing to wait...")
-                    continue
+                    continue # Continue waiting for frames
                 except Exception as e_loop:
                     print(f"\nERROR during processing loop: {e_loop}")
                     import traceback; traceback.print_exc()
