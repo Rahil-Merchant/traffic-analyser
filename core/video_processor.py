@@ -19,7 +19,7 @@ from config import (
     VIDEO_OUTPUT_DIR, ENABLE_DETAILED_PERFORMANCE_METRICS, OPTIMAL_BATCH_SIZE,
     MIXED_PRECISION, PARALLEL_STREAMS, THREAD_COUNT, IOU_THRESHOLD, TTA,
     MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
-    LINE_MODE, LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
+    LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
     USE_ADVANCED_VIDEO_READER, PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS,
     BYTETRACK_MATCH_THRESH, BYTETRACK_MIN_CONF, BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH
 )
@@ -51,7 +51,7 @@ except ImportError:
 
 
 class VideoProcessor:
-    def __init__(self):
+    def __init__(self, LINE_MODE):
         self.target_fps = TARGET_FPS
         self.frame_shape = (FRAME_WIDTH, FRAME_HEIGHT)
         self.frame_shape_viz = (FRAME_WIDTH_VIZ, FRAME_HEIGHT_VIZ)
@@ -62,7 +62,7 @@ class VideoProcessor:
         self.max_workers = THREAD_COUNT
 
         # Polygon State
-        self.gradio_polygons = {} # Stores {direction: List[tuple(x,y)]}
+        self.zone_polygons = {} # Stores {direction: List[tuple(x,y)]}
 
         # Core components
         self.device = get_device()
@@ -124,6 +124,38 @@ class VideoProcessor:
             else: # USE_ADVANCED_VIDEO_READER is False
                 print("Configuration: Using OpenCV video reader.")
 
+    def force_stop_processing(self):
+        """Force stop all processing threads and cleanup"""
+        print("Force stopping video processor...")
+        
+        if hasattr(self, 'stop_event') and self.stop_event:
+            self.stop_event.set()
+        
+        # Force close queues
+        if hasattr(self, 'frame_read_queue') and self.frame_read_queue:
+            try:
+                while not self.frame_read_queue.empty():
+                    self.frame_read_queue.get_nowait()
+            except:
+                pass
+        
+        if hasattr(self, 'video_write_queue') and self.video_write_queue:
+            try:
+                while not self.video_write_queue.empty():
+                    self.video_write_queue.get_nowait()
+            except:
+                pass
+        
+        # Release processing lock
+        if hasattr(self, 'processing_lock') and self.processing_lock.locked():
+            try:
+                self.processing_lock.release()
+            except:
+                pass
+        
+        print("Video processor force stop complete")
+
+
     # --- Video Reading/Writing Threads ---
     def _get_video_properties(self, video_paths):
         """Gets total frames and original FPS, trying PyVideoReader first if enabled."""
@@ -174,6 +206,46 @@ class VideoProcessor:
             print("WARNING: Could not determine total_frames accurately. Progress calculation might be affected.")   
         return total_frames, original_fps
 
+    def _scale_polygons_to_processing_coordinates(self, polygons_dict, original_image_width, original_image_height):
+        """
+        Scale polygon coordinates from original image size to processing frame size.
+        
+        Args:
+            polygons_dict: Dictionary of {direction: [(x,y), ...]} in original image coordinates
+            original_image_width: Width of the original preview image
+            original_image_height: Height of the original preview image
+        
+        Returns:
+            Dictionary of scaled polygons in processing frame coordinates
+        """
+        if not polygons_dict:
+            return {}
+        
+        # These are the coordinates used for detection box scaling
+        target_width = self.frame_shape[0]   # FRAME_WIDTH (853)
+        target_height = self.frame_shape[1]  # FRAME_HEIGHT (640)
+        
+        print(f"Scaling polygons from ({original_image_width}x{original_image_height}) to ({target_width}x{target_height})")
+        
+        scaled_polygons = {}
+        for direction, points_list in polygons_dict.items():
+            if not points_list or len(points_list) < 3:
+                continue
+                
+            scaled_points = []
+            for x, y in points_list:
+                # Scale to processing frame coordinates
+                scaled_x = int(x * target_width / original_image_width)
+                scaled_y = int(y * target_height / original_image_height)
+                scaled_points.append((scaled_x, scaled_y))
+            
+            scaled_polygons[direction] = scaled_points
+            print(f"  {direction}: {len(points_list)} points scaled")
+            print(f"    Original first point: {points_list[0]}")
+            print(f"    Scaled first point: {scaled_points[0]}")
+        
+        return scaled_polygons
+
     def _frame_reader_task(self, video_paths, original_fps):
         cap = None
         try:
@@ -213,8 +285,7 @@ class VideoProcessor:
         
         except Exception as e: 
             print(f"FATAL ERROR in _frame_reader_task (OpenCV): {e}")
-            import traceback
-            traceback.print_exc()
+            import traceback; traceback.print_exc()
         finally:
             if cap: cap.release()
             if self.frame_read_queue:
@@ -345,7 +416,11 @@ class VideoProcessor:
             if pvr_instance: del pvr_instance
             if self.frame_read_queue:
                 try: self.frame_read_queue.put(None, block=False, timeout=1.0)
-                except queue.Full: pass
+                except queue.Full: 
+                    if i==num_segments_for_current_video-1:     #setting this to avoid getting stuck in main loop when no other frames are available to add in queue
+                        print("Queue is full and it is the last segment: Setting stop event")
+                        self.stop_event.set()
+                    pass
                 
     def _frame_writer_task(self, output_path):
         # This task will only run if ENABLE_VISUALIZATION is True
@@ -773,7 +848,7 @@ class VideoProcessor:
         if not self.uploaded_video_paths:
             return "No videos uploaded."
 
-        if not self.gradio_polygons:
+        if not self.zone_polygons:
             return "Zones not defined."
 
         status_messages = []
@@ -807,8 +882,32 @@ class VideoProcessor:
                 results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE)
             return results
 
+    def _format_duration(self, seconds):
+        """Format duration in seconds to human-readable string"""
+        if seconds < 60:
+            return f"{int(seconds)} seconds"
+        elif seconds < 3600:  # Less than 1 hour
+            minutes = int(seconds // 60)
+            remaining_seconds = int(seconds % 60)
+            if remaining_seconds > 0:
+                return f"{minutes} minutes {remaining_seconds} seconds"
+            else:
+                return f"{minutes} minutes"
+        else:  # 1 hour or more
+            hours = int(seconds // 3600)
+            remaining_minutes = int((seconds % 3600) // 60)
+            remaining_seconds = int(seconds % 60)
+            
+            duration_parts = [f"{hours} hour{'s' if hours != 1 else ''}"]
+            if remaining_minutes > 0:
+                duration_parts.append(f"{remaining_minutes} minute{'s' if remaining_minutes != 1 else ''}")
+            if remaining_seconds > 0:
+                duration_parts.append(f"{remaining_seconds} second{'s' if remaining_seconds != 1 else ''}")
+            
+            return " ".join(duration_parts)
+    
     # --- Main Processing Function ---
-    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction, generate_link_count_report_flag=False, progress_queue=None):
+    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction, generate_link_count_report_flag=False, progress_queue=None, preview_image_width=640, preview_image_height=480):
         if not self.processing_lock.acquire(blocking=False):
             print("Warning: Processing lock already acquired."); return "Processing is already in progress."
 
@@ -828,6 +927,8 @@ class VideoProcessor:
         self.frame_read_queue = queue.Queue(maxsize=self.max_queue_size)
         self.last_cleanup_time = time.monotonic()
         self.detection_zones_polygons = None
+        self.preview_image_width = preview_image_width
+        self.preview_image_height = preview_image_height
         self.final_output_path = None
         self.writer_thread = None
         self.video_write_queue = None
@@ -865,10 +966,23 @@ class VideoProcessor:
                 if not valid_polygons_hc: raise ValueError("Hardcoded: No valid polygons in LINE_POINTS.")
                 self.detection_zones_polygons = {dir: np.array(pts, dtype=np.int32) for dir, pts in valid_polygons_hc.items()}
             elif self.line_mode == 'interactive':
-                if not self.gradio_polygons: raise ValueError("Interactive: No zone polygons defined.")
-                valid_polygons = {dir: pts for dir, pts in self.gradio_polygons.items() if pts and len(pts) >= 3}
-                if len(valid_polygons) < 1: raise ValueError(f"Interactive: Need >= 1 valid zone. Found {len(valid_polygons)}.")
-                self.detection_zones_polygons = {dir: np.array(pts, dtype=np.int32) for dir, pts in valid_polygons.items()}
+                if not self.zone_polygons:
+                    raise ValueError("Interactive: No zone polygons defined.")
+                valid_polygons = {dir: pts for dir, pts in self.zone_polygons.items() if pts and len(pts) >= 3}
+                if len(valid_polygons) < 2:
+                    raise ValueError(f"Interactive: Need >= 2 valid zone. Found {len(valid_polygons)}.")
+                
+                # Get preview image dimensions from the frontend
+                preview_width = getattr(self, 'preview_image_width', 640)
+                preview_height = getattr(self, 'preview_image_height', 480)
+                
+                print(f"Scaling polygons from preview ({preview_width}x{preview_height}) to processing ({self.frame_shape[0]}x{self.frame_shape[1]})")
+                
+                # Scale polygons from preview coordinates to processing coordinates
+                scaled_polygons = self._scale_polygons_to_processing_coordinates(
+                    valid_polygons, preview_width, preview_height
+                )
+                self.detection_zones_polygons = {dir: np.array(pts, dtype=np.int32) for dir, pts in scaled_polygons.items()}
             else: raise ValueError(f"Invalid LINE_MODE '{self.line_mode}'.")
             if not self.detection_zones_polygons: raise ValueError("Zone polygon data missing for ZoneTracker.")
             self.zone_tracker = ZoneTracker(self.detection_zones_polygons)
@@ -902,6 +1016,10 @@ class VideoProcessor:
             total_frames, original_fps = self._get_video_properties(actual_video_path_to_process)
             print(f"Video Properties: ~{total_frames} frames, {original_fps:.2f} FPS (Original)")
             if total_frames <= 0: raise ValueError("Cannot process video with zero or unreadable total frames.")
+
+            video_duration_seconds = total_frames / original_fps
+            video_duration_formatted = self._format_duration(video_duration_seconds)
+            print(f"Video Duration: {video_duration_formatted} ({video_duration_seconds:.1f} seconds)")
 
             if progress_queue:
                 progress_queue.put_nowait({"progress": 5, "status": "Starting I/O threads..."})
@@ -1098,13 +1216,26 @@ class VideoProcessor:
                              try: self.frame_read_queue.task_done()
                              except ValueError: pass
 
-                except queue.Empty: 
-                    # This timeout (60s in get()) means the reader might be finished or stuck
-                    if self.stop_event.is_set() and (self.frame_read_queue is None or self.frame_read_queue.empty()):
-                        debug_print("Main loop: Queue empty and stop event set, breaking.")
-                        break # Exit loop if stop event is set and queue is truly empty
+                except queue.Empty: # This timeout (60s in get()) means the reader might be finished or stuck
+                    # More robust queue timeout handling
+                    if self.stop_event.is_set():
+                        debug_print("Main loop: Stop event set during queue timeout, breaking.")
+                        break
+                    
+                    # Check if reader thread is still alive
+                    if hasattr(self, 'reader_thread') and self.reader_thread and not self.reader_thread.is_alive():
+                        debug_print("Main loop: Reader thread died, processing any remaining frames...")
+                        # Try to process any remaining frames in the current batch
+                        if current_batch_frames_metadata:
+                            debug_print(f"Main loop: Processing final {len(current_batch_frames_metadata)} frames before exit...")
+                            continue  # This will trigger the batch processing logic
+                        debug_print("Main loop: No remaining frames, breaking.")
+                        break
+                    
+                    # Add a small yield to prevent CPU spinning
+                    time.sleep(0.01)  # 10ms yield
                     debug_print("Main loop: Queue empty, continuing to wait...")
-                    continue # Continue waiting for frames
+                    continue
                 except Exception as e_loop:
                     print(f"\nERROR during processing loop: {e_loop}")
                     import traceback; traceback.print_exc()
@@ -1252,8 +1383,11 @@ class VideoProcessor:
                 completed_paths_data=self.finalized_paths_for_report,
                 start_datetime=start_datetime_obj_global, 
                 primary_direction=primary_direction, 
-                video_path=actual_video_path_to_process[0]      # If multiple videos were processed, use the name of the first one.
+                video_path=actual_video_path_to_process[0],
+                video_duration_formatted=video_duration_formatted
             )
+
+            result_msg_final=f"✅ Processing completed.\n"
 
             # --- Conditionally create Bi-directional Link Count Report ---
             excel_link_count_report_path = None
@@ -1266,16 +1400,16 @@ class VideoProcessor:
                         start_datetime_video=start_datetime_obj_global,
                         video_path=actual_video_path_to_process[0],
                         primary_direction=primary_direction,
-                        secondary_direction=[direction for direction in self.gradio_polygons.keys() if direction!=primary_direction][0]
+                        secondary_direction=[direction for direction in self.zone_polygons.keys() if direction!=primary_direction][0],
+                        video_duration_formatted=video_duration_formatted
                     )
                     if excel_link_count_report_path:
-                        result_msg += f"Bi-directional Link Count report: {excel_link_count_report_path}\n"
+                        result_msg_final += f"Bi-directional Link Count report: {excel_link_count_report_path}\n"
                     else:
-                        result_msg += "Bi-directional Link Count report generation failed or produced no data.\n"
+                        result_msg_final += "Bi-directional Link Count report generation failed or produced no data.\n"
         
             if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: visualize_performance(self.perf)
 
-            result_msg_final=f"✅ Processing completed (ByteTrack, Report Parity).\n" # Rest of result message
             if ENABLE_VISUALIZATION:
                 if self.final_output_path and "ERROR" not in self.final_output_path: result_msg_final+=f"Output video: '{self.final_output_path}'.\n"
                 elif self.final_output_path and "ERROR" in self.final_output_path: result_msg_final+=f"Output video generation FAILED: {self.final_output_path}.\n"
@@ -1283,15 +1417,20 @@ class VideoProcessor:
             if excel_path_result: result_msg_final+=f"Excel report: {excel_path_result}\n"
             if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: result_msg_final+=f"Perf charts: 'performance_charts/'\n"
             result_msg_final+=f"\n--- Summary Stats ---\nSTAT_FRAMES_PROCESSED={frames_processed_count}\nSTAT_TIME_SECONDS={total_time_taken_final:.2f}\nSTAT_FPS={final_fps_overall:.2f}\nSTAT_COMPLETED_PATHS={completed_paths_count_valid_excel}\n--- End Stats ---"
-            if progress_queue:
-                progress_queue.put_nowait({
-                    "progress": 100,
-                    "status": "complete",
-                    # We can send back the paths to the final reports!
-                    "results": {
-                        "video_path": self.final_output_path,
-                        "excel_path": excel_path_result,
-                        "bidirectional_excel_path": excel_link_count_report_path
+            if progress_queue: 
+                progress_queue.put_nowait({ 
+                    "progress": 100, 
+                    "status": "complete", 
+                    "results": { 
+                        "video_path": self.final_output_path, 
+                        "excel_path": excel_path_result, 
+                        "bidirectional_excel_path": excel_link_count_report_path 
+                    },
+                    "statistics": {
+                        "total_valid_paths": completed_paths_count_valid_excel,
+                        "processing_time_seconds": round(total_time_taken_final, 2),
+                        "processing_fps": round(final_fps_overall, 2),
+                        "total_frames_processed": frames_processed_count
                     }
                 })
             return result_msg_final

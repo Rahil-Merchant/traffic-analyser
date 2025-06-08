@@ -8,15 +8,65 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
 
-from config import GRADIO_SERVER_PORT
+from config import SERVER_PORT
 from core.utils import setup_torch_global_settings, setup_thread_affinity
 from core.video_processor import VideoProcessor
+import signal
+import atexit
 
-print("--- Initializing EMAAN AURA DEVELOPMENT Server (File System Access API) ---")
+print("--- Initializing EMAAN DEVELOPMENT Server (File System Access API) ---")
 
-app = FastAPI(title="EMAAN AURA API", version="5.0.0")
-processor = VideoProcessor()
+app = FastAPI(title="EMAAN API", version="5.0.0")
+processor = VideoProcessor('interactive')
 job_queues: Dict[str, asyncio.Queue] = {}
+
+
+# Global cleanup flag
+cleanup_in_progress = False
+
+def cleanup_on_exit():
+    """Cleanup function called on exit"""
+    global cleanup_in_progress
+    if cleanup_in_progress:
+        return
+    cleanup_in_progress = True
+    
+    print("\n--- EMAAN Backend Shutting Down ---")
+    
+    # Stop any active video processing
+    if hasattr(processor, 'stop_event') and processor.stop_event:
+        processor.stop_event.set()
+    
+    # Clean up any active threads
+    if hasattr(processor, 'reader_thread') and processor.reader_thread:
+        try:
+            processor.reader_thread.join(timeout=2)
+        except:
+            pass
+    
+    if hasattr(processor, 'writer_thread') and processor.writer_thread:
+        try:
+            processor.writer_thread.join(timeout=2)
+        except:
+            pass
+    
+    # Clear job queues
+    global job_queues
+    job_queues.clear()
+    
+    print("--- Backend Cleanup Complete ---")
+
+def signal_handler(signum, frame):
+    """Handle Ctrl+C and other signals"""
+    print(f"\nReceived signal {signum}. Shutting down gracefully...")
+    cleanup_on_exit()
+    exit(0)
+
+# Register cleanup handlers
+atexit.register(cleanup_on_exit)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -50,6 +100,8 @@ class AnalysisConfigPayload(BaseModel):
     primary_direction: str
     report_type: str
     polygons: dict
+    preview_image_width: int = 640
+    preview_image_height: int = 480
 
 # --- API Endpoints ---
 @app.get("/api/v1/health", tags=["System"])
@@ -81,7 +133,7 @@ async def get_video_preview(payload: FilePathPayload):
         preview_image_path = os.path.join(STATIC_DIR, preview_image_name)
         cv2.imwrite(preview_image_path, frame)
         
-        full_image_url = f"http://127.0.0.1:{GRADIO_SERVER_PORT}/previews/{preview_image_name}"
+        full_image_url = f"http://127.0.0.1:{SERVER_PORT}/previews/{preview_image_name}"
         print(f"[DEBUG] Preview generated successfully: {full_image_url}")
         
         return {"preview_image_url": full_image_url}
@@ -103,7 +155,7 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
     progress_queue = asyncio.Queue()
     job_queues[job_id] = progress_queue
     
-    processor.gradio_polygons = config.polygons
+    processor.zone_polygons = config.polygons
     
     background_tasks.add_task(
         processor.process_video,
@@ -112,7 +164,9 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
         start_time_str=config.start_time,
         primary_direction=config.primary_direction.lower(),
         generate_link_count_report_flag=(config.report_type == "Standard + Bi-directional Report"),
-        progress_queue=progress_queue
+        progress_queue=progress_queue,
+        preview_image_width=config.preview_image_width,
+        preview_image_height=config.preview_image_height
     )
     background_tasks.add_task(lambda: job_queues.pop(job_id, None))
     
@@ -134,4 +188,4 @@ async def websocket_progress_endpoint(websocket: WebSocket, job_id: str):
     finally: job_queues.pop(job_id, None); print(f"WebSocket for job '{job_id}' closed.")
 
 if __name__ == "__main__":
-    uvicorn.run("dev_server:app", host="127.0.0.1", port=GRADIO_SERVER_PORT, reload=True)
+    uvicorn.run("dev_server:app", host="127.0.0.1", port=SERVER_PORT, reload=True)

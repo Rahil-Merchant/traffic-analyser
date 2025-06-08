@@ -14,7 +14,6 @@ def run_local_processing():
     """
     print("--- Starting EMAAN Urban Reconnaissance (Hardcoded Mode) ---")
     
-    # Perform the same setup as the main app
     setup_torch_global_settings()
     setup_thread_affinity()
 
@@ -29,10 +28,7 @@ def run_local_processing():
     print(f"Using Start Time:  {START_TIME}")
 
     try:
-        # Initialize the processor and run the analysis.
-        # Note: This mode will use the hardcoded LINE_POINTS from config.py
-        # because the processor's gradio_polygons will be empty.
-        processor = VideoProcessor()
+        processor = VideoProcessor('hardcoded')
         result_message = processor.process_video(
             video_paths=INPUT_VIDEO_PATH,
             start_date_str=START_DATE,
@@ -50,5 +46,4 @@ def run_local_processing():
         sys.exit(1)
 
 if __name__ == "__main__":
-    # To run this mode, execute `python project/local.py` from your terminal.
     run_local_processing()

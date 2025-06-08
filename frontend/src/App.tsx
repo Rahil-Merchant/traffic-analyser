@@ -6,6 +6,7 @@ import SetupPanel from './components/SetupPanel';
 import ControlsPanel from './components/ControlsPanel';
 import InteractiveCanvas from './components/InteractiveCanvas';
 import ProcessingOverlay from './components/ProcessingOverlay';
+import ResultsModal from './components/ResultsModal';
 
 // --- Type Definitions ---
 interface FileItem {
@@ -46,6 +47,13 @@ function App() {
   const [progress, setProgress] = useState(0);
   const [processingStatus, setProcessingStatus] = useState("");
   const [processingEta, setProcessingEta] = useState("...");
+  const [imageDimensions, setImageDimensions] = useState<{ width: number, height: number }>({ width: 640, height: 480 });
+
+  // Results Modal State
+  const [showResults, setShowResults] = useState(false);
+  const [analysisResults, setAnalysisResults] = useState<any>(null);
+  const [analysisStatistics, setAnalysisStatistics] = useState<any>(null);
+
   const webSocketRef = useRef<WebSocket | null>(null);
   const isLaunchable = files.length > 0 && Object.keys(polygons).length > 0 && !!primaryDirection && !isProcessing;
 
@@ -57,8 +65,20 @@ function App() {
       if (response.data.preview_image_url) {
         setPreviewUrl(response.data.preview_image_url);
         setStatusText(`[ACTIVE] Previewing '${path.split(/[\\/]/).pop()}' • Select zones to analyze`);
-      } else { setStatusText(`[ERROR] ${response.data.error || 'Failed to generate preview.'}`); }
-    } catch (error: any) { setStatusText(`[ERROR] Preview generation failed: ${error.response?.data?.detail || error.message}`); }
+
+        // Get image dimensions when preview loads
+        const img = new Image();
+        img.onload = () => {
+          setImageDimensions({ width: img.width, height: img.height });
+          console.log(`Image dimensions: ${img.width}x${img.height}`);
+        };
+        img.src = response.data.preview_image_url;
+      } else {
+        setStatusText(`[ERROR] ${response.data.error || 'Failed to generate preview.'}`);
+      }
+    } catch (error: any) {
+      setStatusText(`[ERROR] Preview generation failed: ${error.response?.data?.detail || error.message}`);
+    }
     finally { setIsLoadingPreview(false); }
   };
 
@@ -72,10 +92,23 @@ function App() {
       setProgress(data.progress || progress);
       setProcessingStatus(data.status || processingStatus);
       setProcessingEta(data.eta || processingEta);
+
+      // Update intermediate statistics if available
+      if (data.intermediate_stats) {
+        setAnalysisStatistics((prev: any) => ({
+          ...prev,
+          ...data.intermediate_stats
+        }));
+      }
+
       if (data.status === 'complete') {
-        alert("✅ Analysis Complete!\n\nDetailed reports have been generated and are ready for review.");
+        // Store final results and statistics
+        setAnalysisResults(data.results || null);
+        setAnalysisStatistics(data.statistics || null);
+        setShowResults(true);
+
         setIsProcessing(false);
-        setStatusText("[COMPLETE] Analysis finished • Reports generated successfully");
+        setStatusText("[COMPLETE] Analysis finished • Click 'Continue' to proceed");
         webSocketRef.current?.close();
       } else if (data.status === 'error') {
         alert(`❌ Analysis Error\n\n${data.message}\n\nPlease check the logs and try again.`);
@@ -94,6 +127,9 @@ function App() {
 
   const handleLaunch = async () => {
     if (!isLaunchable) return;
+    // Clear previous results
+    setAnalysisResults(null);
+    setAnalysisStatistics(null);
     setIsProcessing(true);
     setProgress(0);
     setProcessingEta("Calculating...");
@@ -108,7 +144,11 @@ function App() {
       polygons,
       primary_direction: primaryDirection || '',
       report_type: reportType,
+      preview_image_width: imageDimensions.width,
+      preview_image_height: imageDimensions.height,
     };
+
+    console.log('Sending config with image dimensions:', imageDimensions);
 
     try {
       const response = await axios.post(`${API_BASE_URL}/api/v1/process`, configPayload);
@@ -148,7 +188,7 @@ function App() {
         setStatusText(`[SUCCESS] Added ${newFileItems.length} file(s) to analysis queue`);
       }
     } catch (error) {
-      console.log('File selection cancelled');
+      console.error('File selection cancelled', error);
     }
   };
 
@@ -160,12 +200,36 @@ function App() {
   const handleUndoPoint = () => { if (currentPoints.length > 0) { setCurrentPoints(prev => prev.slice(0, -1)); } };
   const handleClearAllZones = () => { setPolygons({}); setCurrentPoints([]); setActiveDirection(null); setPrimaryDirection(null); setReportType('Standard Report'); setStatusText("[CLEARED] All zones removed • Ready for new configuration"); };
 
+  const handleCloseResults = () => {
+    setShowResults(false);
+    // setAnalysisResults(null);
+    // setAnalysisStatistics(null);
+  };
+
   useEffect(() => { if (files.length > 0 && files[0].path) { fetchPreview(files[0].path); } else { setPreviewUrl(null); setStatusText("[READY] Select video files to begin analysis"); } }, [files[0]?.path]);
   useEffect(() => { const zones = Object.keys(polygons); if (primaryDirection && !zones.includes(primaryDirection)) { setPrimaryDirection(null); } if (zones.length === 2) { setReportType('Standard + Bi-directional Report'); } else { setReportType('Standard Report'); } }, [polygons, primaryDirection]);
   useEffect(() => {
     axios.get(`${API_BASE_URL}/api/v1/health`)
       .then(() => console.log("✅ Backend Connection Established"))
       .catch(e => console.error("❌ Backend Connection Failed:", e.message));
+  }, []);
+
+  useEffect(() => {
+    // Cleanup WebSocket on component unmount or page refresh
+    const handleBeforeUnload = () => {
+      if (webSocketRef.current) {
+        webSocketRef.current.close();
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (webSocketRef.current) {
+        webSocketRef.current.close();
+      }
+    };
   }, []);
 
   return (
@@ -218,7 +282,6 @@ function App() {
         </div>
       </header>
 
-
       {/* Premium Main Layout */}
       <main className="h-[calc(100vh-100px)] flex p-6 gap-6 relative">
         {isProcessing && <ProcessingOverlay progress={progress} status={processingStatus} eta={processingEta} />}
@@ -231,6 +294,8 @@ function App() {
             onClearAll={handleClearAllFiles}
             selectedTimestamp={selectedTimestamp}
             onTimestampChange={setSelectedTimestamp}
+            analysisResults={analysisResults}
+            analysisStatistics={analysisStatistics}
           />
         </div>
 
@@ -286,6 +351,14 @@ function App() {
           />
         </div>
       </main>
+
+      {/* Results Modal */}
+      <ResultsModal
+        isOpen={showResults}
+        onClose={handleCloseResults}
+        statistics={analysisStatistics}
+        results={analysisResults}
+      />
     </div>
   );
 }

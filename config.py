@@ -2,7 +2,6 @@
 import os
 from datetime import datetime
 
-LINE_MODE = 'interactive'
 ENABLE_VISUALIZATION = True
 
 _now = datetime.now()
@@ -24,7 +23,7 @@ NUM_INFERENCE_STREAMS = 1
 CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 640 # Keep smaller size for performance
-TTA = False # Enables test-time augmentation (TTA) for predictions
+TTA = True # Enables test-time augmentation (TTA) for predictions
 
 # --- Tracking Configuration --- 
 BYTETRACK_MIN_CONF = 0.1    # Minimum detection confidence for ByteTrack to consider
@@ -154,23 +153,17 @@ REPORTING_DIRECTIONS = { 'From South': ['To North', 'To West', 'To East'], 'From
 
 # --- Performance & Debugging ---
 ENABLE_DETAILED_PERFORMANCE_METRICS = True
-DEBUG_MODE = True # Keep False for performance runs
+DEBUG_MODE = False # Keep False for performance runs
 PERFORMANCE_SAMPLE_INTERVAL = 15.0   # In seconds
 MEMORY_CLEANUP_INTERVAL = 300   # In seconds
 
-# --- Gradio ---
-GRADIO_SERVER_PORT = 7862
-GRADIO_SHARE = False
+SERVER_PORT = 7862
 
 # --- Print Confirmation ---
 print(f"--- Configuration Loaded (Tuned for Exit Accuracy) ---")
-print(f"Line Definition Mode: {LINE_MODE.upper()}")
-if LINE_MODE == 'hardcoded': print(f"Input Video: {INPUT_VIDEO_PATH}")
 print(f"Start Date/Time: {START_DATE} / {START_TIME}")
 print(f"Using Model: {MODEL_PATH} (Conf: {CONF_THRESHOLD}, IoU: {IOU_THRESHOLD})")
 print(f"Model Input Size: {MODEL_INPUT_SIZE}x{MODEL_INPUT_SIZE}")
-if LINE_MODE == 'hardcoded': print("Using Hardcoded Lines (config.py)")
-else: print("Using Interactive Lines (Gradio)")
 print(f"Target FPS: {TARGET_FPS}, Batch Size: {OPTIMAL_BATCH_SIZE}, Threads: {THREAD_COUNT}")
 print(f"Mixed Precision: {MIXED_PRECISION}, CUDA Streams: {PARALLEL_STREAMS}")
 print(f"Detailed Perf Metrics: {ENABLE_DETAILED_PERFORMANCE_METRICS}, Debug Mode: {DEBUG_MODE}")

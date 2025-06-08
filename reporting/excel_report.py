@@ -88,7 +88,7 @@ def _build_rsa_direction_map(primary_direction, active_directions, valid_movemen
 
 
 # --- Main Report Function ---
-def create_excel_report(completed_paths_data, start_datetime, primary_direction, video_path):
+def create_excel_report(completed_paths_data, start_datetime, primary_direction, video_path, video_duration_formatted=None):
     """
     Creates a multi-sheet Excel report: Vehicle Logs (1 row/path), Intervals (24hr),
     Directional Counts (multi-header), RSA Output.
@@ -304,7 +304,7 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
 
     return excel_created_path
 
-def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction):
+def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction, video_duration_formatted="24 hours"):
     """
     Creates a separate Excel report for bi-directional link counts based on user-selected "To" directions.
     The report includes individual and cumulative counts for specific vehicle categories over a 24-hour period.
@@ -445,14 +445,14 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             
             # Common header data
             header_info_static = [
-                ("12-Hour Link Count Sheet ",), # A1, merged later
+                ("24-Hour Link Count Sheet ",), # A1, merged later
                 ("Station Number", ""), ("Road Number", ""), ("KM", ""), ("Region", ""),
                 ("Location Description", ""),
                 ("Direction 1", get_display_direction(primary_direction)), # Use formatted display name
                 ("Direction 2", get_display_direction(secondary_direction)), # Use formatted display name
                 ("Date", start_datetime_video.strftime("%Y-%m-%d")),
                 ("Day of week", start_datetime_video.strftime("%A")),
-                ("Duration of count", "24 Hours"), # Corrected to 24 hours
+                ("Duration of count", video_duration_formatted),
                 ("Supervisor", ""), ("Classification System", ""),
                 ("", "", "", "", "", "Link layout and travel directions", "", ""), # Row for this text
                 ("",) # Empty row

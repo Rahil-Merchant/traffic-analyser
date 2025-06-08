@@ -3,9 +3,11 @@ import { Stage, Layer, Image, Circle, Line, Text } from 'react-konva';
 import Konva from 'konva';
 import useImage from 'use-image';
 
+// --- Type Definitions ---
 type Point = [number, number];
 interface Polygons { [key: string]: Point[]; }
 
+// --- Helper Function ---
 const calculatePolygonCenter = (points: Point[]): Point => {
   if (!points || points.length === 0) return [0, 0];
   let sumX = 0, sumY = 0;
@@ -47,6 +49,8 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
+  // NO additional useEffect for image dimensions!
+
   const getImageDimensions = () => {
     if (!image || !containerSize.width || !containerSize.height) {
       return { width: containerSize.width || 800, height: containerSize.height || 600, scale: 1, offsetX: 0, offsetY: 0 };
@@ -58,13 +62,11 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
     let scale, width, height, offsetX = 0, offsetY = 0;
     
     if (imageAspect > containerAspect) {
-      // Image is wider - fit to width
       scale = containerSize.width / image.width;
       width = containerSize.width;
       height = image.height * scale;
       offsetY = (containerSize.height - height) / 2;
     } else {
-      // Image is taller - fit to height
       scale = containerSize.height / image.height;
       width = image.width * scale;
       height = containerSize.height;
@@ -93,10 +95,10 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
   };
 
   const directionColors = {
-    north: '#10b981', // emerald
-    south: '#f59e0b', // amber  
-    east: '#3b82f6',  // blue
-    west: '#ef4444'   // red
+    north: '#10b981',
+    south: '#f59e0b', 
+    east: '#3b82f6',
+    west: '#ef4444'
   };
 
   return (
@@ -248,6 +250,12 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
       )}
 
       {/* Premium Corner Indicators */}
+      <div className="absolute top-4 left-4 flex items-center space-x-2">
+        <div className="flex items-center space-x-1 bg-gray-900/80 backdrop-blur-sm px-3 py-1 rounded-full border border-gray-600/50">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+          <span className="text-xs font-medium text-gray-300">LIVE</span>
+        </div>
+      </div>
 
       {activeDirection && (
         <div className="absolute top-4 right-4 bg-yellow-500/90 backdrop-blur-sm text-black px-4 py-2 rounded-full font-bold text-sm border border-yellow-400 shadow-lg">
