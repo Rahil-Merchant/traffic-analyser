@@ -283,7 +283,7 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     entry_key = path['direction_from']; exit_key = path['direction_to']; ts_obj = path['timestamp']; v_type = path['vehicle_type']
                     dir_num = rsa_direction_map.get((entry_key, exit_key), 0)
                     base_id = VEHICLE_ID_MAP.get(v_type, '?')
-                    v_code = f"{base_id},1" if ',1' not in base_id else base_id
+                    v_code = f"{base_id},1" if not base_id.startswith('2') else base_id
                     ts_str = ts_obj.strftime('%y%m%d,%H%M%S%f')[:-3]
                     rsa_line = f"10,9,1,0,{ts_str},{dir_num},{dir_num},1,{v_code}"
                     rsa_data_lines.append(rsa_line)
@@ -445,11 +445,11 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             
             # Common header data
             header_info_static = [
-                ("24-Hour Link Count Sheet ",), # A1, merged later
+                (" Link Count Sheet ",), # A1, merged later
                 ("Station Number", ""), ("Road Number", ""), ("KM", ""), ("Region", ""),
                 ("Location Description", ""),
-                ("Direction 1", get_display_direction(primary_direction)), # Use formatted display name
-                ("Direction 2", get_display_direction(secondary_direction)), # Use formatted display name
+                ("Direction 1", ''),
+                ("Direction 2", ''),
                 ("Date", start_datetime_video.strftime("%Y-%m-%d")),
                 ("Day of week", start_datetime_video.strftime("%A")),
                 ("Duration of count", video_duration_formatted),

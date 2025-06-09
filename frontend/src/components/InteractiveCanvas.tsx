@@ -133,7 +133,6 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                 </svg>
               </div>
-              <div className="absolute -top-2 -right-2 w-6 h-6 bg-green-500 rounded-full border-2 border-gray-900 group-hover:scale-110 transition-transform duration-300"></div>
             </div>
             <h3 className="text-2xl font-bold text-white mb-2 group-hover:text-blue-300 transition-colors duration-300">
               Select Video Files
@@ -248,14 +247,6 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
           </Layer>
         </Stage>
       )}
-
-      {/* Premium Corner Indicators */}
-      <div className="absolute top-4 left-4 flex items-center space-x-2">
-        <div className="flex items-center space-x-1 bg-gray-900/80 backdrop-blur-sm px-3 py-1 rounded-full border border-gray-600/50">
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-          <span className="text-xs font-medium text-gray-300">LIVE</span>
-        </div>
-      </div>
 
       {activeDirection && (
         <div className="absolute top-4 right-4 bg-yellow-500/90 backdrop-blur-sm text-black px-4 py-2 rounded-full font-bold text-sm border border-yellow-400 shadow-lg">

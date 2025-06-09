@@ -19,6 +19,7 @@ print("--- Initializing EMAAN DEVELOPMENT Server (File System Access API) ---")
 app = FastAPI(title="EMAAN API", version="5.0.0")
 processor = VideoProcessor('interactive')
 job_queues: Dict[str, asyncio.Queue] = {}
+video_dimensions_cache = {}  # Store dimensions by video path
 
 
 # Global cleanup flag
@@ -124,6 +125,14 @@ async def get_video_preview(payload: FilePathPayload):
         if not cap.isOpened():
             raise HTTPException(status_code=500, detail="OpenCV could not open video file.")
         
+        # Get actual video dimensions
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        video_dimensions_cache[video_path] = {
+            'width': frame_width,
+            'height': frame_height
+        }
+
         success, frame = cap.read()
         cap.release()
         if not success:
@@ -134,9 +143,10 @@ async def get_video_preview(payload: FilePathPayload):
         cv2.imwrite(preview_image_path, frame)
         
         full_image_url = f"http://127.0.0.1:{SERVER_PORT}/previews/{preview_image_name}"
+        print(f"Video dimensions cached: {frame_width}x{frame_height}")
         print(f"[DEBUG] Preview generated successfully: {full_image_url}")
         
-        return {"preview_image_url": full_image_url}
+        return {"preview_image_url": full_image_url, 'video_width': frame_width, 'video_height': frame_height}
     except Exception as e:
         print(f"[ERROR] Preview generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing preview: {e}")
@@ -155,6 +165,19 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
     progress_queue = asyncio.Queue()
     job_queues[job_id] = progress_queue
     
+    # Get dimensions from cache for the first video
+    first_video_path = config.video_paths[0]
+    cached_dimensions = video_dimensions_cache.get(first_video_path)
+    
+    if cached_dimensions:
+        preview_width = cached_dimensions['width']
+        preview_height = cached_dimensions['height']
+        print(f"✅ Using cached dimensions: {preview_width}x{preview_height}")
+    else:
+        print(f"⚠️ No cached dimensions for {first_video_path}, falling back to defaults")
+        preview_width = 640
+        preview_height = 480
+
     processor.zone_polygons = config.polygons
     
     background_tasks.add_task(
@@ -165,8 +188,8 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
         primary_direction=config.primary_direction.lower(),
         generate_link_count_report_flag=(config.report_type == "Standard + Bi-directional Report"),
         progress_queue=progress_queue,
-        preview_image_width=config.preview_image_width,
-        preview_image_height=config.preview_image_height
+        preview_image_width=preview_width,
+        preview_image_height=preview_height
     )
     background_tasks.add_task(lambda: job_queues.pop(job_id, None))
     

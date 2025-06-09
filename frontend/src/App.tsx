@@ -143,9 +143,7 @@ function App() {
       start_time: time,
       polygons,
       primary_direction: primaryDirection || '',
-      report_type: reportType,
-      preview_image_width: imageDimensions.width,
-      preview_image_height: imageDimensions.height,
+      report_type: reportType
     };
 
     console.log('Sending config with image dimensions:', imageDimensions);
