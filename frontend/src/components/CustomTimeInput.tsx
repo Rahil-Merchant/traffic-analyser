@@ -28,7 +28,7 @@ const CustomTimeInput: React.FC<CustomTimeInputProps> = ({ date, setDate }) => {
             fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
           },
           components: {
-            TimePicker: {
+            DatePicker: {
               colorBgContainer: 'rgba(17, 24, 39, 0.5)',
               colorBorder: 'rgba(75, 85, 99, 0.5)',
               activeBorderColor: '#3b82f6',
@@ -73,7 +73,7 @@ const CustomTimeInput: React.FC<CustomTimeInputProps> = ({ date, setDate }) => {
           </button>
         </div>
 
-        <style jsx global>{`
+        <style>{`
           .custom-time-picker {
             background: rgba(17, 24, 39, 0.5) !important;
             border: 1px solid rgba(75, 85, 99, 0.5) !important;
