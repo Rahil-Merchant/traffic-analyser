@@ -35,8 +35,8 @@ from reporting.excel_report import create_excel_report, create_bidirectional_lin
 from core.converters import convert_dav_to_mp4_internal
 
 # Conditional imports
-if ENABLE_DETAILED_PERFORMANCE_METRICS:
-    from visualization.performance_viz import visualize_performance
+# if ENABLE_DETAILED_PERFORMANCE_METRICS:
+#     from visualization.performance_viz import visualize_performance
 
 # Attempt to import PyVideoReader
 PYVIDEOREADER_AVAILABLE = False
@@ -200,7 +200,7 @@ class VideoProcessor:
                 if cap_check: 
                     cap_check.release()
 
-        if original_fps <= 0: original_fps = 30.0 # Final fallback
+        if original_fps <= 0: original_fps = 25.0 # Final fallback
         if total_frames <= 0:
             print("WARNING: Could not determine total_frames accurately. Progress calculation might be affected.")   
         return total_frames, original_fps
@@ -589,7 +589,7 @@ class VideoProcessor:
         processed_frames_list_viz = [None] * len(yolo_results_batch)
         
         # --- Part 1: Sequential Tracker Update for the entire batch ---
-        if self.perf: self.perf.start_timer('tracking_update_batch')
+        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_timer('tracking_update_batch')
         
         online_targets_for_each_frame_in_batch = [None] * len(yolo_results_batch)
 
@@ -623,7 +623,7 @@ class VideoProcessor:
                     dummy_img_for_tracker 
                 )
         
-        if self.perf: self.perf.end_timer('tracking_update_batch')
+        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.end_timer('tracking_update_batch')
 
         # --- Part 2: Parallel Application Logic for each frame's tracking results ---
         
@@ -655,7 +655,7 @@ class VideoProcessor:
                     track_id = str(int(target_data[4]))
                     track_cls_id = int(target_data[6])
                     current_frame_active_track_ids_bytetrack.add(track_id)
-                    vehicle_type_name = self.class_id_to_name_map.get(track_cls_id, 'Light Vehicle')
+                    vehicle_type_name = self.class_id_to_name_map.get(track_cls_id, 'Light Vehicle') if hasattr(self,'class_id_to_name_map') else track_cls_id
 
                     model_h_orig, model_w_orig = yolo_result_obj.orig_shape
                     draw_h_target, draw_w_target = self.frame_shape[1], self.frame_shape[0]
@@ -777,37 +777,21 @@ class VideoProcessor:
                     draw_box_coords = data_to_draw.get('box'); draw_type = data_to_draw.get('type', "Unknown")
                     draw_status = data_to_draw.get('status', 'tracked'); draw_event = data_to_draw.get('event')
                     draw_center = data_to_draw.get('center')
-                    entry_dir_for_viz = None; time_active_for_viz = None
-                    # Read from self.active_track_data requires lock if it could be modified by another thread concurrently
-                    # However, at this stage of drawing, self.active_track_data for *this specific track_id* 
-                    # should have been finalized for this frame by the logic above within the lock.
-                    # A read here might be safe IF the track_id being drawn is guaranteed to not be concurrently modified.
-                    # To be absolutely safe, one might re-acquire lock or pass all necessary info through temp_drawing_info_map.
-                    # For now, assuming reads are okay if major state changes for this frame are done.
                     if track_id_draw in self.active_track_data: 
                         with self.tracker_lock: # Add lock for safety if reading from shared active_track_data
                             app_data_viz = self.active_track_data.get(track_id_draw) # Use .get for safety
                             if app_data_viz: # Check if still exists
                                 if app_data_viz['status'] == 'active': draw_status = 'active'
-                                entry_dir_for_viz = app_data_viz.get('entry_direction')
-                                time_active_for_viz = (current_global_timestamp - app_data_viz['entry_time']).total_seconds()
                     
                     if draw_box_coords and draw_status not in ['timed_out', 'lost_track']:
-                         visual_overlay.draw_detection_box(output_frame_for_viz, draw_box_coords, track_id_draw, draw_type,
-                                                           status=draw_status, entry_dir=entry_dir_for_viz, time_active=time_active_for_viz)
+                         visual_overlay.draw_detection_box(output_frame_for_viz, draw_box_coords, track_id_draw, draw_type, status=draw_status)
                     if draw_event and draw_center and draw_event != 'RE-ENTRY':
-                         visual_overlay.draw_event_marker(output_frame_for_viz, draw_center, draw_event, track_id_draw[-4:])
+                         visual_overlay.draw_event_marker(output_frame_for_viz, draw_center, draw_event)
                 
-                active_count_viz = 0
-                with self.tracker_lock: # Lock for reading count from shared dict
-                    active_count_viz = sum(1 for ad in self.active_track_data.values() if ad['status'] == 'active')
-                tracker_info_for_overlay = {'get_active_vehicle_count': lambda: active_count_viz}
-                output_frame_for_viz = visual_overlay.add_status_overlay(output_frame_for_viz, current_video_frame_num, current_global_timestamp, tracker_info_for_overlay)
-            
-            return output_frame_for_viz # Only return viz frame now
+            return output_frame_for_viz
             # --- End process_tracked_frame_logic inner function ---
 
-        if self.perf: self.perf.start_timer('app_logic_batch') # New timer for the parallel part
+        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_timer('app_logic_batch') # New timer for the parallel part
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures_map = {
                 executor.submit(process_tracked_frame_logic, i): i
@@ -822,7 +806,7 @@ class VideoProcessor:
                     print(f'\nError processing tracked frame logic for batch index {original_batch_idx}: {exc_future}')
                     import traceback; traceback.print_exc()
                     processed_frames_list_viz[original_batch_idx] = None # Ensure placeholder
-        if self.perf: self.perf.end_timer('app_logic_batch')
+        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.end_timer('app_logic_batch')
         
         # The finalized paths are now built directly into self.finalized_paths_for_report
         # So, this function doesn't need to return event logs for that purpose.
@@ -1041,7 +1025,7 @@ class VideoProcessor:
             frames_processed_count = 0
             frame_interval = max(1, round(original_fps / self.target_fps)) if self.target_fps > 0 and original_fps > 0 else 1
             total_target_frames_for_perf = total_frames // frame_interval if total_frames > 0 else 0
-            if self.perf: self.perf.start_processing(total_target_frames_for_perf if total_target_frames_for_perf > 0 else total_frames)
+            if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_processing(total_target_frames_for_perf if total_target_frames_for_perf > 0 else total_frames)
             
             current_batch_frames_metadata, current_batch_frame_numbers, current_batch_frame_times = [], [], []
             last_prog_print_time = time.monotonic()
@@ -1060,9 +1044,9 @@ class VideoProcessor:
                         debug_print("Main loop: Reader sent None, exiting loop.")
                         break 
                     
-                    if self.perf: self.perf.start_timer('video_read')
+                    if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_timer('video_read')
                     frame_content_raw, frame_num_raw, frame_time_s, frame_meta = frame_data_item
-                    if self.perf: self.perf.end_timer('video_read')
+                    if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.end_timer('video_read')
 
                     if frame_content_raw is None: # Should not happen if reader sends sentinel correctly
                         if not self.frame_read_queue.empty(): self.frame_read_queue.task_done()
@@ -1076,9 +1060,9 @@ class VideoProcessor:
                     if len(current_batch_frames_metadata) >= effective_trigger_batch_size:
                         batch_proc_start_time = time.monotonic()
 
-                        if self.perf: self.perf.start_timer('preprocessing')
+                        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_timer('preprocessing')
                         input_batch_tensor_model = self._preprocess_batch(current_batch_frames_metadata)
-                        if self.perf: self.perf.end_timer('preprocessing')
+                        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.end_timer('preprocessing')
 
                         if input_batch_tensor_model is None or input_batch_tensor_model.nelement() == 0:
                             debug_print("Skipping batch: Preprocessing returned None or empty tensor.")
@@ -1093,7 +1077,7 @@ class VideoProcessor:
                         actual_frames_in_current_effective_batch = input_batch_tensor_model.shape[0]
                         yolo_results_batch_ordered = [None] * actual_frames_in_current_effective_batch
                         
-                        if self.perf and self.perf.cuda_events_enabled and self.device == 'cuda':
+                        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf and self.device == 'cuda':
                             overall_start_event = torch.cuda.Event(enable_timing=True)
                             overall_end_event = torch.cuda.Event(enable_timing=True)
                             overall_start_event.record()
@@ -1134,7 +1118,7 @@ class VideoProcessor:
                                     for global_idx in original_global_indices:
                                         yolo_results_batch_ordered[global_idx] = None
                         
-                        if self.perf and self.perf.cuda_events_enabled and self.device == 'cuda':
+                        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf and self.device == 'cuda':
                             overall_end_event.record()
                             overall_end_event.synchronize()
                             duration_ms = overall_start_event.elapsed_time(overall_end_event)
@@ -1153,12 +1137,12 @@ class VideoProcessor:
                         
                         # Send frames to writer if visualization is enabled
                         if ENABLE_VISUALIZATION and self.video_write_queue:
-                            if self.perf: self.perf.start_timer('video_write')
+                            if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_timer('video_write')
                             for pf_viz in processed_frames_for_viz:
                                 if pf_viz is not None:
                                     try: self.video_write_queue.put(pf_viz, block=True, timeout=2.0)
                                     except queue.Full: print("WARN: Video writer queue full during main loop.")
-                            if self.perf: self.perf.end_timer('video_write')
+                            if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.end_timer('video_write')
 
                         # Performance recording for this effective batch
                         batch_proc_duration = time.monotonic() - batch_proc_start_time
@@ -1180,12 +1164,12 @@ class VideoProcessor:
                         # Memory cleanup check
                         current_monotonic_time_loop = time.monotonic()
                         if current_monotonic_time_loop - self.last_cleanup_time > MEMORY_CLEANUP_INTERVAL:
-                            if self.perf: self.perf.start_timer('memory_cleanup')
+                            if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_timer('memory_cleanup')
                             last_frame_time_sec_in_batch_loop = current_batch_frame_times[-1] if current_batch_frame_times else 0
                             cleanup_tracking_data(self, last_frame_time_sec_in_batch_loop) # Pass self
                             cleanup_memory() # Global util
                             self.last_cleanup_time = current_monotonic_time_loop
-                            if self.perf: self.perf.end_timer('memory_cleanup')
+                            if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.end_timer('memory_cleanup')
 
                         # Progress printing
                         if self.perf and (current_monotonic_time_loop - last_prog_print_time > 1.0): # Print progress every second
@@ -1240,15 +1224,15 @@ class VideoProcessor:
                 print(f"\nProcessing final batch of {final_batch_size_actual} frames with multiple model instances...")
                 batch_proc_start_time_final = time.monotonic()
 
-                if self.perf: self.perf.start_timer('preprocessing')
+                if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_timer('preprocessing')
                 input_batch_final = self._preprocess_batch(current_batch_frames_metadata)
-                if self.perf: self.perf.end_timer('preprocessing')
+                if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.end_timer('preprocessing')
 
                 if input_batch_final is not None and input_batch_final.nelement() > 0:
                     actual_frames_in_final_input_batch = input_batch_final.shape[0] # Should match final_batch_size_actual
                     yolo_results_final_ordered = [None] * actual_frames_in_final_input_batch
                     
-                    if self.perf and self.perf.cuda_events_enabled and self.device == 'cuda':
+                    if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf and self.device == 'cuda':
                         final_batch_start_event = torch.cuda.Event(enable_timing=True)
                         final_batch_end_event = torch.cuda.Event(enable_timing=True)
                         final_batch_start_event.record()
@@ -1290,7 +1274,7 @@ class VideoProcessor:
                                 for global_idx_final in original_global_indices_final:
                                     yolo_results_final_ordered[global_idx_final] = None
                     
-                    if self.perf and self.perf.cuda_events_enabled and self.device == 'cuda':
+                    if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf and self.device == 'cuda':
                         final_batch_end_event.record()
                         final_batch_end_event.synchronize()
                         duration_ms_final = final_batch_start_event.elapsed_time(final_batch_end_event)
@@ -1304,12 +1288,12 @@ class VideoProcessor:
                         current_batch_frame_numbers, current_batch_frame_times, start_datetime_obj_global)
 
                     if ENABLE_VISUALIZATION and self.video_write_queue:
-                        if self.perf: self.perf.start_timer('video_write');
+                        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.start_timer('video_write');
                         for pf_final_viz in processed_frames_final_viz:
                             if pf_final_viz is not None:
                                 try: self.video_write_queue.put(pf_final_viz, block=True, timeout=2.0)
                                 except queue.Full: print("WARN: Vid writer Q full (final batch).")
-                        if self.perf: self.perf.end_timer('video_write')
+                        if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: self.perf.end_timer('video_write')
                     
                     # Performance for final batch
                     batch_proc_duration_final = time.monotonic() - batch_proc_start_time_final
@@ -1394,7 +1378,7 @@ class VideoProcessor:
                     else:
                         result_msg_final += "Bi-directional Link Count report generation failed or produced no data.\n"
         
-            if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: visualize_performance(self.perf)
+            # if ENABLE_DETAILED_PERFORMANCE_METRICS and self.perf: visualize_performance(self.perf)
 
             if ENABLE_VISUALIZATION:
                 if self.final_output_path and "ERROR" not in self.final_output_path: result_msg_final+=f"Output video: '{self.final_output_path}'.\n"

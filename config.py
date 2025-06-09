@@ -17,7 +17,7 @@ VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082_original_640px_bs416.engine"
+MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082_640px_bs64.engine"
 DATA_YAML_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract.yaml"
 NUM_INFERENCE_STREAMS = 1
 CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
@@ -128,7 +128,7 @@ elif MODEL_INPUT_SIZE<=960:
 else:
     OPTIMAL_BATCH_SIZE = 16
     
-OPTIMAL_BATCH_SIZE = 416
+OPTIMAL_BATCH_SIZE = 64
 USE_ADVANCED_VIDEO_READER = True 
 PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7600
 
