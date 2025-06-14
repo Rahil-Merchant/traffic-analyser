@@ -21,7 +21,8 @@
         "decorations": true,
         "transparent": false,
         "fullscreen": false,
-        "alwaysOnTop": false
+        "alwaysOnTop": false,
+        "devtools": true
       }
     ]
   }
