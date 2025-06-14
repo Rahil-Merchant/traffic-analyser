@@ -3,7 +3,7 @@
 import os
 from ultralytics import YOLO
 
-MODEL_PATH = r"traffic-reporting/models/weights/silent_contract_9082.pt"
+MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\silent_contract_9082.pt"
 MODEL_INPUT_SIZE = 640
 NMS = False
 EXPORT_FP16 = True

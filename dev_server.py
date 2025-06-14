@@ -185,6 +185,7 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
         video_paths=config.video_paths,
         start_date_str=config.start_date,
         start_time_str=config.start_time,
+        station_number_str=config.station_number,
         primary_direction=config.primary_direction.lower(),
         generate_link_count_report_flag=(config.report_type == "Standard + Bi-directional Report"),
         progress_queue=progress_queue,

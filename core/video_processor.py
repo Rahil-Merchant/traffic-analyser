@@ -890,7 +890,7 @@ class VideoProcessor:
             return " ".join(duration_parts)
     
     # --- Main Processing Function ---
-    def process_video(self, video_paths, start_date_str, start_time_str, primary_direction, generate_link_count_report_flag=False, progress_queue=None, preview_image_width=640, preview_image_height=480):
+    def process_video(self, video_paths, start_date_str, start_time_str, station_number_str, primary_direction, generate_link_count_report_flag=False, progress_queue=None, preview_image_width=640, preview_image_height=480):
         if not self.processing_lock.acquire(blocking=False):
             print("Warning: Processing lock already acquired."); return "Processing is already in progress."
 
@@ -1353,8 +1353,7 @@ class VideoProcessor:
                 completed_paths_data=self.finalized_paths_for_report,
                 start_datetime=start_datetime_obj_global, 
                 primary_direction=primary_direction, 
-                video_path=actual_video_path_to_process[0],
-                video_duration_formatted=video_duration_formatted
+                video_path=actual_video_path_to_process[0]
             )
 
             result_msg_final=f"✅ Processing completed.\n"
@@ -1371,7 +1370,8 @@ class VideoProcessor:
                         video_path=actual_video_path_to_process[0],
                         primary_direction=primary_direction,
                         secondary_direction=[direction for direction in self.zone_polygons.keys() if direction!=primary_direction][0],
-                        video_duration_formatted=video_duration_formatted
+                        video_duration_formatted=video_duration_formatted,
+                        station_number_str=station_number_str
                     )
                     if excel_link_count_report_path:
                         result_msg_final += f"Bi-directional Link Count report: {excel_link_count_report_path}\n"

@@ -18,6 +18,8 @@ interface SetupPanelProps {
   onClearAll: () => void;
   selectedTimestamp: Date;
   onTimestampChange: (date: Date) => void;
+  stationNumber: string;
+  onStationNumberChange: (stationNumber: string) => void;
   analysisResults?: any;
   analysisStatistics?: any;
 }
@@ -28,6 +30,8 @@ const SetupPanel: React.FC<SetupPanelProps> = ({
   onClearAll,
   selectedTimestamp,
   onTimestampChange,
+  stationNumber,
+  onStationNumberChange,
   analysisResults,
   analysisStatistics
 }) => {
@@ -105,13 +109,13 @@ const SetupPanel: React.FC<SetupPanelProps> = ({
           </div>
         </div>
 
-        {/* Compact Timestamp Configuration */}
+        {/* Compact Session Configuration */}
         <div className="space-y-2">
           <div className="flex items-center space-x-2">
             <div className="w-5 h-5 bg-purple-500/20 rounded-md flex items-center justify-center">
               <span className="text-purple-400 font-bold text-xs">2</span>
             </div>
-            <p className="font-semibold text-gray-200 text-sm">Timestamp Configuration</p>
+            <p className="font-semibold text-gray-200 text-sm">Session Configuration</p>
           </div>
           
           <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-3 space-y-3">
@@ -128,6 +132,17 @@ const SetupPanel: React.FC<SetupPanelProps> = ({
             <div>
               <label className="block text-xs font-medium text-gray-400 mb-1">Start Time</label>
               <CustomTimeInput date={selectedTimestamp} setDate={onTimestampChange} />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Station Number (Optional)</label>
+              <input
+                type="text"
+                value={stationNumber}
+                onChange={(e) => onStationNumberChange(e.target.value)}
+                placeholder="Enter station number..."
+                className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-2 text-sm text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 outline-none placeholder:text-gray-500"
+              />
             </div>
           </div>
         </div>

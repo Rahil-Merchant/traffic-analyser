@@ -48,6 +48,7 @@ function App() {
   const [processingStatus, setProcessingStatus] = useState("");
   const [processingEta, setProcessingEta] = useState("...");
   const [imageDimensions, setImageDimensions] = useState<{ width: number, height: number }>({ width: 640, height: 480 });
+  const [stationNumber, setStationNumber] = useState<string>('');
 
   // Results Modal State
   const [showResults, setShowResults] = useState(false);
@@ -141,6 +142,7 @@ function App() {
       video_paths: files.map(f => f.path),
       start_date: date,
       start_time: time,
+      station_number: stationNumber,
       polygons,
       primary_direction: primaryDirection || '',
       report_type: reportType
@@ -292,6 +294,8 @@ function App() {
             onClearAll={handleClearAllFiles}
             selectedTimestamp={selectedTimestamp}
             onTimestampChange={setSelectedTimestamp}
+            stationNumber={stationNumber}
+            onStationNumberChange={setStationNumber}
             analysisResults={analysisResults}
             analysisStatistics={analysisStatistics}
           />

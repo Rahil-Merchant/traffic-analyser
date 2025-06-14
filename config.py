@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-ENABLE_VISUALIZATION = True
+ENABLE_VISUALIZATION = False #--------------------------------------------------------
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -11,8 +11,8 @@ START_TIME = _now.strftime("%H%M%S") + f"{_now.microsecond // 1000:03d}"
 DEFAULT_PRIMARY_DIRECTION = 'south'
 
 # --- Core Settings ---
-TARGET_FPS = 25
-BASE_OUTPUT_DIR = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\output"
+TARGET_FPS = 20
+BASE_OUTPUT_DIR = r"C:\Users\swest\Documents\AI_output_videos"
 VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 

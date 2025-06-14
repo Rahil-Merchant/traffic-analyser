@@ -88,7 +88,7 @@ def _build_rsa_direction_map(primary_direction, active_directions, valid_movemen
 
 
 # --- Main Report Function ---
-def create_excel_report(completed_paths_data, start_datetime, primary_direction, video_path, video_duration_formatted=None):
+def create_excel_report(completed_paths_data, start_datetime, primary_direction, video_path):
     """
     Creates a multi-sheet Excel report: Vehicle Logs (1 row/path), Intervals (24hr),
     Directional Counts (multi-header), RSA Output.
@@ -304,7 +304,7 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
 
     return excel_created_path
 
-def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction, video_duration_formatted="24 hours"):
+def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction, video_duration_formatted="24 hours", station_number_str=""):
     """
     Creates a separate Excel report for bi-directional link counts based on user-selected "To" directions.
     The report includes individual and cumulative counts for specific vehicle categories over a 24-hour period.
@@ -446,7 +446,7 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             # Common header data
             header_info_static = [
                 (" Link Count Sheet ",), # A1, merged later
-                ("Station Number", ""), ("Road Number", ""), ("KM", ""), ("Region", ""),
+                ("Station Number", station_number_str), ("Road Number", ""), ("KM", ""), ("Region", ""),
                 ("Location Description", ""),
                 ("Direction 1", ''),
                 ("Direction 2", ''),

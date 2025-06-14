@@ -48,219 +48,221 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
   const isBiDirectionalAvailable = drawnZones.length === 2;
 
   return (
-    <div className="h-full bg-gradient-to-br from-gray-900/95 via-gray-800/95 to-gray-900/95 backdrop-blur-sm border border-gray-700/50 rounded-2xl shadow-2xl overflow-hidden">
-      {/* Premium Header */}
-      <div className="bg-gradient-to-r from-purple-600/20 via-blue-600/20 to-purple-600/20 p-6 border-b border-gray-700/50">
+    <div className="h-full bg-gradient-to-br from-gray-900/95 via-gray-800/95 to-gray-900/95 backdrop-blur-sm border border-gray-700/50 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+      {/* Premium Header - Fixed */}
+      <div className="bg-gradient-to-r from-purple-600/20 via-blue-600/20 to-purple-600/20 p-4 border-b border-gray-700/50 flex-shrink-0">
         <div className="flex items-center space-x-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
-            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
+            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4" />
             </svg>
           </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Analysis Controls</h2>
-            <p className="text-gray-400 text-sm">Configure detection zones</p>
+            <h2 className="text-lg font-bold text-white">Analysis Controls</h2>
+            <p className="text-gray-400 text-xs">Configure detection zones</p>
           </div>
         </div>
       </div>
 
-      <div className="flex-1 p-4 space-y-4 overflow-hidden">
-        {/* Zone Drawing Section */}
-        <div className="space-y-3">
-          <div className="flex items-center space-x-2">
-            <div className="w-5 h-5 bg-blue-500/20 rounded-md flex items-center justify-center">
-              <span className="text-blue-400 font-bold text-xs">1</span>
-            </div>
-            <p className="font-semibold text-gray-200 text-sm">Select Detection Zone</p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            {directions.map(dir => {
-              const dirLower = dir.key;
-              const isDrawn = drawnZones.includes(dirLower);
-              const isActive = activeDirection === dirLower;
-              const colorClass = colorClasses[dir.color as keyof typeof colorClasses];
-
-              return (
-                <button
-                  key={dir.key}
-                  onClick={() => onSetDirection(dirLower)}
-                  className={`
-              relative p-3 rounded-lg border-2 transition-all duration-300 transform hover:scale-105
-              ${isActive
-                      ? `bg-gradient-to-br ${colorClass} shadow-lg ring-2 ring-white/20`
-                      : isDrawn
-                        ? `bg-gradient-to-br ${colorClass} opacity-75 hover:opacity-100`
-                        : 'bg-gray-800/50 border-gray-600/50 text-gray-300 hover:bg-gray-700/50 hover:border-gray-500/50'
-                    }
-            `}
-                >
-                  <div className="flex flex-col items-center space-y-1">
-                    <div className="text-lg font-mono">{dir.icon}</div>
-                    <div className="text-xs font-semibold">{dir.label}</div>
-                    {isDrawn && !isActive && (
-                      <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-gray-900 flex items-center justify-center">
-                        <svg className="w-2 h-2 text-white" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                    )}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Polygon Editing Section */}
-        <div className="space-y-2">
-          <div className="flex items-center space-x-2">
-            <div className="w-5 h-5 bg-yellow-500/20 rounded-md flex items-center justify-center">
-              <span className="text-yellow-400 font-bold text-xs">2</span>
-            </div>
-            <p className="font-semibold text-gray-200 text-sm">Edit Polygon</p>
-          </div>
-
+      {/* Scrollable Content Area */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="p-3 space-y-3">
+          {/* Zone Drawing Section */}
           <div className="space-y-2">
-            <button
-              onClick={onFinishZone}
-              className="w-full p-2 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-md hover:from-green-500 hover:to-green-600 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-green-500/25 font-semibold flex items-center justify-center space-x-2 text-sm"
-              disabled={!activeDirection}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              <span>Finish Zone</span>
-            </button>
-
-            <button
-              onClick={onUndoPoint}
-              className="w-full p-2 bg-gradient-to-r from-yellow-600 to-yellow-700 text-white rounded-md hover:from-yellow-500 hover:to-yellow-600 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-yellow-500/25 font-semibold flex items-center justify-center space-x-2 text-sm"
-              disabled={!activeDirection}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-              </svg>
-              <span>Undo Point</span>
-            </button>
-
-            <button
-              onClick={onClearAllZones}
-              className="w-full p-2 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-md hover:from-red-500 hover:to-red-600 transition-all duration-200 shadow-lg hover:shadow-red-500/25 font-semibold flex items-center justify-center space-x-2 text-sm"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-              <span>Clear All</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Report Configuration */}
-        <div className="space-y-3">
-          <div className="flex items-center space-x-2">
-            <div className="w-5 h-5 bg-purple-500/20 rounded-md flex items-center justify-center">
-              <span className="text-purple-400 font-bold text-xs">3</span>
+            <div className="flex items-center space-x-2">
+              <div className="w-4 h-4 bg-blue-500/20 rounded-md flex items-center justify-center">
+                <span className="text-blue-400 font-bold text-xs">1</span>
+              </div>
+              <p className="font-semibold text-gray-200 text-sm">Select Detection Zone</p>
             </div>
-            <p className="font-semibold text-gray-200 text-sm">Configure Reports</p>
+
+            <div className="grid grid-cols-2 gap-2">
+              {directions.map(dir => {
+                const dirLower = dir.key;
+                const isDrawn = drawnZones.includes(dirLower);
+                const isActive = activeDirection === dirLower;
+                const colorClass = colorClasses[dir.color as keyof typeof colorClasses];
+
+                return (
+                  <button
+                    key={dir.key}
+                    onClick={() => onSetDirection(dirLower)}
+                    className={`
+                relative p-2 rounded-lg border-2 transition-all duration-300 transform hover:scale-105
+                ${isActive
+                        ? `bg-gradient-to-br ${colorClass} shadow-lg ring-2 ring-white/20`
+                        : isDrawn
+                          ? `bg-gradient-to-br ${colorClass} opacity-75 hover:opacity-100`
+                          : 'bg-gray-800/50 border-gray-600/50 text-gray-300 hover:bg-gray-700/50 hover:border-gray-500/50'
+                      }
+              `}
+                  >
+                    <div className="flex flex-col items-center space-y-1">
+                      <div className="text-base font-mono">{dir.icon}</div>
+                      <div className="text-xs font-semibold">{dir.label}</div>
+                      {isDrawn && !isActive && (
+                        <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full border border-gray-900 flex items-center justify-center">
+                          <svg className="w-2 h-2 text-white" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                          </svg>
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          <div className="space-y-3">
-            {/* Primary Direction */}
-            <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-3">
-              <label htmlFor="primary-direction-select" className="block text-xs font-medium text-gray-400 mb-2">
-                Primary Direction
-              </label>
-              <select
-                id="primary-direction-select"
-                value={primaryDirection || ''}
-                onChange={e => onPrimaryDirectionChange(e.target.value)}
-                className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-2 text-white text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={drawnZones.length === 0}
+          {/* Polygon Editing Section */}
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <div className="w-4 h-4 bg-yellow-500/20 rounded-md flex items-center justify-center">
+                <span className="text-yellow-400 font-bold text-xs">2</span>
+              </div>
+              <p className="font-semibold text-gray-200 text-sm">Edit Polygon</p>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                onClick={onFinishZone}
+                className="w-full p-2 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-md hover:from-green-500 hover:to-green-600 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-green-500/25 font-semibold flex items-center justify-center space-x-2 text-xs"
+                disabled={!activeDirection}
               >
-                <option value="" disabled>Select from zones...</option>
-                {drawnZones.map(zone => (
-                  <option key={zone} value={zone}>
-                    {zone.charAt(0).toUpperCase() + zone.slice(1)}
-                  </option>
-                ))}
-              </select>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                <span>Finish Zone</span>
+              </button>
+
+              <button
+                onClick={onUndoPoint}
+                className="w-full p-2 bg-gradient-to-r from-yellow-600 to-yellow-700 text-white rounded-md hover:from-yellow-500 hover:to-yellow-600 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-yellow-500/25 font-semibold flex items-center justify-center space-x-2 text-xs"
+                disabled={!activeDirection}
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                </svg>
+                <span>Undo Point</span>
+              </button>
+
+              <button
+                onClick={onClearAllZones}
+                className="w-full p-2 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-md hover:from-red-500 hover:to-red-600 transition-all duration-200 shadow-lg hover:shadow-red-500/25 font-semibold flex items-center justify-center space-x-2 text-xs"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                <span>Clear All</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Report Configuration */}
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <div className="w-4 h-4 bg-purple-500/20 rounded-md flex items-center justify-center">
+                <span className="text-purple-400 font-bold text-xs">3</span>
+              </div>
+              <p className="font-semibold text-gray-200 text-sm">Configure Reports</p>
             </div>
 
-            {/* Report Type */}
-            <div className={`bg-gray-900/50 rounded-lg border border-gray-700/30 p-3 transition-all duration-300 ${!isBiDirectionalAvailable ? 'opacity-60' : ''}`}>
-              <label className="block text-xs font-medium text-gray-400 mb-2">Report Type</label>
-              <div className="space-y-2">
-                <label className="flex items-center space-x-2 cursor-pointer group">
-                  <input
-                    type="radio"
-                    name="reportType"
-                    value="Standard Report"
-                    checked={reportType === 'Standard Report'}
-                    onChange={e => onReportTypeChange(e.target.value)}
-                    className="w-3 h-3 text-blue-500 border-gray-600 focus:ring-blue-500 focus:ring-1"
-                  />
-                  <div className="flex-1">
-                    <div className="text-white font-medium text-sm group-hover:text-blue-300 transition-colors duration-200">
-                      Standard Report
-                    </div>
-                    <div className="text-xs text-gray-500">Basic traffic analysis</div>
-                  </div>
+            <div className="space-y-2">
+              {/* Primary Direction */}
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label htmlFor="primary-direction-select" className="block text-xs font-medium text-gray-400 mb-1">
+                  Primary Direction
                 </label>
+                <select
+                  id="primary-direction-select"
+                  value={primaryDirection || ''}
+                  onChange={e => onPrimaryDirectionChange(e.target.value)}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={drawnZones.length === 0}
+                >
+                  <option value="" disabled>Select from zones...</option>
+                  {drawnZones.map(zone => (
+                    <option key={zone} value={zone}>
+                      {zone.charAt(0).toUpperCase() + zone.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-                <label className={`flex items-center space-x-2 cursor-pointer group transition-all duration-200 ${!isBiDirectionalAvailable ? 'cursor-not-allowed' : ''}`}>
-                  <input
-                    type="radio"
-                    name="reportType"
-                    value="Standard + Bi-directional Report"
-                    checked={reportType === 'Standard + Bi-directional Report'}
-                    onChange={e => onReportTypeChange(e.target.value)}
-                    disabled={!isBiDirectionalAvailable}
-                    className="w-3 h-3 text-blue-500 border-gray-600 focus:ring-blue-500 focus:ring-1 disabled:opacity-50"
-                  />
-                  <div className="flex-1">
-                    <div className={`font-medium text-sm transition-colors duration-200 ${isBiDirectionalAvailable ? 'text-white group-hover:text-blue-300' : 'text-gray-500'}`}>
-                      Standard + Bi-directional
+              {/* Report Type */}
+              <div className={`bg-gray-900/50 rounded-lg border border-gray-700/30 p-2 transition-all duration-300 ${!isBiDirectionalAvailable ? 'opacity-60' : ''}`}>
+                <label className="block text-xs font-medium text-gray-400 mb-1">Report Type</label>
+                <div className="space-y-1">
+                  <label className="flex items-center space-x-2 cursor-pointer group">
+                    <input
+                      type="radio"
+                      name="reportType"
+                      value="Standard Report"
+                      checked={reportType === 'Standard Report'}
+                      onChange={e => onReportTypeChange(e.target.value)}
+                      className="w-3 h-3 text-blue-500 border-gray-600 focus:ring-blue-500 focus:ring-1"
+                    />
+                    <div className="flex-1">
+                      <div className="text-white font-medium text-xs group-hover:text-blue-300 transition-colors duration-200">
+                        Standard Report
+                      </div>
+                      <div className="text-xs text-gray-500">Basic traffic analysis</div>
                     </div>
-                    <div className="text-xs text-gray-500">
-                      {isBiDirectionalAvailable ? 'Advanced flow analysis' : 'Requires 2 zones'}
+                  </label>
+
+                  <label className={`flex items-center space-x-2 cursor-pointer group transition-all duration-200 ${!isBiDirectionalAvailable ? 'cursor-not-allowed' : ''}`}>
+                    <input
+                      type="radio"
+                      name="reportType"
+                      value="Standard + Bi-directional Report"
+                      checked={reportType === 'Standard + Bi-directional Report'}
+                      onChange={e => onReportTypeChange(e.target.value)}
+                      disabled={!isBiDirectionalAvailable}
+                      className="w-3 h-3 text-blue-500 border-gray-600 focus:ring-blue-500 focus:ring-1 disabled:opacity-50"
+                    />
+                    <div className="flex-1">
+                      <div className={`font-medium text-xs transition-colors duration-200 ${isBiDirectionalAvailable ? 'text-white group-hover:text-blue-300' : 'text-gray-500'}`}>
+                        Standard + Bi-directional
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {isBiDirectionalAvailable ? 'Advanced flow analysis' : 'Requires 2 zones'}
+                      </div>
                     </div>
-                  </div>
-                  {isBiDirectionalAvailable && (
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                  )}
-                </label>
+                    {isBiDirectionalAvailable && (
+                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    )}
+                  </label>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-
-      {/* Premium Launch Section */}
-      <div className="bg-gradient-to-r from-gray-800/50 via-gray-700/50 to-gray-800/50 border-t border-gray-700/50 p-6">
+      {/* Premium Launch Section - Fixed at Bottom */}
+      <div className="bg-gradient-to-r from-gray-800/50 via-gray-700/50 to-gray-800/50 border-t border-gray-700/50 p-4 flex-shrink-0">
         <button
           onClick={onLaunch}
           disabled={!isLaunchable}
           className={`
-            w-full p-4 rounded-xl font-bold text-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-500/25
+            w-full p-3 rounded-xl font-bold text-base transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-500/25
             ${isLaunchable
               ? 'bg-gradient-to-r from-blue-600 via-blue-700 to-blue-600 text-white shadow-2xl shadow-blue-500/25 hover:shadow-blue-500/40 hover:from-blue-500 hover:to-blue-500'
               : 'bg-gray-700 text-gray-400 cursor-not-allowed shadow-none'
             }
           `}
         >
-          <div className="flex items-center justify-center space-x-3">
+          <div className="flex items-center justify-center space-x-2">
             {isLaunchable ? (
               <>
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
                 <span>LAUNCH ANALYSIS</span>
               </>
             ) : (
               <>
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.314 16.5c-.77.833.192 2.5 1.732 2.5z" />
                 </svg>
                 <span>COMPLETE SETUP</span>
@@ -270,14 +272,13 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
         </button>
 
         {!isLaunchable && (
-          <div className="mt-3 text-center">
+          <div className="mt-2 text-center">
             <p className="text-xs text-gray-500">
               {drawnZones.length === 0 && "Select files and draw zones"}
               {drawnZones.length > 0 && !primaryDirection && "Set primary direction"}
             </p>
           </div>
         )}
-
       </div>
     </div>
   );
