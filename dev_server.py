@@ -98,11 +98,12 @@ class AnalysisConfigPayload(BaseModel):
     video_paths: List[str]
     start_date: str
     start_time: str
+    station_number: str
     primary_direction: str
     report_type: str
     polygons: dict
-    preview_image_width: int = 640
-    preview_image_height: int = 480
+    preview_image_width: int
+    preview_image_height: int
 
 # --- API Endpoints ---
 @app.get("/api/v1/health", tags=["System"])
@@ -164,19 +165,6 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
     job_id = f"job_{os.urandom(4).hex()}"
     progress_queue = asyncio.Queue()
     job_queues[job_id] = progress_queue
-    
-    # Get dimensions from cache for the first video
-    first_video_path = config.video_paths[0]
-    cached_dimensions = video_dimensions_cache.get(first_video_path)
-    
-    if cached_dimensions:
-        preview_width = cached_dimensions['width']
-        preview_height = cached_dimensions['height']
-        print(f"✅ Using cached dimensions: {preview_width}x{preview_height}")
-    else:
-        print(f"⚠️ No cached dimensions for {first_video_path}, falling back to defaults")
-        preview_width = 640
-        preview_height = 480
 
     processor.zone_polygons = config.polygons
     
@@ -189,8 +177,8 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
         primary_direction=config.primary_direction.lower(),
         generate_link_count_report_flag=(config.report_type == "Standard + Bi-directional Report"),
         progress_queue=progress_queue,
-        preview_image_width=preview_width,
-        preview_image_height=preview_height
+        preview_image_width=config.preview_image_width,
+        preview_image_height=config.preview_image_height
     )
     background_tasks.add_task(lambda: job_queues.pop(job_id, None))
     

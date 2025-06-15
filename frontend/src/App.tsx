@@ -67,11 +67,20 @@ function App() {
         setPreviewUrl(response.data.preview_image_url);
         setStatusText(`[ACTIVE] Previewing '${path.split(/[\\/]/).pop()}' • Select zones to analyze`);
 
-        // Get image dimensions when preview loads
+        // Get EXACT image dimensions when preview loads
         const img = new Image();
         img.onload = () => {
-          setImageDimensions({ width: img.width, height: img.height });
-          console.log(`Image dimensions: ${img.width}x${img.height}`);
+          const exactDimensions = {
+            width: img.naturalWidth,  // Use naturalWidth for exact pixel size
+            height: img.naturalHeight // Use naturalHeight for exact pixel size
+          };
+          setImageDimensions(exactDimensions);
+          console.log(`Exact Image Dimensions: ${exactDimensions.width}x${exactDimensions.height} pixels`);
+        };
+        img.onerror = () => {
+          console.error('Failed to load image for dimension calculation');
+          // Fallback to default dimensions
+          setImageDimensions({ width: 640, height: 480 });
         };
         img.src = response.data.preview_image_url;
       } else {
@@ -82,6 +91,7 @@ function App() {
     }
     finally { setIsLoadingPreview(false); }
   };
+
 
   const connectToWebSocket = (jobId: string) => {
     const wsUrl = `ws://127.0.0.1:7862/ws/progress/${jobId}`;
@@ -145,10 +155,24 @@ function App() {
       station_number: stationNumber,
       polygons,
       primary_direction: primaryDirection || '',
-      report_type: reportType
+      report_type: reportType,
+      // Exact image dimensions used for polygon drawing
+      preview_image_width: imageDimensions.width,
+      preview_image_height: imageDimensions.height,
+      // Additional metadata about the image
+      image_metadata: {
+        exact_width: imageDimensions.width,
+        exact_height: imageDimensions.height,
+        aspect_ratio: imageDimensions.width / imageDimensions.height,
+        total_pixels: imageDimensions.width * imageDimensions.height
+      }
     };
 
-    console.log('Sending config with image dimensions:', imageDimensions);
+    console.log('Sending exact image dimensions:', {
+      width: imageDimensions.width,
+      height: imageDimensions.height,
+      payload: configPayload
+    });
 
     try {
       const response = await axios.post(`${API_BASE_URL}/api/v1/process`, configPayload);
@@ -166,6 +190,7 @@ function App() {
       setIsProcessing(false);
     }
   };
+
 
   const handleSelectFiles = async () => {
     try {

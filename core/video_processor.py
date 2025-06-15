@@ -1421,8 +1421,11 @@ class VideoProcessor:
                 if hasattr(self, 'writer_thread') and self.writer_thread and self.writer_thread.is_alive(): self.writer_thread.join(timeout=1)
             except Exception as join_e: print(f"Error joining threads: {join_e}")
             if temp_converted_dav_mp4:
-                try: debug_print(f"Cleaning up temp DAV: {temp_converted_dav_mp4}"); os.remove(temp_converted_dav_mp4)
-                except OSError as e_del_dav: debug_print(f"Error deleting temp DAV: {e_del_dav}")
+                for temp_path in temp_converted_dav_mp4:
+                    try: 
+                        debug_print(f"Cleaning up temp DAV: {temp_path}")
+                        os.remove(temp_path)
+                    except OSError as e_del_dav: debug_print(f"Error deleting temp DAV: {e_del_dav}")
             self.model=None; self.zone_tracker=None; self.perf=None; self.detection_zones_polygons=None
             self.frame_read_queue=None; self.video_write_queue=None; self.reader_thread=None; self.writer_thread=None; self.stop_event=None
             self.final_output_path = None; self.active_track_data.clear(); self.finalized_paths_for_report.clear()
