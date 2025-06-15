@@ -33,7 +33,8 @@ def run_local_processing():
             video_paths=INPUT_VIDEO_PATH,
             start_date_str=START_DATE,
             start_time_str=START_TIME,
-            primary_direction=DEFAULT_PRIMARY_DIRECTION
+            primary_direction=DEFAULT_PRIMARY_DIRECTION,
+            station_number_str=''
         )
         print("\n--- Processing Complete ---")
         print(result_message)
