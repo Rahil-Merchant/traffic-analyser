@@ -41,6 +41,7 @@ from video_reader import PyVideoReader
 
 
 class VideoProcessor:
+    @profile
     def __init__(self, line_mode: str, data_yaml_path: str = DATA_YAML_PATH):
         self.line_mode = line_mode
         self.target_fps = TARGET_FPS
@@ -48,7 +49,6 @@ class VideoProcessor:
         self.frame_shape_viz = (FRAME_WIDTH_VIZ, FRAME_HEIGHT_VIZ)
         self.model_input_size_config = MODEL_INPUT_SIZE
         self.batch_size = OPTIMAL_BATCH_SIZE
-        self.max_workers = THREAD_COUNT
         self.num_inference_streams = max(1, NUM_INFERENCE_STREAMS)
         self.pvr_decode_segment_size = PYVIDEOREADER_DECODE_SEGMENT_SIZE
 
@@ -74,10 +74,19 @@ class VideoProcessor:
         self.zone_tracker = None
         self.perf = None
         self.stop_event = None
+        
+        # REFACTOR: Define all threads
         self.reader_thread = None
+        self.preprocessor_thread = None
+        self.postprocessor_thread = None
         self.writer_thread = None
-        self.frame_read_queue = None
+        
+        # REFACTOR: Define all queues for the new pipeline
+        self.raw_frame_queue = None
+        self.preprocessed_tensor_queue = None
+        self.results_queue = None
         self.video_write_queue = None
+
         self.streams = None
         self.active_track_data = {}
         self.finalized_paths_for_report = []
@@ -87,6 +96,7 @@ class VideoProcessor:
         self.final_output_path = None
         self.temp_converted_files = []
 
+    @profile
     def _initialize_run(self, video_paths, start_date_str, start_time_str, primary_direction, station_number_str, generate_link_count_report_flag, preview_image_width, preview_image_height):
         logger.info("--- Initializing New Video Processing Run ---")
         self.bytetracker = ByteTrack(
@@ -101,8 +111,11 @@ class VideoProcessor:
         self.stop_event = threading.Event()
         self.last_cleanup_time = time.monotonic()
         
-        max_queue_size = max(self.batch_size * self.num_inference_streams * 32, 128)
-        self.frame_read_queue = queue.Queue(maxsize=max_queue_size)
+        # REFACTOR: Initialize all queues. Sizes are tuned to prevent any stage from blocking another.
+        max_queue_size = max(self.batch_size * 4, 128)
+        self.raw_frame_queue = queue.Queue(maxsize=max_queue_size)
+        self.preprocessed_tensor_queue = queue.Queue(maxsize=8) # Small queue, tensors are large
+        self.results_queue = queue.Queue(maxsize=max_queue_size)
         
         if self.device == 'cuda' and PARALLEL_STREAMS > 1:
             self.streams = [torch.cuda.Stream() for _ in range(PARALLEL_STREAMS)]
@@ -157,11 +170,24 @@ class VideoProcessor:
         video_duration_seconds = total_frames / original_fps if original_fps > 0 else 0
         logger.info(f"Video Properties: ~{total_frames} frames, {original_fps:.2f} FPS (Original), Duration: {self._format_duration(video_duration_seconds)}")
 
-        logger.info("Starting I/O threads...")
-        reader_args = (actual_video_paths, original_fps, total_frames)
+        # REFACTOR: Start all pipeline threads
+        logger.info("Starting all pipeline threads...")
+        
+        # 1. Reader Thread
+        reader_args = (actual_video_paths, original_fps)
         self.reader_thread = threading.Thread(target=self._frame_reader_task_pvr_segmented, args=reader_args, daemon=True)
         self.reader_thread.start()
 
+        # 2. Preprocessor Thread
+        self.preprocessor_thread = threading.Thread(target=self._preprocessor_task, daemon=True)
+        self.preprocessor_thread.start()
+
+        # 3. Post-processor Thread
+        postprocessor_args = (start_dt,)
+        self.postprocessor_thread = threading.Thread(target=self._postprocessor_task, args=postprocessor_args, daemon=True)
+        self.postprocessor_thread.start()
+        
+        # 4. Writer Thread (Optional)
         if ENABLE_VISUALIZATION:
             os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
             ts_now = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -188,153 +214,192 @@ class VideoProcessor:
         }
 
     @profile
+    def _preprocessor_task(self):
+        logger.info("Preprocessor thread started.")
+        while not self.stop_event.is_set():
+            try:
+                # 1. Get a batch of raw frames from the reader
+                batch_data = self._get_batch_from_queue(self.raw_frame_queue)
+                if batch_data is None:
+                    break # Sentinel received
+                
+                frames_metadata, frame_numbers, frame_times = batch_data
+
+                # 2. Preprocess the batch into a tensor
+                if self.perf: self.perf.start_timer('preprocessing')
+                input_batch_tensor = self._preprocess_batch(frames_metadata)
+                if self.perf: self.perf.end_timer('preprocessing')
+
+                if input_batch_tensor is None or input_batch_tensor.nelement() == 0:
+                    continue
+
+                # 3. Put the tensor and its metadata into the next queue
+                self.preprocessed_tensor_queue.put((input_batch_tensor, frames_metadata, frame_numbers, frame_times))
+            except queue.Empty:
+                continue # This is normal if the queue is temporarily empty
+            except Exception as e:
+                logger.exception("Error in preprocessor thread.")
+                self.stop_event.set()
+                break
+        
+        self.preprocessed_tensor_queue.put(None) # Pass sentinel downstream
+        logger.info("Preprocessor thread finished.")
+
+    @profile
+    def _postprocessor_task(self, start_datetime):
+        logger.info("Post-processor thread started.")
+        while not self.stop_event.is_set():
+            try:
+                # 1. Get a batch of results from the inference stage
+                results_data = self.results_queue.get(timeout=1.0)
+                if results_data is None:
+                    break # Sentinel received
+
+                yolo_results_batch, frames_metadata, frame_numbers, frame_times = results_data
+                
+                # 2. Run the slow post-processing logic
+                _, processed_frames_for_viz = self._process_inference_results(
+                    yolo_results_batch, frames_metadata, frame_numbers, frame_times, start_datetime
+                )
+                
+                # 3. If visualization is enabled, put frames into the writer queue
+                if ENABLE_VISUALIZATION and self.video_write_queue:
+                    if self.perf: self.perf.start_timer('video_write')
+                    for frame in processed_frames_for_viz:
+                        if frame is not None:
+                            try: self.video_write_queue.put(frame, block=False)
+                            except queue.Full: logger.warning("Video writer queue is full. Frame dropped.")
+                    if self.perf: self.perf.end_timer('video_write')
+
+            except queue.Empty:
+                continue # Normal if inference is busy
+            except Exception as e:
+                logger.exception("Error in post-processor thread.")
+                self.stop_event.set()
+                break
+        
+        if self.video_write_queue:
+            self.video_write_queue.put(None) # Pass sentinel to writer
+        logger.info("Post-processor thread finished.")
+
+    @profile
+    def _get_batch_from_queue(self, q):
+        # Wait for the first item to start a batch
+        first_item = q.get(timeout=60)
+        if first_item is None:
+            return None # Sentinel received
+        
+        items = [first_item]
+        # Grab other items in the queue without blocking to form a full batch
+        while len(items) < self.batch_size:
+            try:
+                items.append(q.get_nowait())
+                if items[-1] is None: # Handle sentinel in the middle of a batch
+                    # Put back the sentinel for the next stage to handle
+                    q.put(None)
+                    items.pop()
+                    break
+            except queue.Empty:
+                break # Queue is empty, process the current batch
+        
+        # Unzip the batch data
+        frames_metadata, frame_numbers, frame_times = [], [], []
+        for item in items:
+            frame_content_raw, frame_num_raw, frame_time_s, frame_meta = item
+            frames_metadata.append((frame_content_raw, frame_meta))
+            frame_numbers.append(frame_num_raw)
+            frame_times.append(frame_time_s)
+        
+        return frames_metadata, frame_numbers, frame_times
+
+    @profile
     def _main_processing_loop(self, init_data, progress_queue):
-        logger.info("Starting main processing loop...")
+        logger.info("Starting main processing loop (Inference Worker)...")
         frames_processed_count = 0
         last_prog_print_time = time.monotonic()
         
-        effective_trigger_batch_size = self.batch_size * self.num_inference_streams
-        logger.info(f"Effective trigger batch size for inference: {effective_trigger_batch_size}")
-
-        current_batch_frames_metadata = []
-        current_batch_frame_numbers = []
-        current_batch_frame_times = []
-
-        while True:
+        while not self.stop_event.is_set():
             try:
-                frame_data_item = self.frame_read_queue.get(timeout=60)
-                if frame_data_item is None:
-                    logger.info("Reader thread sent sentinel. Exiting main loop.")
-                    break
+                # 1. Get a preprocessed batch tensor
+                tensor_data = self.preprocessed_tensor_queue.get(timeout=60)
+                if tensor_data is None:
+                    break # Sentinel received, exit loop
                 
-                frame_content_raw, frame_num_raw, frame_time_s, frame_meta = frame_data_item
+                input_batch_tensor, frames_metadata, frame_numbers, frame_times = tensor_data
+                actual_batch_size = input_batch_tensor.shape[0]
 
-                current_batch_frames_metadata.append((frame_content_raw, frame_meta))
-                current_batch_frame_numbers.append(frame_num_raw)
-                current_batch_frame_times.append(frame_time_s)
+                # 2. Run inference on the GPU
+                batch_proc_start_time = time.monotonic()
+                if self.perf and self.device == 'cuda':
+                    start_event = torch.cuda.Event(enable_timing=True)
+                    end_event = torch.cuda.Event(enable_timing=True)
+                    start_event.record()
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_inference_streams) as executor:
+                    futures_map = {}
+                    yolo_results_batch = [None] * actual_batch_size
+                    for i in range(self.num_inference_streams):
+                        start_idx = i * self.batch_size
+                        end_idx = min((i + 1) * self.batch_size, actual_batch_size)
+                        if start_idx >= end_idx: continue
+
+                        chunk = input_batch_tensor[start_idx:end_idx]
+                        stream = self.streams[i % len(self.streams)] if self.streams else None
+                        future = executor.submit(self._execute_single_model_inference, self.models_list[i], chunk, stream)
+                        futures_map[future] = list(range(start_idx, end_idx))
+                    
+                    for future in concurrent.futures.as_completed(futures_map):
+                        original_indices = futures_map[future]
+                        try:
+                            results_chunk = future.result()
+                            for i, res in enumerate(results_chunk):
+                                yolo_results_batch[original_indices[i]] = res
+                        except Exception as e:
+                            logger.error(f"Error during concurrent inference for indices {original_indices}: {e}")
+
+                if self.perf and self.device == 'cuda':
+                    end_event.record()
+                    end_event.synchronize()
+                    self.perf.timings['inference'] += start_event.elapsed_time(end_event) / 1000.0
                 
-                if len(current_batch_frames_metadata) >= effective_trigger_batch_size:
-                    batch_size = len(current_batch_frames_metadata)
-                    self._process_batch(
-                        current_batch_frames_metadata,
-                        current_batch_frame_numbers,
-                        current_batch_frame_times,
-                        init_data["start_datetime"]
-                    )
-                    frames_processed_count += batch_size
-                    
-                    if self.perf and (time.monotonic() - last_prog_print_time > 5.0):
-                        prog_stats = self.perf.get_progress()
-                        if progress_queue:
-                            progress_queue.put_nowait({
-                                "progress": round(prog_stats.get('percent', 0)),
-                                "status": f"{prog_stats['fps']:.1f} FPS",
-                                "eta": str(prog_stats.get('eta', '...'))
-                            })
-                        logger.debug(f"Progress: {prog_stats['percent']:.1f}% | FPS: {prog_stats['fps']:.1f} | ETA: {prog_stats['eta']}")
-                        print(f"\rProgress: {prog_stats['percent']:.1f}% | FPS: {prog_stats['fps']:.1f} | ETA: {prog_stats['eta']}      ", end="")
-                        last_prog_print_time = time.monotonic()
+                # 3. Put results into the next queue for post-processing
+                self.results_queue.put((yolo_results_batch, frames_metadata, frame_numbers, frame_times))
+                
+                # Performance and progress reporting
+                if self.perf:
+                    duration = time.monotonic() - batch_proc_start_time
+                    self.perf.record_batch_processed(actual_batch_size, duration)
+                    self.perf.record_detection(sum(len(r.boxes) for r in yolo_results_batch if r and r.boxes))
+                    self.perf.sample_system_metrics()
+                
+                frames_processed_count += actual_batch_size
+                if time.monotonic() - last_prog_print_time > 5.0:
+                    prog_stats = self.perf.get_progress()
+                    if progress_queue:
+                        progress_queue.put_nowait({"progress": round(prog_stats.get('percent', 0)), "status": f"{prog_stats['fps']:.1f} FPS", "eta": str(prog_stats.get('eta', '...'))})
+                    logger.debug(f"Progress: {prog_stats['percent']:.1f}% | FPS: {prog_stats['fps']:.1f} | ETA: {prog_stats['eta']}")
+                    print(f"\rProgress: {prog_stats['percent']:.1f}% | FPS: {prog_stats['fps']:.1f} | ETA: {prog_stats['eta']}      ", end="")
+                    last_prog_print_time = time.monotonic()
 
-                    for _ in range(batch_size):
-                        self.frame_read_queue.task_done()
-                    
-                    current_batch_frames_metadata.clear()
-                    current_batch_frame_numbers.clear()
-                    current_batch_frame_times.clear()
+                # Memory cleanup can stay here
+                if time.monotonic() - self.last_cleanup_time > MEMORY_CLEANUP_INTERVAL:
+                    if self.perf: self.perf.start_timer('memory_cleanup')
+                    # Note: cleanup_tracking_data is now implicitly handled by the post-processor
+                    cleanup_memory()
+                    self.last_cleanup_time = time.monotonic()
+                    if self.perf: self.perf.end_timer('memory_cleanup')
 
             except queue.Empty:
-                logger.warning("Reader queue empty for 60s. Assuming processing is complete.")
+                logger.warning("Preprocessor queue empty for 60s. Assuming processing is complete.")
                 break
             except Exception as e:
                 logger.exception("Fatal error in main processing loop.")
                 self.stop_event.set()
                 break
         
-        if current_batch_frames_metadata:
-            logger.info(f"Processing final batch of {len(current_batch_frames_metadata)} frames.")
-            self._process_batch(
-                current_batch_frames_metadata,
-                current_batch_frame_numbers,
-                current_batch_frame_times,
-                init_data["start_datetime"]
-            )
-            frames_processed_count += len(current_batch_frames_metadata)
-            for _ in range(len(current_batch_frames_metadata)):
-                self.frame_read_queue.task_done()
-        
+        self.results_queue.put(None) # Pass sentinel to post-processor
         print()
         return frames_processed_count
-
-    @profile
-    def _process_batch(self, frames_metadata, frame_numbers, frame_times, start_datetime):
-        batch_proc_start_time = time.monotonic()
-        if self.perf: self.perf.start_timer('preprocessing')
-        input_batch_tensor = self._preprocess_batch(frames_metadata)
-        if self.perf: self.perf.end_timer('preprocessing')
-
-        if input_batch_tensor is None or input_batch_tensor.nelement() == 0:
-            logger.warning("Skipping batch: Preprocessing returned None or empty tensor.")
-            return
-
-        actual_batch_size = input_batch_tensor.shape[0]
-        yolo_results_batch = [None] * actual_batch_size
-        
-        if self.perf and self.device == 'cuda':
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_inference_streams) as executor:
-            futures_map = {}
-            for i in range(self.num_inference_streams):
-                start_idx = i * self.batch_size
-                end_idx = min((i + 1) * self.batch_size, actual_batch_size)
-                if start_idx >= end_idx: continue
-
-                chunk = input_batch_tensor[start_idx:end_idx]
-                stream = self.streams[i % len(self.streams)] if self.streams else None
-                future = executor.submit(self._execute_single_model_inference, self.models_list[i], chunk, stream)
-                futures_map[future] = list(range(start_idx, end_idx))
-            
-            for future in concurrent.futures.as_completed(futures_map):
-                original_indices = futures_map[future]
-                try:
-                    results_chunk = future.result()
-                    for i, res in enumerate(results_chunk):
-                        yolo_results_batch[original_indices[i]] = res
-                except Exception as e:
-                    logger.error(f"Error during concurrent inference for indices {original_indices}: {e}")
-
-        if self.perf and self.device == 'cuda':
-            end_event.record()
-            end_event.synchronize()
-            self.perf.timings['inference'] += start_event.elapsed_time(end_event) / 1000.0
-        
-        _, processed_frames_for_viz = self._process_inference_results(
-            yolo_results_batch, frames_metadata, frame_numbers, frame_times, start_datetime
-        )
-
-        if ENABLE_VISUALIZATION and self.video_write_queue:
-            if self.perf: self.perf.start_timer('video_write')
-            for frame in processed_frames_for_viz:
-                if frame is not None:
-                    try: self.video_write_queue.put(frame, block=False)
-                    except queue.Full: logger.warning("Video writer queue is full. Frame dropped.")
-            if self.perf: self.perf.end_timer('video_write')
-        
-        if self.perf:
-            duration = time.monotonic() - batch_proc_start_time
-            self.perf.record_batch_processed(actual_batch_size, duration)
-            self.perf.record_detection(sum(len(r.boxes) for r in yolo_results_batch if r and r.boxes))
-            self.perf.sample_system_metrics()
-        
-        if time.monotonic() - self.last_cleanup_time > MEMORY_CLEANUP_INTERVAL:
-            if self.perf: self.perf.start_timer('memory_cleanup')
-            last_frame_time = frame_times[-1] if frame_times else 0
-            cleanup_tracking_data(self, last_frame_time)
-            cleanup_memory()
-            self.last_cleanup_time = time.monotonic()
-            if self.perf: self.perf.end_timer('memory_cleanup')
 
     def _finalize_and_report(self, init_data, frames_processed_count):
         logger.info("Finalizing tracks and generating reports...")
@@ -401,15 +466,11 @@ class VideoProcessor:
         logger.info("Cleaning up resources...")
         if self.stop_event: self.stop_event.set()
         
-        if self.video_write_queue: self.video_write_queue.put(None)
-        if self.frame_read_queue:
-            try:
-                while not self.frame_read_queue.empty(): self.frame_read_queue.get_nowait()
-            except queue.Empty: pass
-            self.frame_read_queue.put(None)
-        
-        if self.writer_thread and self.writer_thread.is_alive(): self.writer_thread.join(timeout=10)
+        # REFACTOR: Wait for all threads to finish
         if self.reader_thread and self.reader_thread.is_alive(): self.reader_thread.join(timeout=10)
+        if self.preprocessor_thread and self.preprocessor_thread.is_alive(): self.preprocessor_thread.join(timeout=10)
+        if self.postprocessor_thread and self.postprocessor_thread.is_alive(): self.postprocessor_thread.join(timeout=10)
+        if self.writer_thread and self.writer_thread.is_alive(): self.writer_thread.join(timeout=10)
         
         for temp_file in self.temp_converted_files:
             try:
@@ -422,8 +483,8 @@ class VideoProcessor:
         self.active_track_data.clear()
         self.finalized_paths_for_report.clear()
         self.bytetracker = self.zone_tracker = self.perf = self.stop_event = None
-        self.reader_thread = self.writer_thread = None
-        self.frame_read_queue = self.video_write_queue = self.streams = None
+        self.reader_thread = self.preprocessor_thread = self.postprocessor_thread = self.writer_thread = None
+        self.raw_frame_queue = self.preprocessed_tensor_queue = self.results_queue = self.video_write_queue = self.streams = None
         self.final_output_path = None
         
         cleanup_memory()
@@ -448,6 +509,11 @@ class VideoProcessor:
             if progress_queue: progress_queue.put_nowait({"progress": 5, "status": "Processing..."})
             frames_processed = self._main_processing_loop(init_data, progress_queue)
             
+            # REFACTOR: Wait for the post-processor to finish its queue before finalizing
+            logger.info("Inference complete. Waiting for post-processing to finish...")
+            if self.postprocessor_thread and self.postprocessor_thread.is_alive():
+                self.postprocessor_thread.join()
+
             if progress_queue: progress_queue.put_nowait({"progress": 95, "status": "Finalizing..."})
             result_msg, results_dict, stats_dict = self._finalize_and_report(init_data, frames_processed)
 
@@ -471,26 +537,34 @@ class VideoProcessor:
     @profile
     @torch.no_grad()
     def _preprocess_batch(self, frames_batch_with_metadata):
+        # This function remains the same, but is now called from its own thread
         if not frames_batch_with_metadata:
             return None
-        frame_tensors = [
-            torch.from_numpy(frame_np.transpose(2, 0, 1))
-            for frame_np, metadata in frames_batch_with_metadata if frame_np is not None
-        ]
-        if not frame_tensors:
+
+        target_dim = self.model_input_size_config
+        
+        valid_frames = [f for f, _ in frames_batch_with_metadata if f is not None]
+        if not valid_frames:
             return None
-        # Stack tensors in a single operation
-        batch_tensor = torch.stack(frame_tensors).to(self.device, non_blocking=True)
+        
+        count = len(valid_frames)
+        batch_np = np.zeros((count, 3, target_dim, target_dim), dtype=np.uint8)
+
+        for i, frame_np in enumerate(valid_frames):
+            if frame_np.shape[0] != target_dim or frame_np.shape[1] != target_dim:
+                frame_np = cv2.resize(frame_np, (target_dim, target_dim), interpolation=cv2.INTER_LINEAR)
+            batch_np[i] = frame_np.transpose(2, 0, 1)
+
+        batch_tensor = torch.from_numpy(batch_np).to(self.device, non_blocking=True)
         dtype_final = torch.float16 if (MIXED_PRECISION and self.device == 'cuda') else torch.float32
         return batch_tensor.to(dtype_final) / 255.0
-    
+
     @profile
     @torch.no_grad()
     def _process_inference_results(self, yolo_results_batch, frames_batch_with_metadata, frame_numbers_in_batch, frame_times_in_batch, start_datetime_obj_global):
         if self.perf: self.perf.start_timer('app_logic_batch')
         processed_frames_list_viz = [None] * len(yolo_results_batch)
         
-        # --- Stage 1: Sequential Tracker Update & Data Collection ---
         all_targets_list = []
         with self.tracker_lock:
             for i, yolo_result in enumerate(yolo_results_batch):
@@ -507,7 +581,6 @@ class VideoProcessor:
             if self.perf: self.perf.end_timer('app_logic_batch')
             return [], []
 
-        # --- Stage 2: Vectorized Data Processing ---
         all_targets_np = np.vstack(all_targets_list)
         tx1, ty1, tx2, ty2 = all_targets_np[:, 0], all_targets_np[:, 1], all_targets_np[:, 2], all_targets_np[:, 3]
         track_ids = all_targets_np[:, 4].astype(int)
@@ -521,10 +594,12 @@ class VideoProcessor:
         bboxes_scaled = np.vstack([tx1 * scale_x, ty1 * scale_y, tx2 * scale_x, ty2 * scale_y]).T.astype(np.int32)
         bottom_centers = np.vstack([(bboxes_scaled[:, 0] + bboxes_scaled[:, 2]) // 2, bboxes_scaled[:, 3]]).T
 
-        # --- Stage 3: High-Speed State Management with Correct Logic ---
         temp_drawing_info_list = [{} for _ in range(len(yolo_results_batch))]
         
         with self.tracker_lock:
+            # Pre-fetch zone keys to avoid repeated calls in the loop
+            zone_keys = list(self.zone_tracker.zones.keys())
+
             for i in range(len(all_targets_np)):
                 track_id_str = str(track_ids[i])
                 cls_id, batch_idx = class_ids[i], batch_indices[i]
@@ -535,11 +610,11 @@ class VideoProcessor:
                 current_global_timestamp = start_datetime_obj_global + timedelta(seconds=current_frame_time_sec)
                 vehicle_type = self.class_id_to_name_map.get(cls_id, 'Light Vehicle')
                 
-                temp_drawing_info_list[batch_idx][track_id_str] = {'box': bbox_scaled, 'type': vehicle_type, 'event': None, 'status': 'tracked', 'center': ((bbox_scaled[0] + bbox_scaled[2]) // 2, (bbox_scaled[1] + bbox_scaled[3]) // 2)}
+                temp_drawing_info_list[batch_idx][track_id_str] = {'box': bbox_scaled, 'type': vehicle_type, 'event': None, 'status': 'tracked', 'center': tuple(bottom_center)}
 
                 if track_id_str not in self.active_track_data:
-                    for zone_dir, zone_poly in self.zone_tracker.zones.items():
-                        if self.zone_tracker._check_point_in_zone(tuple(bottom_center), zone_poly):
+                    for zone_dir in zone_keys:
+                        if self.zone_tracker._check_point_in_zone(tuple(bottom_center), self.zone_tracker.zones[zone_dir]):
                             self.active_track_data[track_id_str] = { 'id': track_id_str, 'entry_direction': zone_dir, 'entry_time': current_global_timestamp, 'type_history': {vehicle_type: 1}, 'current_type': vehicle_type, 'last_pos_zone': bottom_center, 'last_seen_frame': current_frame_num, 'status': 'active' }
                             if self.perf: self.perf.record_vehicle_entry()
                             temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'ENTRY'
@@ -556,11 +631,8 @@ class VideoProcessor:
                     if prev_pos is not None and track_data['status'] == 'active':
                         event_type, event_dir = self.zone_tracker.check_zone_transition(tuple(prev_pos), tuple(bbox_scaled), track_id_str, current_frame_time_sec)
                         
-                        # --- START: Restored Re-entry and Exit Logic ---
-                        if event_type == "ENTRY" and track_data.get('entry_direction') and track_data.get('entry_direction') != event_dir:
-                            stored_entry_dir = track_data['entry_direction']
-                            active_zone_keys = list(self.zone_tracker.zones.keys())
-                            if is_valid_movement(stored_entry_dir, event_dir, active_zone_keys):
+                        if event_type == "ENTRY" and track_data.get('entry_direction') != event_dir:
+                            if is_valid_movement(track_data['entry_direction'], event_dir, zone_keys):
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
                                 self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
@@ -571,17 +643,13 @@ class VideoProcessor:
                                 temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'RE-ENTRY'
 
                         elif event_type == "EXIT":
-                            entry_dir = track_data.get('entry_direction')
-                            active_zones = list(self.zone_tracker.zones.keys())
-                            if entry_dir and is_valid_movement(entry_dir, event_dir, active_zones):
+                            if is_valid_movement(track_data['entry_direction'], event_dir, zone_keys):
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
                                 self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['status'] = 'exited'
                                 temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'EXIT'
-                        # --- END: Restored Re-entry and Exit Logic ---
 
-            # Timeout check (this loop is fast and necessary)
             last_frame_time_in_batch = frame_times_in_batch[-1]
             last_global_timestamp_in_batch = start_datetime_obj_global + timedelta(seconds=last_frame_time_in_batch)
             for track_id, track_data in list(self.active_track_data.items()):
@@ -593,7 +661,6 @@ class VideoProcessor:
                     if self.perf: self.perf.record_vehicle_exit('timed_out')
                     track_data['status'] = 'timed_out'
 
-        # Visualization logic (unchanged)
         if ENABLE_VISUALIZATION:
             for i in range(len(yolo_results_batch)):
                 original_frame_content = frames_batch_with_metadata[i][0]
@@ -612,9 +679,8 @@ class VideoProcessor:
         
         if self.perf: self.perf.end_timer('app_logic_batch')
         return [], processed_frames_list_viz
-
+    
     def _add_to_finalized_paths(self, track_id_str, app_data, final_status_str, exit_direction_str, exit_time_dt, time_in_intersection_val):
-        """Helper to create and append a finalized path dictionary for reporting."""
         path_report_entry = {
             'id': track_id_str,
             'type': app_data.get('current_type', 'UnknownType'),
@@ -658,6 +724,7 @@ class VideoProcessor:
                 logger.error(f"Could not get properties for video {path}: {e}")
         return total_frames, original_fps
 
+    @profile
     def _scale_polygons_to_processing_coordinates(self, polygons_dict, original_w, original_h):
         if not polygons_dict: return {}
         target_w, target_h = self.frame_shape
@@ -672,7 +739,7 @@ class VideoProcessor:
         return scaled_polygons
 
     @profile
-    def _frame_reader_task_pvr_segmented(self, video_paths, original_fps, total_frames_aggregate):
+    def _frame_reader_task_pvr_segmented(self, video_paths, original_fps):
         try:
             target_dim = self.model_input_size_config
             cumulative_frames_offset = 0
@@ -706,13 +773,9 @@ class VideoProcessor:
                             overall_frame_idx = cumulative_frames_offset + frame_idx_in_video
                             frame_time_sec = overall_frame_idx / original_fps
                             metadata = {'is_rgb': True, 'source': 'pvr_cuda_segmented'}
-                            try:
-                                self.frame_read_queue.put((frame_content, overall_frame_idx, frame_time_sec, metadata), timeout=5.0)
-                            except queue.Full:
-                                logger.warning("Reader queue is full, waiting...")
-                                if self.stop_event.is_set(): break
-                                time.sleep(0.1)
-                                self.frame_read_queue.put((frame_content, overall_frame_idx, frame_time_sec, metadata), timeout=5.0)
+                            # The tuple being put into the queue
+                            item = (frame_content, overall_frame_idx, frame_time_sec, metadata)
+                            self.raw_frame_queue.put(item)
                 
                 cumulative_frames_offset += current_video_frames
                 del pvr
@@ -721,7 +784,7 @@ class VideoProcessor:
         except Exception as e:
             logger.exception("Fatal error in frame reader task.")
         finally:
-            if self.frame_read_queue: self.frame_read_queue.put(None)
+            self.raw_frame_queue.put(None) # Put sentinel for preprocessor
             logger.info("Frame reader task finished.")
             
     def _frame_writer_task(self, output_path):
@@ -739,7 +802,6 @@ class VideoProcessor:
                     if frame.shape[1] != self.frame_shape_viz[0] or frame.shape[0] != self.frame_shape_viz[1]:
                         frame = cv2.resize(frame, self.frame_shape_viz)
                     out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-                    self.video_write_queue.task_done()
                 except queue.Empty:
                     if self.stop_event.is_set(): break
                     continue
