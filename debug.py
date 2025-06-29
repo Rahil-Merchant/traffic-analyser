@@ -45,4 +45,4 @@ if __name__ == "__main__":
 
     profiler.disable()
     stats = pstats.Stats(profiler).sort_stats('cumulative')
-    stats.print_stats(50)
+    stats.print_stats(30)

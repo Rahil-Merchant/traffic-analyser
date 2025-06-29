@@ -13,6 +13,12 @@ from datetime import datetime, timedelta
 import concurrent.futures
 from boxmot.trackers.bytetrack.bytetrack import ByteTrack
 from loguru import logger
+import builtins
+if not hasattr(builtins, "profile"):
+    def profile(func):
+        return func
+    builtins.profile = profile
+profile = builtins.profile
 
 from config import (
     TARGET_FPS, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH_VIZ, FRAME_HEIGHT_VIZ,
@@ -181,6 +187,7 @@ class VideoProcessor:
             "video_duration_formatted": self._format_duration(video_duration_seconds)
         }
 
+    @profile
     def _main_processing_loop(self, init_data, progress_queue):
         logger.info("Starting main processing loop...")
         frames_processed_count = 0
@@ -258,6 +265,7 @@ class VideoProcessor:
         print()
         return frames_processed_count
 
+    @profile
     def _process_batch(self, frames_metadata, frame_numbers, frame_times, start_datetime):
         batch_proc_start_time = time.monotonic()
         if self.perf: self.perf.start_timer('preprocessing')
@@ -388,6 +396,7 @@ class VideoProcessor:
         }
         return result_msg, results_dict, stats_dict
 
+    @profile
     def _cleanup_run(self):
         logger.info("Cleaning up resources...")
         if self.stop_event: self.stop_event.set()
@@ -422,6 +431,7 @@ class VideoProcessor:
             self.processing_lock.release()
         logger.info("Cleanup complete. Lock released.")
 
+    @profile
     def process_video(self, video_paths, start_date_str, start_time_str, station_number_str, primary_direction, generate_link_count_report_flag=False, progress_queue=None, preview_image_width=640, preview_image_height=480):
         if not self.processing_lock.acquire(blocking=False):
             logger.warning("Processing lock already held. Aborting.")
@@ -458,140 +468,132 @@ class VideoProcessor:
                 progress_queue.put_nowait({"status": "finished"})
             self._cleanup_run()
 
+    @profile
     @torch.no_grad()
     def _preprocess_batch(self, frames_batch_with_metadata):
         if not frames_batch_with_metadata:
             return None
-
-        target_dim = self.model_input_size_config
-        count = len(frames_batch_with_metadata)
-        
-        batch_np = np.zeros((count, 3, target_dim, target_dim), dtype=np.uint8)
-
-        for i, (frame_np, metadata) in enumerate(frames_batch_with_metadata):
-            if frame_np is None: continue
-            
-            if frame_np.shape[0] != target_dim or frame_np.shape[1] != target_dim:
-                frame_np = cv2.resize(frame_np, (target_dim, target_dim), interpolation=cv2.INTER_LINEAR)
-            
-            batch_np[i] = frame_np.transpose(2, 0, 1)
-
-        batch_tensor = torch.from_numpy(batch_np).to(self.device)
-        
+        frame_tensors = [
+            torch.from_numpy(frame_np.transpose(2, 0, 1))
+            for frame_np, metadata in frames_batch_with_metadata if frame_np is not None
+        ]
+        if not frame_tensors:
+            return None
+        # Stack tensors in a single operation
+        batch_tensor = torch.stack(frame_tensors).to(self.device, non_blocking=True)
         dtype_final = torch.float16 if (MIXED_PRECISION and self.device == 'cuda') else torch.float32
         return batch_tensor.to(dtype_final) / 255.0
-
+    
+    @profile
     @torch.no_grad()
     def _process_inference_results(self, yolo_results_batch, frames_batch_with_metadata, frame_numbers_in_batch, frame_times_in_batch, start_datetime_obj_global):
         if self.perf: self.perf.start_timer('app_logic_batch')
         processed_frames_list_viz = [None] * len(yolo_results_batch)
-
-        online_targets_for_each_frame = []
+        
+        # --- Stage 1: Sequential Tracker Update & Data Collection ---
+        all_targets_list = []
         with self.tracker_lock:
             for i, yolo_result in enumerate(yolo_results_batch):
-                detections_np = np.empty((0, 6))
-                if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0:
-                    detections_np = yolo_result.boxes.data[:, :6].cpu().numpy()
-
+                detections_np = yolo_result.boxes.data.cpu().numpy() if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0 else np.empty((0, 6))
                 img_h, img_w = yolo_result.orig_shape if yolo_result and yolo_result.orig_shape else (self.model_input_size_config, self.model_input_size_config)
                 dummy_img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
                 online_targets = self.bytetracker.update(detections_np, dummy_img)
-                online_targets_for_each_frame.append(online_targets)
-
-        temp_drawing_info_list = [{} for _ in range(len(yolo_results_batch))]
-
-        for i in range(len(yolo_results_batch)):
-            online_targets = online_targets_for_each_frame[i]
-            yolo_result = yolo_results_batch[i]
-            current_frame_num = frame_numbers_in_batch[i]
-            current_frame_time_sec = frame_times_in_batch[i]
-            current_global_timestamp = start_datetime_obj_global + timedelta(seconds=current_frame_time_sec)
-            temp_drawing_info = temp_drawing_info_list[i]
-
-            if online_targets is not None and len(online_targets) > 0:
-                for target_data in online_targets:
-                    tx1, ty1, tx2, ty2, track_id_float, conf, cls_id_float, _ = target_data
-                    track_id = str(int(track_id_float))
-                    cls_id = int(cls_id_float)
-                    vehicle_type = self.class_id_to_name_map.get(cls_id, 'Light Vehicle')
-
-                    model_h, model_w = yolo_result.orig_shape
-                    draw_w, draw_h = self.frame_shape
-                    bbox_scaled = (int(tx1 * draw_w / model_w), int(ty1 * draw_h / model_h), int(tx2 * draw_w / model_w), int(ty2 * draw_h / model_h))
-                    bottom_center = ((bbox_scaled[0] + bbox_scaled[2]) // 2, bbox_scaled[3])
-
-                    temp_drawing_info[track_id] = {'box': bbox_scaled, 'type': vehicle_type, 'event': None, 'status': 'tracked', 'center': ((bbox_scaled[0] + bbox_scaled[2]) // 2, (bbox_scaled[1] + bbox_scaled[3]) // 2)}
-
-                    with self.tracker_lock:
-                        if track_id not in self.active_track_data:
-                            for zone_dir, zone_poly in self.zone_tracker.zones.items():
-                                if self.zone_tracker._check_point_in_zone(bottom_center, zone_poly):
-                                    self.active_track_data[track_id] = {
-                                        'id': track_id, 'entry_direction': zone_dir, 'entry_time': current_global_timestamp,
-                                        'type_history': {vehicle_type: 1}, 'current_type': vehicle_type,
-                                        'last_pos_zone': bottom_center, 'last_seen_frame': current_frame_num, 'status': 'active'
-                                    }
-                                    if self.perf: self.perf.record_vehicle_entry()
-                                    temp_drawing_info[track_id]['event'] = 'ENTRY'
-                                    break
-                        else:
-                            track_data = self.active_track_data[track_id]
-                            track_data['last_seen_frame'] = current_frame_num
-                            track_data['type_history'][vehicle_type] = track_data['type_history'].get(vehicle_type, 0) + 1
-                            track_data['current_type'] = max(track_data['type_history'], key=track_data['type_history'].get)
-                            prev_pos = track_data.get('last_pos_zone')
-                            track_data['last_pos_zone'] = bottom_center
-                            temp_drawing_info[track_id]['type'] = track_data['current_type']
-
-                            if prev_pos and track_data['status'] == 'active':
-                                event_type, event_dir = self.zone_tracker.check_zone_transition(prev_pos, bbox_scaled, track_id, current_frame_time_sec)
-                                
-                                if event_type == "ENTRY" and track_data.get('entry_direction') and track_data.get('entry_direction') != event_dir:
-                                    stored_entry_dir = track_data['entry_direction']
-                                    active_zone_keys = list(self.zone_tracker.zones.keys())
-                                    if is_valid_movement(stored_entry_dir, event_dir, active_zone_keys):
-                                        duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
-                                        self._add_to_finalized_paths(track_id, track_data, 'exited', event_dir, current_global_timestamp, duration)
-                                        if self.perf: self.perf.record_vehicle_exit('exited', duration)
-                                        
-                                        track_data['entry_direction'] = event_dir
-                                        track_data['entry_time'] = current_global_timestamp
-                                        if self.perf: self.perf.record_vehicle_entry()
-                                        temp_drawing_info[track_id]['event'] = 'RE-ENTRY'
-
-                                elif event_type == "EXIT":
-                                    entry_dir = track_data.get('entry_direction')
-                                    active_zones = list(self.zone_tracker.zones.keys())
-                                    if entry_dir and is_valid_movement(entry_dir, event_dir, active_zones):
-                                        duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
-                                        self._add_to_finalized_paths(track_id, track_data, 'exited', event_dir, current_global_timestamp, duration)
-                                        if self.perf: self.perf.record_vehicle_exit('exited', duration)
-                                        track_data['status'] = 'exited'
-                                        temp_drawing_info[track_id]['event'] = 'EXIT'
-
-        last_frame_num_in_batch = frame_numbers_in_batch[-1]
-        last_global_timestamp_in_batch = start_datetime_obj_global + timedelta(seconds=frame_times_in_batch[-1])
-
-        with self.tracker_lock:
-            for track_id, track_data in list(self.active_track_data.items()):
-                if track_data['status'] != 'active':
-                    continue
                 
+                if online_targets is not None and len(online_targets) > 0:
+                    batch_idx_col = np.full((len(online_targets), 1), i, dtype=np.float32)
+                    all_targets_list.append(np.hstack([online_targets, batch_idx_col]))
+
+        if not all_targets_list:
+            if self.perf: self.perf.end_timer('app_logic_batch')
+            return [], []
+
+        # --- Stage 2: Vectorized Data Processing ---
+        all_targets_np = np.vstack(all_targets_list)
+        tx1, ty1, tx2, ty2 = all_targets_np[:, 0], all_targets_np[:, 1], all_targets_np[:, 2], all_targets_np[:, 3]
+        track_ids = all_targets_np[:, 4].astype(int)
+        class_ids = all_targets_np[:, 7].astype(int)
+        batch_indices = all_targets_np[:, 8].astype(int)
+
+        model_h, model_w = self.model_input_size_config, self.model_input_size_config
+        draw_w, draw_h = self.frame_shape
+        scale_x, scale_y = draw_w / model_w, draw_h / model_h
+        
+        bboxes_scaled = np.vstack([tx1 * scale_x, ty1 * scale_y, tx2 * scale_x, ty2 * scale_y]).T.astype(np.int32)
+        bottom_centers = np.vstack([(bboxes_scaled[:, 0] + bboxes_scaled[:, 2]) // 2, bboxes_scaled[:, 3]]).T
+
+        # --- Stage 3: High-Speed State Management with Correct Logic ---
+        temp_drawing_info_list = [{} for _ in range(len(yolo_results_batch))]
+        
+        with self.tracker_lock:
+            for i in range(len(all_targets_np)):
+                track_id_str = str(track_ids[i])
+                cls_id, batch_idx = class_ids[i], batch_indices[i]
+                bbox_scaled, bottom_center = bboxes_scaled[i], bottom_centers[i]
+                
+                current_frame_num = frame_numbers_in_batch[batch_idx]
+                current_frame_time_sec = frame_times_in_batch[batch_idx]
+                current_global_timestamp = start_datetime_obj_global + timedelta(seconds=current_frame_time_sec)
+                vehicle_type = self.class_id_to_name_map.get(cls_id, 'Light Vehicle')
+                
+                temp_drawing_info_list[batch_idx][track_id_str] = {'box': bbox_scaled, 'type': vehicle_type, 'event': None, 'status': 'tracked', 'center': ((bbox_scaled[0] + bbox_scaled[2]) // 2, (bbox_scaled[1] + bbox_scaled[3]) // 2)}
+
+                if track_id_str not in self.active_track_data:
+                    for zone_dir, zone_poly in self.zone_tracker.zones.items():
+                        if self.zone_tracker._check_point_in_zone(tuple(bottom_center), zone_poly):
+                            self.active_track_data[track_id_str] = { 'id': track_id_str, 'entry_direction': zone_dir, 'entry_time': current_global_timestamp, 'type_history': {vehicle_type: 1}, 'current_type': vehicle_type, 'last_pos_zone': bottom_center, 'last_seen_frame': current_frame_num, 'status': 'active' }
+                            if self.perf: self.perf.record_vehicle_entry()
+                            temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'ENTRY'
+                            break
+                else:
+                    track_data = self.active_track_data[track_id_str]
+                    track_data['last_seen_frame'] = current_frame_num
+                    track_data['type_history'][vehicle_type] = track_data['type_history'].get(vehicle_type, 0) + 1
+                    track_data['current_type'] = max(track_data['type_history'], key=track_data['type_history'].get)
+                    prev_pos = track_data.get('last_pos_zone')
+                    track_data['last_pos_zone'] = bottom_center
+                    temp_drawing_info_list[batch_idx][track_id_str]['type'] = track_data['current_type']
+
+                    if prev_pos is not None and track_data['status'] == 'active':
+                        event_type, event_dir = self.zone_tracker.check_zone_transition(tuple(prev_pos), tuple(bbox_scaled), track_id_str, current_frame_time_sec)
+                        
+                        # --- START: Restored Re-entry and Exit Logic ---
+                        if event_type == "ENTRY" and track_data.get('entry_direction') and track_data.get('entry_direction') != event_dir:
+                            stored_entry_dir = track_data['entry_direction']
+                            active_zone_keys = list(self.zone_tracker.zones.keys())
+                            if is_valid_movement(stored_entry_dir, event_dir, active_zone_keys):
+                                duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
+                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration)
+                                if self.perf: self.perf.record_vehicle_exit('exited', duration)
+                                
+                                track_data['entry_direction'] = event_dir
+                                track_data['entry_time'] = current_global_timestamp
+                                if self.perf: self.perf.record_vehicle_entry()
+                                temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'RE-ENTRY'
+
+                        elif event_type == "EXIT":
+                            entry_dir = track_data.get('entry_direction')
+                            active_zones = list(self.zone_tracker.zones.keys())
+                            if entry_dir and is_valid_movement(entry_dir, event_dir, active_zones):
+                                duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
+                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration)
+                                if self.perf: self.perf.record_vehicle_exit('exited', duration)
+                                track_data['status'] = 'exited'
+                                temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'EXIT'
+                        # --- END: Restored Re-entry and Exit Logic ---
+
+            # Timeout check (this loop is fast and necessary)
+            last_frame_time_in_batch = frame_times_in_batch[-1]
+            last_global_timestamp_in_batch = start_datetime_obj_global + timedelta(seconds=last_frame_time_in_batch)
+            for track_id, track_data in list(self.active_track_data.items()):
+                if track_data['status'] != 'active': continue
                 duration = (last_global_timestamp_in_batch - track_data['entry_time']).total_seconds()
                 timeout_limit = VEHICLE_TIMEOUTS.get(track_data['current_type'], VEHICLE_TIMEOUTS['default'])
                 if duration > timeout_limit:
                     self._add_to_finalized_paths(track_id, track_data, 'timed_out', 'TIMEOUT', last_global_timestamp_in_batch, duration)
                     if self.perf: self.perf.record_vehicle_exit('timed_out')
                     track_data['status'] = 'timed_out'
-                    continue
 
-                frames_since_seen = last_frame_num_in_batch - track_data.get('last_seen_frame', last_frame_num_in_batch)
-                grace_period_frames = self.bytetracker.max_time_lost + int(self.target_fps * 0.5)
-                if frames_since_seen > grace_period_frames:
-                    self._add_to_finalized_paths(track_id, track_data, 'lost_track', 'LOST_TRACK', last_global_timestamp_in_batch, duration)
-                    if self.perf: self.perf.record_vehicle_exit('forced_exit')
-                    track_data['status'] = 'lost_track'
-
+        # Visualization logic (unchanged)
         if ENABLE_VISUALIZATION:
             for i in range(len(yolo_results_batch)):
                 original_frame_content = frames_batch_with_metadata[i][0]
@@ -602,9 +604,9 @@ class VideoProcessor:
                 
                 for track_id, draw_data in temp_drawing_info.items():
                     final_status = self.active_track_data.get(track_id, {}).get('status', 'tracked')
-                    if draw_data.get('box'):
+                    if 'box' in draw_data:
                         visual_overlay.draw_detection_box(output_frame_viz, draw_data['box'], track_id, draw_data['type'], status=final_status)
-                    if draw_data.get('event') and draw_data.get('center'):
+                    if draw_data.get('event') and 'center' in draw_data:
                         visual_overlay.draw_event_marker(output_frame_viz, draw_data['center'], draw_data['event'])
                 processed_frames_list_viz[i] = output_frame_viz
         
@@ -625,6 +627,7 @@ class VideoProcessor:
         }
         self.finalized_paths_for_report.append(path_report_entry)
 
+    @profile
     def _execute_single_model_inference(self, model_instance, input_tensor_chunk, stream_to_use=None):
         if stream_to_use and self.device == 'cuda':
             with torch.cuda.stream(stream_to_use):
@@ -668,6 +671,7 @@ class VideoProcessor:
             scaled_polygons[direction] = [(int(x * scale_x), int(y * scale_y)) for x, y in points]
         return scaled_polygons
 
+    @profile
     def _frame_reader_task_pvr_segmented(self, video_paths, original_fps, total_frames_aggregate):
         try:
             target_dim = self.model_input_size_config
