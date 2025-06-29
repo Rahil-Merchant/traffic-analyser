@@ -12,7 +12,7 @@ DEFAULT_PRIMARY_DIRECTION = 'south'
 
 # --- Core Settings ---
 TARGET_FPS = 20
-BASE_OUTPUT_DIR = r"C:\Users\swest\Documents\AI_output_videos"
+BASE_OUTPUT_DIR = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\output\reports\old reports"
 VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
@@ -129,12 +129,12 @@ else:
     OPTIMAL_BATCH_SIZE = 16
     
 OPTIMAL_BATCH_SIZE = 64
-PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7600
+PYVIDEOREADER_DECODE_SEGMENT_SIZE = 2400
 
 _cpu_count = os.cpu_count()
 THREAD_COUNT = min(64, _cpu_count * 2)
 MIXED_PRECISION = True
-PARALLEL_STREAMS = 32
+PARALLEL_STREAMS = 8
 
 # Timeout durations - In seconds
 VEHICLE_TIMEOUTS = {

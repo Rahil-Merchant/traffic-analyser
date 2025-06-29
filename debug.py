@@ -1,6 +1,8 @@
 import os
 import sys
 import traceback
+import cProfile
+import pstats
 
 # --- Project-specific Imports ---
 from config import INPUT_VIDEO_PATH, START_DATE, START_TIME, DEFAULT_PRIMARY_DIRECTION
@@ -8,20 +10,9 @@ from core.utils import setup_torch_global_settings, setup_thread_affinity
 from core.video_processor import VideoProcessor
 
 def run_local_processing():
-    """
-    Runs the video processing in a non-interactive, "hardcoded" mode
-    based on settings in config.py.
-    """
-    print("--- Starting EMAAN Urban Reconnaissance (Hardcoded Mode) ---")
-    
+    print("--- Starting Hardcoded Mode ---")
     setup_torch_global_settings()
     setup_thread_affinity()
-
-    # --- Validate required config values ---
-    if not INPUT_VIDEO_PATH or not isinstance(INPUT_VIDEO_PATH, list) or not os.path.exists(INPUT_VIDEO_PATH[0]):
-        print(f"ERROR: Input video file not found or invalid in config.py.", file=sys.stderr)
-        print(f"Searched for: {INPUT_VIDEO_PATH}", file=sys.stderr)
-        sys.exit(1)
 
     print(f"Using Input Video(s): {INPUT_VIDEO_PATH}")
     print(f"Using Start Date:  {START_DATE}")
@@ -47,4 +38,11 @@ def run_local_processing():
         sys.exit(1)
 
 if __name__ == "__main__":
+    profiler = cProfile.Profile()
+    profiler.enable()
+    
     run_local_processing()
+
+    profiler.disable()
+    stats = pstats.Stats(profiler).sort_stats('cumulative')
+    stats.print_stats(50)
