@@ -4,7 +4,7 @@ import torch
 from ultralytics import YOLO
 from core.utils import debug_print
 import os
-from config import MODEL_INPUT_SIZE, CONF_THRESHOLD, IOU_THRESHOLD, MIXED_PRECISION
+from config import MODEL_INPUT_SIZE, MIXED_PRECISION
 
 # ONNX Runtime imports
 try:

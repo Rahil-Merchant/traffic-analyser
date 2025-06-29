@@ -2,7 +2,7 @@ import os
 import uvicorn
 import cv2
 from typing import List, Dict
-from fastapi import FastAPI, WebSocket, BackgroundTasks, HTTPException, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, BackgroundTasks, HTTPException, WebSocketDisconnect, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -16,11 +16,9 @@ import atexit
 
 print("--- Initializing EMAAN DEVELOPMENT Server (File System Access API) ---")
 
-app = FastAPI(title="EMAAN API", version="5.0.0")
+app = FastAPI(title="EMAAN API", version="6.0.0")
 processor = VideoProcessor('interactive')
 job_queues: Dict[str, asyncio.Queue] = {}
-video_dimensions_cache = {}  # Store dimensions by video path
-
 
 # Global cleanup flag
 cleanup_in_progress = False
@@ -129,10 +127,6 @@ async def get_video_preview(payload: FilePathPayload):
         # Get actual video dimensions
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        video_dimensions_cache[video_path] = {
-            'width': frame_width,
-            'height': frame_height
-        }
 
         success, frame = cap.read()
         cap.release()
@@ -144,7 +138,7 @@ async def get_video_preview(payload: FilePathPayload):
         cv2.imwrite(preview_image_path, frame)
         
         full_image_url = f"http://127.0.0.1:{SERVER_PORT}/previews/{preview_image_name}"
-        print(f"Video dimensions cached: {frame_width}x{frame_height}")
+        print(f"Video dimensions: {frame_width}x{frame_height}")
         print(f"[DEBUG] Preview generated successfully: {full_image_url}")
         
         return {"preview_image_url": full_image_url, 'video_width': frame_width, 'video_height': frame_height}

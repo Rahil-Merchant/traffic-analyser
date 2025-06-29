@@ -20,8 +20,8 @@ from config import (
     MIXED_PRECISION, PARALLEL_STREAMS, THREAD_COUNT, IOU_THRESHOLD, TTA,
     MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
     LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
-    USE_ADVANCED_VIDEO_READER, PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS,
-    BYTETRACK_MATCH_THRESH, BYTETRACK_MIN_CONF, BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH
+    PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS, BYTETRACK_MATCH_THRESH,
+    BYTETRACK_MIN_CONF, BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH
 )
 
 # Modules
@@ -33,24 +33,14 @@ from tracking.cleanup import cleanup_tracking_data
 from visualization import overlay as visual_overlay
 from reporting.excel_report import create_excel_report, create_bidirectional_link_count_report
 from core.converters import convert_dav_to_mp4_internal
+from video_reader import PyVideoReader
 
 # Conditional imports
 # if ENABLE_DETAILED_PERFORMANCE_METRICS:
 #     from visualization.performance_viz import visualize_performance
 
-# Attempt to import PyVideoReader
-PYVIDEOREADER_AVAILABLE = False
-PyVideoReader = None 
-try:
-    from video_reader import PyVideoReader
-    PYVIDEOREADER_AVAILABLE = True
-    print("PyVideoReader (video_reader-rs) found and available.")
-except ImportError:
-    print("PyVideoReader (video_reader-rs) not found. Advanced video reader will not be used.")
-
-
 class VideoProcessor:
-    def __init__(self, LINE_MODE):
+    def __init__(self, LINE_MODE, DATA_YAML_PATH=DATA_YAML_PATH):
         self.target_fps = TARGET_FPS
         self.frame_shape = (FRAME_WIDTH, FRAME_HEIGHT)
         self.frame_shape_viz = (FRAME_WIDTH_VIZ, FRAME_HEIGHT_VIZ)
@@ -111,17 +101,7 @@ class VideoProcessor:
         if self.device == 'cuda' and PARALLEL_STREAMS > 1:
             self.streams = [torch.cuda.Stream() for _ in range(PARALLEL_STREAMS)]
         self.current_stream_index = 0
-
-        # Determine if advanced reader will be used based on config and availability
         self.pvr_decode_segment_size = PYVIDEOREADER_DECODE_SEGMENT_SIZE
-        self.actually_use_advanced_reader = USE_ADVANCED_VIDEO_READER and PYVIDEOREADER_AVAILABLE
-        if self.actually_use_advanced_reader:
-            print("Configuration: Advanced video reader (PyVideoReader) will be used.")
-        else:
-            if USE_ADVANCED_VIDEO_READER and not PYVIDEOREADER_AVAILABLE:
-                print("Configuration: Advanced video reader was requested but is not available. Using OpenCV.")
-            else: # USE_ADVANCED_VIDEO_READER is False
-                print("Configuration: Using OpenCV video reader.")
 
     def force_stop_processing(self):
         """Force stop all processing threads and cleanup"""
@@ -161,48 +141,18 @@ class VideoProcessor:
         total_frames = 0
         original_fps = 0.0
 
-        if self.actually_use_advanced_reader:
-            temp_reader_rs = None
-            total_frames = 0
-            try:
-                # For getting properties, no need for device='cuda' or specific resize
-                for video_path in video_paths:
-                    temp_reader_rs = PyVideoReader(video_path)
-                    info = temp_reader_rs.get_info()
-                    total_frames += int(info.get('frame_count', 0))
-                    fps_str = info.get('fps', '0.0')
-                    if fps_str:
-                        try: original_fps = float(fps_str)
-                        except ValueError: pass
-                    del temp_reader_rs 
-            except Exception as e:
-                debug_print(f"PyVideoReader property fetch failed: {e}. Falling back to OpenCV for props.")
-                if temp_reader_rs: 
-                    del temp_reader_rs
-        
-        if total_frames <= 0 or original_fps <= 0: # If PyVideoReader failed or wasn't used
-            _total_frames_cv = 0
-            cap_check = None
-            try:
-                for video_path in video_paths:
-                    cap_check = cv2.VideoCapture(video_path)
-                    if not cap_check.isOpened():
-                        raise FileNotFoundError(f"OpenCV: Cannot open video for properties: {video_path}")
-                    
-                    _total_frames_cv += int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
-                    _original_fps_cv = cap_check.get(cv2.CAP_PROP_FPS)
-                    
-                    if total_frames <= 0: total_frames = _total_frames_cv
-                    if original_fps <= 0: original_fps = _original_fps_cv
-            except Exception as e:
-                print(f"Error getting video properties with OpenCV: {e}")
-            finally:
-                if cap_check: 
-                    cap_check.release()
+        temp_reader_rs = None
+        total_frames = 0
 
-        if original_fps <= 0: original_fps = 25.0 # Final fallback
-        if total_frames <= 0:
-            print("WARNING: Could not determine total_frames accurately. Progress calculation might be affected.")   
+        # For getting properties, no need for device='cuda' or specific resize
+        for video_path in video_paths:
+            temp_reader_rs = PyVideoReader(video_path)
+            info = temp_reader_rs.get_info()
+            total_frames += int(info.get('frame_count', 0))
+            fps_str = info.get('fps', '0.0')
+            original_fps = float(fps_str)
+            del temp_reader_rs
+
         return total_frames, original_fps
 
     def _scale_polygons_to_processing_coordinates(self, polygons_dict, original_image_width, original_image_height):
@@ -244,57 +194,6 @@ class VideoProcessor:
             print(f"    Scaled first point: {scaled_points[0]}")
         
         return scaled_polygons
-
-    def _frame_reader_task(self, video_paths, original_fps):
-        cap = None
-        try:
-            for video_path in video_paths:
-                cap = cv2.VideoCapture(video_path)
-                if not cap.isOpened(): print("ERROR: Reader failed to open video."); self.frame_read_queue.put(None); return
-                frame_interval = max(1, round(original_fps / self.target_fps))
-                frame_count_raw = 0
-                frames_yielded = 0
-                while not self.stop_event.is_set():
-                    ret, frame_bgr_orig_size = cap.read() # frame is BGR HWC NumPy array
-                    if not ret: 
-                        debug_print("OpenCV Reader: End of video or read error.")
-                        break # End of video or error
-                    if frame_count_raw  % frame_interval == 0:
-                        frame_time_seconds = frame_count_raw  / original_fps
-                        # Metadata for OpenCV frames: not RGB, source is opencv
-                        metadata = {'is_rgb': False, 'source': 'opencv'}
-                        try:
-                            # Add frame to queue for processing
-                            self.frame_read_queue.put((frame_bgr_orig_size, frame_count_raw , frame_time_seconds, metadata), block=True, timeout=5.0)
-                            frames_yielded += 1
-                        except queue.Full:
-                            debug_print("Reader queue full, waiting...")
-                            time.sleep(0.1)
-                            if self.stop_event.is_set(): break
-                            try: # Retry put
-                                self.frame_read_queue.put((frame_bgr_orig_size, frame_count_raw , frame_time_seconds, metadata), block=True, timeout=5.0)
-                                frames_yielded += 1
-                            except queue.Full: print("ERROR: Reader queue persistently full."); self.stop_event.set(); break
-                        except Exception as q_e: 
-                            debug_print(f"OpenCV Reader: Queue put error: {q_e}")
-                            self.stop_event.set() # Signal main loop
-                            break
-                    frame_count_raw  += 1
-                debug_print(f"OpenCV Reader finished. Raw frames read: {frame_count_raw}. Frames yielded to queue: {frames_yielded}.")
-        
-        except Exception as e: 
-            print(f"FATAL ERROR in _frame_reader_task (OpenCV): {e}")
-            import traceback; traceback.print_exc()
-        finally:
-            if cap: cap.release()
-            if self.frame_read_queue:
-                try:
-                    # Ensure None is put to signal end, even if loop broke due to error or stop_event
-                    self.frame_read_queue.put(None, block=False, timeout=1.0) 
-                except queue.Full:
-                    debug_print("OpenCV Reader: Queue full on final None put.")
-                except Exception as e_fin:
-                    debug_print(f"OpenCV Reader: Error on final None put: {e_fin}")
 
     def _frame_reader_task_pvr_segmented(self, video_paths, original_fps_from_props, total_frames_from_props): # total_frames_from_props IS THE AGGREGATE
         """Frame reader using PyVideoReader, decoding in segments, then selecting frames."""
@@ -480,61 +379,30 @@ class VideoProcessor:
                 debug_print("Skipping None or invalid frame_np_content in _preprocess_batch.")
                 continue
 
-            is_rgb_input = metadata.get('is_rgb', False) # Default to False if metadata is malformed
-            source_reader = metadata.get('source', 'unknown')
-            
-            # Current state of frame_np_content:
-            # If source is 'pvr_cuda_segmented':
-            #   - It's RGB (is_rgb_input should be True)
-            # If source is 'opencv':
-            #   - It's BGR (is_rgb_input should be False)
-            #   - It's the original frame size from cap.read()
-
+            is_rgb_input = metadata.get('is_rgb', True)
+            source_reader = metadata.get('source')
             img_rgb_model_sized = None
 
-            if source_reader.startswith('pvr_cuda'): # Catches 'pvr_cuda_segmented' or future PVR sources
-                if not is_rgb_input:
-                    # This would be unexpected from PVR, but handle it.
-                    debug_print(f"Preprocess (PVR path): Warning! Expected RGB, got BGR? metadata: {metadata}. Converting.")
-                    frame_np_content = cv2.cvtColor(frame_np_content, cv2.COLOR_BGR2RGB)
+            if not is_rgb_input:
+                # This would be unexpected from PVR, but handle it.
+                debug_print(f"Preprocess (PVR path): Warning! Expected RGB, got BGR? metadata: {metadata}. Converting.")
+                frame_np_content = cv2.cvtColor(frame_np_content, cv2.COLOR_BGR2RGB)
 
-                if frame_np_content.shape[0] != target_dim_for_model or \
-                   frame_np_content.shape[1] != target_dim_for_model:
-                    # This is a sanity check; PyVideoReader should have resized it.
-                    debug_print(f"Preprocess (PVR path): Warning! Frame shape {frame_np_content.shape[:2]} "
-                                f"not at target model size ({target_dim_for_model},{target_dim_for_model}). Resizing again.")
-                    img_rgb_model_sized = cv2.resize(frame_np_content, 
-                                                     (target_dim_for_model, target_dim_for_model), 
-                                                     interpolation=cv2.INTER_LINEAR)
-                else:
-                    img_rgb_model_sized = frame_np_content # Already RGB and correct size
-            
-            elif source_reader == 'opencv':
-                resized_bgr = cv2.resize(frame_np_content, 
-                                         (target_dim_for_model, target_dim_for_model), 
-                                         interpolation=cv2.INTER_LINEAR)
-                img_rgb_model_sized = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB)
-            
-            else: # Fallback for unknown source
-                debug_print(f"Preprocess: Unknown frame source '{source_reader}'. Attempting general processing.")
-                temp_frame = frame_np_content.copy()
-                if not is_rgb_input: # If not RGB, assume BGR and convert
-                    temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
-                
-                # Resize if necessary
-                if temp_frame.shape[0] != target_dim_for_model or \
-                   temp_frame.shape[1] != target_dim_for_model:
-                    img_rgb_model_sized = cv2.resize(temp_frame, 
-                                                     (target_dim_for_model, target_dim_for_model), 
-                                                     interpolation=cv2.INTER_LINEAR)
-                else:
-                    img_rgb_model_sized = temp_frame
+            if frame_np_content.shape[0] != target_dim_for_model or \
+                frame_np_content.shape[1] != target_dim_for_model:
+                # This is a sanity check; PyVideoReader should have resized it.
+                debug_print(f"Preprocess (PVR path): Warning! Frame shape {frame_np_content.shape[:2]} "
+                            f"not at target model size ({target_dim_for_model},{target_dim_for_model}). Resizing again.")
+                img_rgb_model_sized = cv2.resize(frame_np_content, 
+                                                    (target_dim_for_model, target_dim_for_model), 
+                                                    interpolation=cv2.INTER_LINEAR)
+            else:
+                img_rgb_model_sized = frame_np_content # Already RGB and correct size
             
             if img_rgb_model_sized is None: 
                 debug_print(f"Preprocess: img_rgb_model_sized is None for a frame. Source: {source_reader}. Skipping.")
                 continue
             
-            # Common processing: HWC uint8 RGB -> CHW float32 [0,1] RGB for PyTorch
             # Ensure it's 3 channels (e.g. not grayscale by mistake)
             if img_rgb_model_sized.ndim == 2: # Grayscale
                 debug_print("Preprocess: Grayscale frame detected, converting to RGB for model.")
@@ -1008,8 +876,8 @@ class VideoProcessor:
                 progress_queue.put_nowait({"progress": 5, "status": "Starting I/O threads..."})
 
             print("Starting I/O threads...")
-            reader_args = (actual_video_path_to_process, original_fps, total_frames) if self.actually_use_advanced_reader else (actual_video_path_to_process, original_fps)
-            reader_target = self._frame_reader_task_pvr_segmented if self.actually_use_advanced_reader else self._frame_reader_task
+            reader_args = (actual_video_path_to_process, original_fps, total_frames)
+            reader_target = self._frame_reader_task_pvr_segmented
             self.reader_thread = threading.Thread(target=reader_target, args=reader_args, daemon=True); self.reader_thread.start()
             
             if ENABLE_VISUALIZATION:
