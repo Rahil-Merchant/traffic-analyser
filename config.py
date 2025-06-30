@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-ENABLE_VISUALIZATION = False #--------------------------------------------------------
+ENABLE_VISUALIZATION = True #--------------------------------------------------------
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -12,7 +12,7 @@ DEFAULT_PRIMARY_DIRECTION = 'south'
 
 # --- Core Settings ---
 TARGET_FPS = 20
-BASE_OUTPUT_DIR = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\output\reports\old reports"
+BASE_OUTPUT_DIR = r"C:\Users\swest\Documents\AI_output_videos"
 VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
@@ -129,12 +129,12 @@ else:
     OPTIMAL_BATCH_SIZE = 16
     
 OPTIMAL_BATCH_SIZE = 64
-PYVIDEOREADER_DECODE_SEGMENT_SIZE = 2400
+PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7600
 
 _cpu_count = os.cpu_count()
 THREAD_COUNT = min(64, _cpu_count * 2)
 MIXED_PRECISION = True
-PARALLEL_STREAMS = 8
+PARALLEL_STREAMS = 32
 
 # Timeout durations - In seconds
 VEHICLE_TIMEOUTS = {
