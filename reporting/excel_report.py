@@ -311,7 +311,7 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
         return None
 
     # This is the order they will appear under each direction in the Excel sheet
-    NEW_REPORT_COLUMN_ORDER = list(BIDIRECTIONAL_REPORT_CATEGORIES.keys())
+    REPORT_COLUMN_ORDER = list(BIDIRECTIONAL_REPORT_CATEGORIES.keys())
 
     # --- 2. Prepare 24-Hour Time Bins ---
     # Report starts from 00:00 of the video's start day
@@ -347,7 +347,7 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
         
         if matched_to_direction_label:
             assigned_new_category = None
-            for new_cat, orig_types_list in NEW_REPORT_CATEGORIES.items():
+            for new_cat, orig_types_list in BIDIRECTIONAL_REPORT_CATEGORIES.items():
                 if vehicle_type_orig in orig_types_list:
                     assigned_new_category = new_cat
                     break
@@ -388,7 +388,7 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
         )
     else: # Create an empty pivot table structure if no data
         multi_index_cols = pd.MultiIndex.from_product(
-            [['Dir1', 'Dir2'], NEW_REPORT_COLUMN_ORDER],
+            [['Dir1', 'Dir2'], REPORT_COLUMN_ORDER],
             names=['to_direction_label', 'new_category']
         )
         empty_idx = pd.CategoricalIndex(time_bin_labels_24hr, categories=time_bin_labels_24hr, ordered=True, name='Time Bin Start')
@@ -399,7 +399,7 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
     # And ensure correct column order for Dir1 and Dir2 categories
     final_columns_ordered = []
     for d_label, d_name_user in [('Dir1', primary_direction), ('Dir2', secondary_direction)]:
-        for cat in NEW_REPORT_COLUMN_ORDER:
+        for cat in REPORT_COLUMN_ORDER:
             final_columns_ordered.append((d_label, cat))
     
     individual_counts_pivot = individual_counts_pivot.reindex(
@@ -454,13 +454,13 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             dir1_display_name = get_display_direction(primary_direction)
             dir2_display_name = get_display_direction(secondary_direction)
 
-            for _ in NEW_REPORT_COLUMN_ORDER: data_column_headers_L1.append(f"To {dir1_display_name}")
-            for cat_name in NEW_REPORT_COLUMN_ORDER: data_column_headers_L2.append(cat_name)
+            for _ in REPORT_COLUMN_ORDER: data_column_headers_L1.append(f"To {dir1_display_name}")
+            for cat_name in REPORT_COLUMN_ORDER: data_column_headers_L2.append(cat_name)
             
-            for _ in NEW_REPORT_COLUMN_ORDER: data_column_headers_L1.append(f"To {dir2_display_name}")
-            for cat_name in NEW_REPORT_COLUMN_ORDER: data_column_headers_L2.append(cat_name)
+            for _ in REPORT_COLUMN_ORDER: data_column_headers_L1.append(f"To {dir2_display_name}")
+            for cat_name in REPORT_COLUMN_ORDER: data_column_headers_L2.append(cat_name)
             
-            num_data_cols = 1 + len(NEW_REPORT_COLUMN_ORDER) * 2 # StartTime + (Cats * 2 Dirs)
+            num_data_cols = 1 + len(REPORT_COLUMN_ORDER) * 2 # StartTime + (Cats * 2 Dirs)
 
             # --- Helper to write a sheet ---
             def write_sheet_content(sheet_name_ws, df_to_write, include_total_row):
@@ -490,11 +490,11 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
                 ws.write(header_row_l1_excel + 1, 0, data_column_headers_L2[0], bold_format) # Empty under "Start Time"
                 
                 # "To Direction 1" merged header
-                ws.merge_range(header_row_l1_excel, 1, header_row_l1_excel, len(NEW_REPORT_COLUMN_ORDER), 
+                ws.merge_range(header_row_l1_excel, 1, header_row_l1_excel, len(REPORT_COLUMN_ORDER), 
                                f"To {dir1_display_name}", header_merge_format)
                 # "To Direction 2" merged header
-                ws.merge_range(header_row_l1_excel, 1 + len(NEW_REPORT_COLUMN_ORDER), 
-                               header_row_l1_excel, len(NEW_REPORT_COLUMN_ORDER) * 2,
+                ws.merge_range(header_row_l1_excel, 1 + len(REPORT_COLUMN_ORDER), 
+                               header_row_l1_excel, len(REPORT_COLUMN_ORDER) * 2,
                                f"To {dir2_display_name}", header_merge_format)
                 
                 # Write data column headers (L2 - Vehicle Categories)
@@ -514,11 +514,11 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
                     
                     col_offset = 1
                     # Dir1 data
-                    for cat in NEW_REPORT_COLUMN_ORDER:
+                    for cat in REPORT_COLUMN_ORDER:
                         ws.write(current_row_excel, col_offset, row_data[('Dir1', cat)])
                         col_offset += 1
                     # Dir2 data
-                    for cat in NEW_REPORT_COLUMN_ORDER:
+                    for cat in REPORT_COLUMN_ORDER:
                         ws.write(current_row_excel, col_offset, row_data[('Dir2', cat)])
                         col_offset += 1
                     current_row_excel += 1
