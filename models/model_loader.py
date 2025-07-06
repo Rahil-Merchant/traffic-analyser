@@ -1,102 +1,73 @@
-# project/core/utils.py
-import os
+# project/models/model_loader.py
+
 import torch
-import gc
-from datetime import datetime
-from config import VALID_MOVEMENTS
-import psutil
+from ultralytics import YOLO
+import os
+from config import MODEL_INPUT_SIZE
 from loguru import logger
+     
+def load_model(model_path, device, conf_threshold, iou_threshold):
+    """Loads the model, automatically selecting the runtime based on file extension"""
+    logger.debug(f"Loading model from: {model_path} onto device: {device}")
 
-def format_timestamp(dt: datetime):
-    """Convert datetime to date (YYMMDD) and time (HHMMSSmmm) strings."""
-    date_str = dt.strftime('%y%m%d')
-    time_str = dt.strftime('%H%M%S')
-    ms_str = f"{dt.microsecond // 1000:03d}"
-    return date_str, f"{time_str}{ms_str}"
+    if not os.path.exists(model_path):
+        print(f"FATAL ERROR: Model file not found at '{model_path}'")
+        raise FileNotFoundError(f"Model file not found: {model_path}")
 
-def setup_torch_global_settings():
-    """Configure global PyTorch settings for performance."""
     try:
-        if torch.cuda.is_available():
-            print("Configuring PyTorch for GPU performance...")
-            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-            torch.cuda.empty_cache()
+        if model_path.endswith('.pt'):
+            # --- Load Standard PyTorch (.pt) Model ---
+            logger.debug("Detected .pt file, using standard PyTorch loading.")
+            model = YOLO(model_path)
+            model.to(device)
+            model.conf = conf_threshold
+            model.iou = iou_threshold
+            model.verbose = False
+            logger.debug(f".pt Model loaded. conf={model.conf}, iou={model.iou}")
 
-            if torch.cuda.get_device_capability(0)[0] >= 8: # Ampere+
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-                if hasattr(torch, 'set_float32_matmul_precision'):
-                     torch.set_float32_matmul_precision('high')
+            # Warm-up for PyTorch models on CUDA
+            if device == 'cuda':
+                try:
+                    logger.debug("Warming up .pt model...")
+                    inp_size = getattr(model, 'imgsz', MODEL_INPUT_SIZE)
+                    if isinstance(inp_size, list):
+                        inp_size = inp_size[0]
+                    if not isinstance(inp_size, int):
+                        inp_size = MODEL_INPUT_SIZE
+                    dummy_input = torch.zeros(1, 3, inp_size, inp_size).to(device)
+                    model(dummy_input, verbose=False)
+                    torch.cuda.synchronize()
+                    logger.debug("Model warm-up complete.")
+                except Exception as e:
+                    logger.debug(f"Warning: Model warm-up failed: {e}")
+            return model
 
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cudnn.deterministic = False
-            torch.manual_seed(42)
-            torch.cuda.manual_seed(42)
-            print("PyTorch GPU settings applied.")
+        elif model_path.endswith('.engine'):
+            # --- Load TensorRT (.engine) Model ---
+            logger.debug("Detected .engine file, using TensorRT runtime via YOLO wrapper.")
+            model = YOLO(model_path, task='detect')
+            model.verbose = False
+            logger.debug(f"TensorRT engine loaded successfully from: {model_path}")
+            return model
+        
         else:
-            print("Configuring PyTorch for CPU.")
+            # --- Unsupported Model Type ---
+            error_msg = f"Unsupported model file extension: '{os.path.splitext(model_path)[1]}'. Please use .pt, .engine, or .onnx."
+            print(f"FATAL ERROR: {error_msg}")
+            raise ValueError(error_msg)
+
     except Exception as e:
-        print(f"Warning: Could not apply all PyTorch optimizations: {e}")
+        print(f"FATAL ERROR loading model '{model_path}': {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
-def get_display_direction(direction):
-    """Format direction for display (e.g., 'north' -> 'North')."""
-    return direction.capitalize() if direction else "N/A"
-
-def normalize_direction(direction):
-    """Convert direction to lowercase for consistent comparison."""
-    return direction.lower() if direction else ""
-
-def is_valid_movement(from_dir, to_dir, active_zones):
-    """
-    Check if movement from from_dir to to_dir is valid based on config
-    AND ensures both directions are present in the active_zones list/set.
-    Args:
-        from_dir (str): The entry direction.
-        to_dir (str): The exit direction.
-        active_zones (list or set): Collection of lowercase active zone names (e.g., ['north', 'west', 'south']).
-    """
-    from_dir_norm = normalize_direction(from_dir)
-    to_dir_norm = normalize_direction(to_dir)
-
-    # Basic checks
-    if not from_dir_norm or not to_dir_norm: return False
-    if from_dir_norm == to_dir_norm: return False # U-turn
-
-    # --- Check if both directions are actually active zones ---
-    if not active_zones or from_dir_norm not in active_zones or to_dir_norm not in active_zones:
-        logger.debug(f"Invalid movement: One or both directions ('{from_dir_norm}' -> '{to_dir_norm}') not in active zones: {active_zones}")
-        return False
-
-    # Check against the base VALID_MOVEMENTS rules from config
-    if from_dir_norm not in VALID_MOVEMENTS:
-        logger.debug(f"Invalid movement: Entry direction '{from_dir_norm}' not found in VALID_MOVEMENTS config.")
-        return False
-
-    # Check if the target direction is a valid exit from the entry direction per config rules
-    valid_config_targets = VALID_MOVEMENTS.get(from_dir_norm, [])
-    is_valid_target = to_dir_norm in valid_config_targets
-
-    if not is_valid_target:
-        logger.debug(f"Invalid movement: '{to_dir_norm}' not a valid exit from '{from_dir_norm}' per VALID_MOVEMENTS. Valid targets: {valid_config_targets}")
-
-    return is_valid_target
-
-def setup_thread_affinity(perf_cores=8, eff_cores=4):
-    """Attempt to set thread affinity for hybrid CPUs (best effort)."""
-    try:
-        p = psutil.Process(os.getpid())
-        if hasattr(p, 'cpu_affinity'):
-            total_logical_cores = psutil.cpu_count(logical=True)
-            p_core_indices = [c for c in range(perf_cores * 2) if c < total_logical_cores]
-            if p_core_indices:
-                p.cpu_affinity(p_core_indices)
-                logger.debug(f"Set main process affinity to P-cores: {p_core_indices}")
-    except Exception as e:
-        logger.debug(f"Failed to set thread affinity: {e}")
-
-def cleanup_memory():
-    """Explicitly run garbage collection and clear CUDA cache."""
-    gc.collect()
+def get_device():
+    """Determines the best available device."""
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    logger.debug("Performed memory cleanup (GC + CUDA Cache)")
+        device = 'cuda'
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        device = 'cpu'
+        print("CUDA not available: Using CPU")
+    return device
