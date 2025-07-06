@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-ENABLE_VISUALIZATION = True #--------------------------------------------------------
+ENABLE_VISUALIZATION = False #--------------------------------------------------------
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -26,8 +26,8 @@ MODEL_INPUT_SIZE = 640 # Keep smaller size for performance
 TTA = True # Enables test-time augmentation (TTA) for predictions
 
 # --- Tracking Configuration --- 
-BYTETRACK_MIN_CONF = 0.1    # Minimum detection confidence for ByteTrack to consider
-BYTETRACK_TRACK_THRESH = 0.35   # Detection confidence threshold for high-confidence matching
+BYTETRACK_MIN_CONF = 0.05    # Minimum detection confidence for ByteTrack to consider
+BYTETRACK_TRACK_THRESH = 0.22   # Detection confidence threshold for high-confidence matching
 BYTETRACK_MATCH_THRESH = 0.8    # IoU threshold for matching detections to tracks
 BYTETRACK_TRACK_BUFFER_SECONDS = 15 # Seconds to keep a track alive if unmatched after it has stopped being associated with any new detections
 
@@ -116,6 +116,15 @@ LINE_POINTS = {
 
 
 VALID_MOVEMENTS = { 'north': ['south','east','west'], 'south': ['north','east','west'], 'east': ['west','north','south'], 'west': ['east','north','south'] }
+BIDIRECTIONAL_REPORT_CATEGORIES = {
+    'Light': ['Light Vehicle', 'Motorcycle'],
+    'Short Trucks': ['Short Truck'],
+    'Medium Trucks': ['Medium Truck'],
+    'Long Trucks': ['Long Truck'],
+    'Buses': ['Bus'],
+    'Mini-buses': ['Minibus Taxi']
+}
+
 
 # --- Hardware Optimizations ---
 OPTIMAL_BATCH_SIZE = 128

@@ -3,19 +3,9 @@ import os
 import torch
 import gc
 from datetime import datetime
-from config import DEBUG_MODE, VALID_MOVEMENTS
-
-# Optional imports
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    PSUTIL_AVAILABLE = False
-
-def debug_print(message):
-    """Print debug messages only when DEBUG_MODE is enabled."""
-    if DEBUG_MODE:
-        print(f"DEBUG: {message}")
+from config import VALID_MOVEMENTS
+import psutil
+from loguru import logger
 
 def format_timestamp(dt: datetime):
     """Convert datetime to date (YYMMDD) and time (HHMMSSmmm) strings."""
@@ -74,30 +64,25 @@ def is_valid_movement(from_dir, to_dir, active_zones):
 
     # --- Check if both directions are actually active zones ---
     if not active_zones or from_dir_norm not in active_zones or to_dir_norm not in active_zones:
-        if DEBUG_MODE:
-            debug_print(f"Invalid movement: One or both directions ('{from_dir_norm}' -> '{to_dir_norm}') not in active zones: {active_zones}")
+        logger.debug(f"Invalid movement: One or both directions ('{from_dir_norm}' -> '{to_dir_norm}') not in active zones: {active_zones}")
         return False
 
     # Check against the base VALID_MOVEMENTS rules from config
     if from_dir_norm not in VALID_MOVEMENTS:
-        if DEBUG_MODE:
-             debug_print(f"Invalid movement: Entry direction '{from_dir_norm}' not found in VALID_MOVEMENTS config.")
+        logger.debug(f"Invalid movement: Entry direction '{from_dir_norm}' not found in VALID_MOVEMENTS config.")
         return False
 
     # Check if the target direction is a valid exit from the entry direction per config rules
     valid_config_targets = VALID_MOVEMENTS.get(from_dir_norm, [])
     is_valid_target = to_dir_norm in valid_config_targets
 
-    if not is_valid_target and DEBUG_MODE:
-         debug_print(f"Invalid movement: '{to_dir_norm}' not a valid exit from '{from_dir_norm}' per VALID_MOVEMENTS. Valid targets: {valid_config_targets}")
+    if not is_valid_target:
+        logger.debug(f"Invalid movement: '{to_dir_norm}' not a valid exit from '{from_dir_norm}' per VALID_MOVEMENTS. Valid targets: {valid_config_targets}")
 
     return is_valid_target
 
-def setup_thread_affinity(perf_cores=8, eff_cores=4):
+def setup_thread_affinity(perf_cores=8):
     """Attempt to set thread affinity for hybrid CPUs (best effort)."""
-    if not PSUTIL_AVAILABLE:
-        debug_print("psutil not found, cannot set thread affinity.")
-        return
     try:
         p = psutil.Process(os.getpid())
         if hasattr(p, 'cpu_affinity'):
@@ -105,13 +90,13 @@ def setup_thread_affinity(perf_cores=8, eff_cores=4):
             p_core_indices = [c for c in range(perf_cores * 2) if c < total_logical_cores]
             if p_core_indices:
                 p.cpu_affinity(p_core_indices)
-                debug_print(f"Set main process affinity to P-cores: {p_core_indices}")
+                logger.debug(f"Set main process affinity to P-cores: {p_core_indices}")
     except Exception as e:
-        debug_print(f"Failed to set thread affinity: {e}")
+        logger.warn(f"Failed to set thread affinity: {e}")
 
 def cleanup_memory():
     """Explicitly run garbage collection and clear CUDA cache."""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    debug_print("Performed memory cleanup (GC + CUDA Cache)")
+    logger.debug("Performed memory cleanup (GC + CUDA Cache)")

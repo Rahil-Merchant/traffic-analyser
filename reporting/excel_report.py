@@ -1,14 +1,11 @@
 # project/reporting/excel_report.py
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta, time
 import os
 from collections import OrderedDict
-
-# --- Configuration Import ---
-from config import VEHICLE_ID_MAP, REPORT_OUTPUT_DIR, VALID_MOVEMENTS
-# --- Utility Import ---
-from core.utils import debug_print, get_display_direction
+from config import VEHICLE_ID_MAP, REPORT_OUTPUT_DIR, VALID_MOVEMENTS, BIDIRECTIONAL_REPORT_CATEGORIES
+from core.utils import get_display_direction
+from loguru import logger
 
 # --- Helper Function: Build RSA Direction Map (Corrected Exit Order) ---
 def _build_rsa_direction_map(primary_direction, active_directions, valid_movements_config):
@@ -20,12 +17,12 @@ def _build_rsa_direction_map(primary_direction, active_directions, valid_movemen
     OPPOSITE = {'north': 'south', 'south': 'north', 'east': 'west', 'west': 'east'}
 
     if not active_directions:
-        debug_print("Error: No active directions provided for RSA map generation.")
+        logger.debug("Error: No active directions provided for RSA map generation.")
         return rsa_movement_map
 
     if not primary_direction or primary_direction not in active_directions:
         primary_direction = active_directions[0]
-        debug_print(f"Warning: Primary direction invalid/inactive. Using first active: {primary_direction}")
+        logger.debug(f"Warning: Primary direction invalid/inactive. Using first active: {primary_direction}")
 
     try:
         start_index = STANDARD_ORDER.index(primary_direction)
@@ -42,15 +39,15 @@ def _build_rsa_direction_map(primary_direction, active_directions, valid_movemen
                 ordered_active_entry_dirs.append(current_dir)
                 processed_dirs.add(current_dir)
 
-    debug_print(f"RSA Numbering: Ordered Active Entry Dirs = {ordered_active_entry_dirs}")
+    logger.debug(f"RSA Numbering: Ordered Active Entry Dirs = {ordered_active_entry_dirs}")
 
     # Iterate through ordered entry dirs
     for entry_dir in ordered_active_entry_dirs:
-        debug_print(f"  Processing Entry: {entry_dir}")
+        logger.debug(f"  Processing Entry: {entry_dir}")
         try:
             entry_idx = STANDARD_ORDER.index(entry_dir)
         except ValueError:
-            debug_print(f"    Skipping invalid entry_dir: {entry_dir}")
+            logger.debug(f"    Skipping invalid entry_dir: {entry_dir}")
             continue
 
         # Determine relative directions based on the standard CCW order
@@ -60,7 +57,7 @@ def _build_rsa_direction_map(primary_direction, active_directions, valid_movemen
 
         # Define the relative exit order: Left -> Straight -> Right
         relative_exit_order = [left_dir, straight_dir, right_dir]
-        debug_print(f"    Relative Exit Order Used: {relative_exit_order}")
+        logger.debug(f"    Relative Exit Order Used: {relative_exit_order}")
 
         allowed_exits = valid_movements_config.get(entry_dir, [])
         processed_exits_for_entry = set() # Track exits processed for this entry
@@ -79,11 +76,11 @@ def _build_rsa_direction_map(primary_direction, active_directions, valid_movemen
             if is_valid:
                 if (entry_dir, exit_dir) not in rsa_movement_map:
                     rsa_movement_map[(entry_dir, exit_dir)] = movement_number
-                    debug_print(f"    Mapping: {entry_dir} -> {exit_dir} = #{movement_number}")
+                    logger.debug(f"    Mapping: {entry_dir} -> {exit_dir} = #{movement_number}")
                     movement_number += 1
                     processed_exits_for_entry.add(exit_dir) # Mark as processed
 
-    debug_print(f"RSA Direction Map created with {len(rsa_movement_map)} entries: {rsa_movement_map}")
+    logger.debug(f"RSA Direction Map created with {len(rsa_movement_map)} entries: {rsa_movement_map}")
     return rsa_movement_map
 
 
@@ -97,7 +94,6 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
     if not completed_paths_data:
          print("WARNING: No completed paths data received!")
          return None
-    # print(f"Received {len(detection_events)} structured events (currently unused).")
     print(f"Received {len(completed_paths_data)} completed path summaries.")
 
     all_valid_vehicle_types = list(VEHICLE_ID_MAP.keys())
@@ -135,9 +131,9 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                      'vehicle_type': v_type, 'direction_from': entry_dir, 'direction_to': exit_dir,
                      'timestamp': exit_t })
                 active_directions_set.add(entry_dir); active_directions_set.add(exit_dir)
-    debug_print(f"Processed {len(valid_path_ids)} valid completed paths.")
+    logger.debug(f"Processed {len(valid_path_ids)} valid completed paths.")
     active_directions = sorted(list(active_directions_set)) # Use only directions involved in valid paths
-    debug_print(f"Active directions derived from valid paths: {active_directions}")
+    logger.debug(f"Active directions derived from valid paths: {active_directions}")
 
     # --- Build RSA Direction Map ---
     rsa_direction_map = _build_rsa_direction_map(primary_direction, active_directions, VALID_MOVEMENTS)
@@ -179,14 +175,14 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                  log_cols = ['Vehicle Tracker ID', 'Object ID', 'Object Name', 'Entry Direction', 'Exit Direction', 'Entry Time', 'Exit Time', 'Time in Intersection (s)']
                  df_logs = df_log_summary[[col for col in log_cols if col in df_log_summary.columns]]
                  df_logs.to_excel(writer, sheet_name='Vehicle Logs', index=False)
-                 debug_print(f"Writing 'Vehicle Logs' sheet ({len(df_logs)} rows).")
-            else: debug_print("No data for 'Vehicle Logs' sheet.")
+                 logger.debug(f"Writing 'Vehicle Logs' sheet ({len(df_logs)} rows).")
+            else: logger.debug("No data for 'Vehicle Logs' sheet.")
 
             # --- Sheet: Intervals ---
             if not df_intervals.empty:
                 df_intervals[['Date', 'Time Intervals', 'Start Time', 'End Time']].to_excel(writer, sheet_name='Intervals', index=False)
-                debug_print(f"Writing 'Intervals' sheet ({len(df_intervals)} rows).")
-            else: debug_print("No data for 'Intervals' sheet.")
+                logger.debug(f"Writing 'Intervals' sheet ({len(df_intervals)} rows).")
+            else: logger.debug("No data for 'Intervals' sheet.")
 
             # --- Sheets: Directional Counts ---
             if not df_moves.empty and not df_intervals.empty and active_directions:
@@ -202,7 +198,7 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     from_dir_match_display = from_dir_key.capitalize()
                     worksheet = writer.book.add_worksheet(from_dir_sheet_name)
                     writer.sheets[from_dir_sheet_name] = worksheet
-                    debug_print(f"  Generating sheet: {from_dir_sheet_name}")
+                    logger.debug(f"  Generating sheet: {from_dir_sheet_name}")
 
                     df_from = df_moves[df_moves['direction_from_disp'] == from_dir_match_display].copy()
                     possible_to_dirs_keys = sorted([d for d in active_directions if d != from_dir_key])
@@ -252,17 +248,17 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     worksheet.set_column(0, 0, 18, time_col_format)
                     current_col_idx = 1
                     for col_tuple in header_col_tuples_written: col_width = 10 if col_tuple[1] == 'TOTAL' else 5; worksheet.set_column(current_col_idx, current_col_idx, col_width, data_format); current_col_idx += 1
-                    debug_print(f"  Writing '{from_dir_sheet_name}' sheet ({len(df_sheet)} rows).")
+                    logger.debug(f"  Writing '{from_dir_sheet_name}' sheet ({len(df_sheet)} rows).")
 
             # Condition checks
-            elif df_moves.empty: debug_print("Skipping directional sheets: No valid movements.")
-            elif not intervals: debug_print("Skipping directional sheets: Intervals list empty.")
-            elif not active_directions: debug_print("Skipping directional sheets: No active directions.")
+            elif df_moves.empty: logger.debug("Skipping directional sheets: No valid movements.")
+            elif not intervals: logger.debug("Skipping directional sheets: Intervals list empty.")
+            elif not active_directions: logger.debug("Skipping directional sheets: No active directions.")
 
             # --- Sheet: RSA Format Output ---
-            debug_print(f"Checking conditions for RSA sheet: Map size={len(rsa_direction_map)}, Valid paths count={len(valid_paths_structured)}")
+            logger.debug(f"Checking conditions for RSA sheet: Map size={len(rsa_direction_map)}, Valid paths count={len(valid_paths_structured)}")
             if rsa_direction_map and valid_paths_structured:
-                debug_print("Generating RSA Format Output sheet...")
+                logger.debug("Generating RSA Format Output sheet...")
                 rsa_sheet_name = "RSA Output"
                 rsa_worksheet = writer.book.add_worksheet(rsa_sheet_name)
                 writer.sheets[rsa_sheet_name] = rsa_worksheet
@@ -289,10 +285,10 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     rsa_data_lines.append(rsa_line)
                 start_data_row = len(rsa_header)
                 for r, row_str in enumerate(rsa_data_lines): rsa_worksheet.write_string(start_data_row + r, 0, row_str)
-                rsa_worksheet.set_column(0, 0, 60); debug_print(f"Writing 'RSA Output' sheet ({len(rsa_data_lines)} rows).")
+                rsa_worksheet.set_column(0, 0, 60); logger.debug(f"Writing 'RSA Output' sheet ({len(rsa_data_lines)} rows).")
 
-            elif not rsa_direction_map: debug_print("Skipping 'RSA Output' sheet: RSA Direction map is empty.")
-            else: debug_print("Skipping 'RSA Output' sheet: No valid paths processed.")
+            elif not rsa_direction_map: logger.debug("Skipping 'RSA Output' sheet: RSA Direction map is empty.")
+            else: logger.debug("Skipping 'RSA Output' sheet: No valid paths processed.")
 
         print(f"Excel report generated: {excel_full_path}")
         excel_created_path = excel_full_path
@@ -314,15 +310,8 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
         print("WARNING (Bi-directional Report): No completed paths data received. Report will be empty or not generated.")
         return None
 
-    # --- 1. Define New Vehicle Categories and Column Order ---
-    NEW_REPORT_CATEGORIES = {
-        'Light': ['Light Vehicle', 'Motorcycle'],
-        'Heavy': ['Short Truck', 'Medium Truck', 'Long Truck'],
-        'Buses': ['Bus'],
-        'Mini-buses': ['Minibus Taxi']
-    }
     # This is the order they will appear under each direction in the Excel sheet
-    NEW_REPORT_COLUMN_ORDER = ['Light', 'Heavy', 'Buses', 'Mini-buses']
+    NEW_REPORT_COLUMN_ORDER = list(BIDIRECTIONAL_REPORT_CATEGORIES.keys())
 
     # --- 2. Prepare 24-Hour Time Bins ---
     # Report starts from 00:00 of the video's start day
@@ -541,11 +530,11 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
 
             # --- Sheet 1: Individual Counts ---
             write_sheet_content("Individual Counts", df_individual_with_totals, include_total_row=True)
-            debug_print("(Bi-directional Report) Writing 'Individual Counts' sheet.")
+            logger.debug("(Bi-directional Report) Writing 'Individual Counts' sheet.")
 
             # --- Sheet 2: Cumulative Counts ---
             write_sheet_content("Cumulative Counts", df_cumulative_counts, include_total_row=False)
-            debug_print("(Bi-directional Report) Writing 'Cumulative Counts' sheet.")
+            logger.debug("(Bi-directional Report) Writing 'Cumulative Counts' sheet.")
 
         print(f"Bi-directional Link Count report generated: {excel_full_path}")
         return excel_full_path

@@ -2,12 +2,11 @@ import os
 import uvicorn
 import cv2
 from typing import List, Dict
-from fastapi import FastAPI, WebSocket, BackgroundTasks, HTTPException, WebSocketDisconnect, File, Form
+from fastapi import FastAPI, WebSocket, BackgroundTasks, HTTPException, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
-
 from config import SERVER_PORT
 from core.utils import setup_torch_global_settings, setup_thread_affinity
 from core.video_processor import VideoProcessor

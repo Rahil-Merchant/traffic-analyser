@@ -1,5 +1,5 @@
 # project/tracking/cleanup.py
-from core.utils import debug_print
+from loguru import logger
 
 def cleanup_tracking_data(video_processor_instance, current_frame_time_seconds):
     """Removes data for vehicles that are no longer tracked or very old."""
@@ -26,7 +26,7 @@ def cleanup_tracking_data(video_processor_instance, current_frame_time_seconds):
             video_processor_instance.zone_tracker.remove_vehicle_data(v_id)
     
     if count > 0:
-        debug_print(f"AppLevelCleanup: Removed data for {count} very stale tracks from active_track_data.")
+        logger.debug(f"AppLevelCleanup: Removed data for {count} very stale tracks from active_track_data.")
 
     # Cleanup zone cooldowns (this is still relevant)
     if video_processor_instance.zone_tracker and hasattr(video_processor_instance.zone_tracker, 'cleanup_cooldowns'):
