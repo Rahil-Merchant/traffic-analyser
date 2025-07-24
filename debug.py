@@ -8,6 +8,11 @@ import pstats
 from config import INPUT_VIDEO_PATH, START_DATE, START_TIME, DEFAULT_PRIMARY_DIRECTION
 from core.utils import setup_torch_global_settings, setup_thread_affinity
 from core.video_processor import VideoProcessor
+from loguru import logger
+import sys
+
+logger.remove()
+logger.add(sys.stderr, level="DEBUG")
 
 def run_local_processing():
     print("--- Starting Hardcoded Mode ---")
@@ -25,7 +30,8 @@ def run_local_processing():
             start_date_str=START_DATE,
             start_time_str=START_TIME,
             primary_direction=DEFAULT_PRIMARY_DIRECTION,
-            station_number_str=''
+            station_number_str='',
+            generate_link_count_report_flag=False
         )
         print("\n--- Processing Complete ---")
         print(result_message)

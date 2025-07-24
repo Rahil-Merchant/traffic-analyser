@@ -584,9 +584,7 @@ class VideoProcessor:
         all_targets_np = np.vstack(all_targets_list)
         tx1, ty1, tx2, ty2 = all_targets_np[:, 0], all_targets_np[:, 1], all_targets_np[:, 2], all_targets_np[:, 3]
         track_ids = all_targets_np[:, 4].astype(int)
-        # In ByteTrack output, the class ID is at index 6, not 7.
-        # Format is [x1, y1, x2, y2, track_id, score, class_id]
-        class_ids = all_targets_np[:, 6].astype(int) 
+        class_ids = all_targets_np[:, 7].astype(int)
         batch_indices = all_targets_np[:, 8].astype(int)
 
         model_h, model_w = self.model_input_size_config, self.model_input_size_config
@@ -599,6 +597,7 @@ class VideoProcessor:
         temp_drawing_info_list = [{} for _ in range(len(yolo_results_batch))]
         
         with self.tracker_lock:
+            # Pre-fetch zone keys to avoid repeated calls in the loop
             zone_keys = list(self.zone_tracker.zones.keys())
 
             for i in range(len(all_targets_np)):
@@ -623,15 +622,11 @@ class VideoProcessor:
                 else:
                     track_data = self.active_track_data[track_id_str]
                     track_data['last_seen_frame'] = current_frame_num
-                    
-                    # --- FIX: Update class type history and current_type on every frame ---
                     track_data['type_history'][vehicle_type] = track_data['type_history'].get(vehicle_type, 0) + 1
                     track_data['current_type'] = max(track_data['type_history'], key=track_data['type_history'].get)
-                    # --- END FIX ---
-                    
-                    temp_drawing_info_list[batch_idx][track_id_str]['type'] = track_data['current_type']
                     prev_pos = track_data.get('last_pos_zone')
                     track_data['last_pos_zone'] = bottom_center
+                    temp_drawing_info_list[batch_idx][track_id_str]['type'] = track_data['current_type']
 
                     if prev_pos is not None and track_data['status'] == 'active':
                         event_type, event_dir = self.zone_tracker.check_zone_transition(tuple(prev_pos), tuple(bbox_scaled), track_id_str, current_frame_time_sec)
