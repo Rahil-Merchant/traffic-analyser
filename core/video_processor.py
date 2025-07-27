@@ -96,6 +96,8 @@ class VideoProcessor:
         self.final_output_path = None
         self.temp_converted_files = []
 
+        self.dummy_img = np.zeros((self.model_input_size_config, self.model_input_size_config, 3), dtype=np.uint8)
+
     @profile
     def _initialize_run(self, video_paths, start_date_str, start_time_str, primary_direction, station_number_str, generate_link_count_report_flag, preview_image_width, preview_image_height):
         logger.info("--- Initializing New Video Processing Run ---")
@@ -400,7 +402,8 @@ class VideoProcessor:
         self.results_queue.put(None) # Pass sentinel to post-processor
         print()
         return frames_processed_count
-
+    
+    @profile
     def _finalize_and_report(self, init_data, frames_processed_count):
         logger.info("Finalizing tracks and generating reports...")
         if self.active_track_data:
@@ -534,8 +537,8 @@ class VideoProcessor:
                 progress_queue.put_nowait({"status": "finished"})
             self._cleanup_run()
 
-    @profile
     @torch.no_grad()
+    @profile
     def _preprocess_batch(self, frames_batch_with_metadata):
         # This function remains the same, but is now called from its own thread
         if not frames_batch_with_metadata:
@@ -559,8 +562,8 @@ class VideoProcessor:
         dtype_final = torch.float16 if (MIXED_PRECISION and self.device == 'cuda') else torch.float32
         return batch_tensor.to(dtype_final) / 255.0
 
-    @profile
     @torch.no_grad()
+    @profile
     def _process_inference_results(self, yolo_results_batch, frames_batch_with_metadata, frame_numbers_in_batch, frame_times_in_batch, start_datetime_obj_global):
         if self.perf: self.perf.start_timer('app_logic_batch')
         processed_frames_list_viz = [None] * len(yolo_results_batch)
@@ -569,9 +572,7 @@ class VideoProcessor:
         with self.tracker_lock:
             for i, yolo_result in enumerate(yolo_results_batch):
                 detections_np = yolo_result.boxes.data.cpu().numpy() if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0 else np.empty((0, 6))
-                img_h, img_w = yolo_result.orig_shape if yolo_result and yolo_result.orig_shape else (self.model_input_size_config, self.model_input_size_config)
-                dummy_img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
-                online_targets = self.bytetracker.update(detections_np, dummy_img)
+                online_targets = self.bytetracker.update(detections_np, self.dummy_img)
                 
                 if online_targets is not None and len(online_targets) > 0:
                     batch_idx_col = np.full((len(online_targets), 1), i, dtype=np.float32)
@@ -787,6 +788,7 @@ class VideoProcessor:
             self.raw_frame_queue.put(None) # Put sentinel for preprocessor
             logger.info("Frame reader task finished.")
             
+    @profile
     def _frame_writer_task(self, output_path):
         out = None
         try:
