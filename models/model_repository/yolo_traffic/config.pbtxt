@@ -1,0 +1,29 @@
+# File: model_repository/yolo_traffic/config.pbtxt (Minimal and Correct)
+
+name: "yolo_traffic"
+platform: "tensorrt_plan"
+max_batch_size: 64
+
+# This allows Triton to group incoming requests into batches.
+dynamic_batching { }
+
+# Define the input, specifying dynamic dimensions with -1.
+input {
+  name: "images"
+  data_type: TYPE_FP16
+  dims: [ 3, 640, 640 ]
+}
+
+# Define the output, specifying dynamic dimensions with -1.
+output {
+  name: "output0"
+  data_type: TYPE_FP16
+  dims: [ 13, 8400 ]
+}
+
+# Define how many copies of the model to run and on what hardware.
+# No profile definition is needed here.
+instance_group {
+  count: 1
+  kind: KIND_GPU
+}

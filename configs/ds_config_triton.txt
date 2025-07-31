@@ -1,0 +1,21 @@
+[property]
+# For communicating with the Triton server we will start
+grpc-server-url=localhost:8001
+# Must match the model name in your repository
+model-name=yolo_traffic
+# Use the latest version available
+model-version=-1
+
+# IMPORTANT: This tells DeepStream how to parse YOLO's raw output tensor
+# into bounding boxes. This library is included with DeepStream.
+parse-bbox-func-name=NvDsInferParseYoloCuda
+custom-lib-path=models/libnvdsinfer_custom_impl_Yolo.so
+
+[class-attrs-all]
+# These are post-processing parameters for the parser
+pre-cluster-threshold=0.05
+nms-iou-threshold=0.8
+
+# Your model's specific parameters
+net-scale-factor=1.0 # The parser handles scaling for YOLO
+num-detected-classes=9

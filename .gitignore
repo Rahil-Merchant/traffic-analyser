@@ -60,9 +60,11 @@ coverage.xml
 *.engine
 *.onnx
 *.trt
+*.plan
 
 *.mp4
 *.jpg
+*.dav
 
 models/weights/*
 utility_scripts/*.jpg

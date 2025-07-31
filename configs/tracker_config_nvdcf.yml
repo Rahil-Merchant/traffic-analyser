@@ -1,0 +1,26 @@
+%YAML:1.2
+---
+BaseConfig:
+  minDetectorConfidence: 0.05 # Detections below this are ignored by the tracker
+
+Tracker_NvDCF:
+  # How many frames to keep a track alive after it's lost.
+  # This replaces your BYTETRACK_TRACK_BUFFER_SECONDS.
+  # Example: 300 frames / 30 fps = 10 seconds.
+  maxShadowTrackingAge: 300
+
+  # Visual appearance learning rate. Higher means it adapts faster to changes.
+  visualLearningRate: 0.02
+
+  # How many frames a track must exist to be considered "confirmed".
+  probationAge: 5
+
+  # Max number of objects to track in the video stream.
+  maxTargetsPerStream: 200
+
+  # Whether to use color features for re-identification (enabled by default in DeepStream 7.1)
+  useColorNames: 1
+
+  # Enable high performance (may improve with newer GPUs)
+  enableBatchProcess: 1
+  useAsyncData: 1

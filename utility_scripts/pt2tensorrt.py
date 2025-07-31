@@ -1,9 +1,9 @@
 from ultralytics import YOLO
 
-MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\20072025\few_anchowy_int8.pt"
+MODEL_PATH = "models/weights/20072025/few_anchowy_linux_fp32.pt"
 MODEL_INPUT_SIZE = 640
-EXPORT_FP16 = True
-EXPORT_INT8 = {'export':True,'yaml_path':r'C:\Users\swest\Desktop\traffic-capturing\training\datasets\relabelled12072025\data.yaml'}
+EXPORT_FP16 = False
+EXPORT_INT8 = {'export':False,'yaml_path':r'C:\Users\swest\Desktop\traffic-capturing\training\datasets\relabelled12072025\data.yaml'}
 dynamic = True
 bs = 64
 
@@ -17,4 +17,4 @@ model.export(
             dynamic=dynamic,
             simplify=True,
             batch=bs
-        )
+        ) 
