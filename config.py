@@ -27,14 +27,14 @@ TTA = True # Enables test-time augmentation (TTA) for predictions
 
 # --- Tracking Configuration --- 
 BYTETRACK_MIN_CONF = 0.05    # Minimum detection confidence for ByteTrack to consider
-BYTETRACK_TRACK_THRESH = 0.2   # Detection confidence threshold for high-confidence matching
-BYTETRACK_MATCH_THRESH = 0.8    # IoU threshold for matching detections to tracks
+BYTETRACK_TRACK_THRESH = 0.15   # Detection confidence threshold for high-confidence matching
+BYTETRACK_MATCH_THRESH = 0.75    # IoU threshold for matching detections to tracks
 BYTETRACK_TRACK_BUFFER_SECONDS = 25 # Seconds to keep a track alive if unmatched after it has stopped being associated with any new detections
 
 
 # #*############## Video 1 #################
 # # --- Input Settings (primarily for hardcoded mode) ---
-INPUT_VIDEO_PATH = [r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\6 hour test - Large FOV.mp4"]
+INPUT_VIDEO_PATH = [r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 minute test - 4 Way Intersection.mp4"]
 
 # --- Line & Zone Definitions ---
 LINE_POINTS = {

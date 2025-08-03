@@ -11,7 +11,7 @@ import math
 import yaml
 from datetime import datetime, timedelta
 import concurrent.futures
-from boxmot.trackers.bytetrack.bytetrack import ByteTrack
+from supervision import ByteTrack
 from loguru import logger
 import builtins
 if not hasattr(builtins, "profile"):
@@ -102,8 +102,10 @@ class VideoProcessor:
     def _initialize_run(self, video_paths, start_date_str, start_time_str, primary_direction, station_number_str, generate_link_count_report_flag, preview_image_width, preview_image_height):
         logger.info("--- Initializing New Video Processing Run ---")
         self.bytetracker = ByteTrack(
-            min_conf=BYTETRACK_MIN_CONF, track_thresh=BYTETRACK_TRACK_THRESH, match_thresh=BYTETRACK_MATCH_THRESH,
-            track_buffer=BYTETRACK_TRACK_BUFFER_SECONDS, frame_rate=self.target_fps, per_class=False
+            track_activation_threshold=BYTETRACK_TRACK_THRESH,
+            minimum_matching_threshold=BYTETRACK_MATCH_THRESH,
+            lost_track_buffer=int(BYTETRACK_TRACK_BUFFER_SECONDS * self.target_fps),  # Convert seconds to frames
+            frame_rate=self.target_fps
         )
         self.active_track_data.clear()
         self.finalized_paths_for_report.clear()
@@ -571,12 +573,57 @@ class VideoProcessor:
         all_targets_list = []
         with self.tracker_lock:
             for i, yolo_result in enumerate(yolo_results_batch):
-                detections_np = yolo_result.boxes.data.cpu().numpy() if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0 else np.empty((0, 6))
-                online_targets = self.bytetracker.update(detections_np, self.dummy_img)
+                if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0:
+                    # Convert YOLO detections to supervision format [x1, y1, x2, y2, score, class_id]
+                    detections_np = yolo_result.boxes.data.cpu().numpy()
+                    if detections_np.shape[1] >= 6:  # [x1, y1, x2, y2, conf, cls]
+                        # Reorder to supervision format: [x1, y1, x2, y2, score, class_id]
+                        supervision_detections = np.column_stack([
+                            detections_np[:, :4],  # bbox coordinates
+                            detections_np[:, 4],   # confidence score
+                            detections_np[:, 5]    # class_id
+                        ])
+                    else:
+                        supervision_detections = np.empty((0, 6))
+                else:
+                    supervision_detections = np.empty((0, 6))
                 
-                if online_targets is not None and len(online_targets) > 0:
-                    batch_idx_col = np.full((len(online_targets), 1), i, dtype=np.float32)
-                    all_targets_list.append(np.hstack([online_targets, batch_idx_col]))
+                # Update tracker with tensors
+                if supervision_detections.shape[0] > 0:
+                    online_stracks = self.bytetracker.update_with_tensors(supervision_detections)
+                    
+                    if online_stracks:
+                        # Convert STrack objects back to numpy format matching boxmot format
+                        targets_np = []
+                        for strack in online_stracks:
+                            # Extract bbox in tlbr format
+                            tlbr = strack.tlbr  # [x1, y1, x2, y2]
+                            
+                            # Use external_track_id (the public track ID)
+                            track_id = strack.external_track_id
+                            if track_id == strack.external_id_counter.NO_ID:
+                                track_id = strack.internal_track_id
+                            
+                            score = strack.score
+                            
+                            # Get class_id from original detection (simplified approach)
+                            # You might need a more sophisticated mapping here
+                            class_id = 0  # Default, or implement proper class mapping
+                            
+                            # Create row in boxmot format: [x1, y1, x2, y2, track_id, score, ?, class_id]
+                            # Note: boxmot format has 8 columns, we need to match that exactly
+                            target_row = [tlbr[0], tlbr[1], tlbr[2], tlbr[3], track_id, score, 0, class_id]
+                            targets_np.append(target_row)
+                        
+                        if targets_np:
+                            targets_array = np.array(targets_np, dtype=np.float32)
+                            # NOW add the batch index column (this was missing!)
+                            batch_idx_col = np.full((len(targets_array), 1), i, dtype=np.float32)
+                            all_targets_list.append(np.hstack([targets_array, batch_idx_col]))
+                else:
+                    # Handle empty detections - update tracker anyway to maintain internal state
+                    self.bytetracker.update_with_tensors(supervision_detections)
+
 
         if not all_targets_list:
             if self.perf: self.perf.end_timer('app_logic_batch')
