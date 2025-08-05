@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-ENABLE_VISUALIZATION = False #--------------------------------------------------------
+ENABLE_VISUALIZATION = True #--------------------------------------------------------
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -17,7 +17,7 @@ VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\20072025\few_anchowy.engine"
+MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\20072025\few_anchowy_win_fp16.engine"
 DATA_YAML_PATH = r""
 NUM_INFERENCE_STREAMS = 1
 CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
@@ -165,7 +165,7 @@ DEBUG_MODE = False # Keep False for performance runs
 PERFORMANCE_SAMPLE_INTERVAL = 15.0   # In seconds
 MEMORY_CLEANUP_INTERVAL = 300   # In seconds
 
-SERVER_PORT = 7862
+SERVER_PORT = 8080
 
 # --- Print Confirmation ---
 print(f"--- Configuration Loaded (Tuned for Exit Accuracy) ---")

@@ -9,9 +9,9 @@ import queue
 import gc
 import math
 import yaml
+from supervision import ByteTrack
 from datetime import datetime, timedelta
 import concurrent.futures
-from supervision import ByteTrack
 from loguru import logger
 import builtins
 if not hasattr(builtins, "profile"):
@@ -96,8 +96,6 @@ class VideoProcessor:
         self.final_output_path = None
         self.temp_converted_files = []
 
-        self.dummy_img = np.zeros((self.model_input_size_config, self.model_input_size_config, 3), dtype=np.uint8)
-
     @profile
     def _initialize_run(self, video_paths, start_date_str, start_time_str, primary_direction, station_number_str, generate_link_count_report_flag, preview_image_width, preview_image_height):
         logger.info("--- Initializing New Video Processing Run ---")
@@ -156,6 +154,8 @@ class VideoProcessor:
         logger.info(f"Loading {self.num_inference_streams} model instance(s)...")
         for i in range(self.num_inference_streams):
             model_instance = load_model(str(MODEL_PATH), self.device, CONF_THRESHOLD, IOU_THRESHOLD)
+            if not self.class_id_to_name_map:
+                self.class_id_to_name_map = model_instance.names
             self.models_list.append(model_instance)
             logger.debug(f"Loaded model instance {i+1}/{self.num_inference_streams}.")
 
@@ -576,6 +576,10 @@ class VideoProcessor:
                 if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0:
                     # Convert YOLO detections to supervision format [x1, y1, x2, y2, score, class_id]
                     detections_np = yolo_result.boxes.data.cpu().numpy()
+                    # print(detections_np)
+                    # print(yolo_result.boxes)
+                    # print(yolo_result.probs)
+                    # input()
                     if detections_np.shape[1] >= 6:  # [x1, y1, x2, y2, conf, cls]
                         # Reorder to supervision format: [x1, y1, x2, y2, score, class_id]
                         supervision_detections = np.column_stack([
@@ -595,7 +599,7 @@ class VideoProcessor:
                     if online_stracks:
                         # Convert STrack objects back to numpy format matching boxmot format
                         targets_np = []
-                        for strack in online_stracks:
+                        for strack, det in zip(online_stracks, supervision_detections):
                             # Extract bbox in tlbr format
                             tlbr = strack.tlbr  # [x1, y1, x2, y2]
                             
@@ -605,14 +609,10 @@ class VideoProcessor:
                                 track_id = strack.internal_track_id
                             
                             score = strack.score
-                            
-                            # Get class_id from original detection (simplified approach)
-                            # You might need a more sophisticated mapping here
-                            class_id = 0  # Default, or implement proper class mapping
-                            
-                            # Create row in boxmot format: [x1, y1, x2, y2, track_id, score, ?, class_id]
-                            # Note: boxmot format has 8 columns, we need to match that exactly
-                            target_row = [tlbr[0], tlbr[1], tlbr[2], tlbr[3], track_id, score, 0, class_id]
+                            class_id = strack.class_id
+
+                            target_row = [tlbr[0], tlbr[1], tlbr[2], tlbr[3],
+                                        track_id, score, 0, class_id]
                             targets_np.append(target_row)
                         
                         if targets_np:

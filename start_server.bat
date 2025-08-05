@@ -5,7 +5,7 @@ color 0B
 
 :: Configuration
 set CONDA_ENV=traffic_env_py310
-set BACKEND_PORT=7862
+set BACKEND_PORT=8080
 set PROJECT_DIR=%~dp0
 
 echo.

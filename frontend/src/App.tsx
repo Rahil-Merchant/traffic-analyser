@@ -30,7 +30,7 @@ const formatTimestampForBackend = (date: Date) => {
   return { date: `${year}${month}${day}`, time: `${hours}${minutes}${seconds}${milliseconds}` };
 };
 
-const API_BASE_URL = 'http://127.0.0.1:7862';
+const API_BASE_URL = 'http://127.0.0.1:8080';
 
 function App() {
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -94,7 +94,7 @@ function App() {
 
 
   const connectToWebSocket = (jobId: string) => {
-    const wsUrl = `ws://127.0.0.1:7862/ws/progress/${jobId}`;
+    const wsUrl = `ws://127.0.0.1:8080/ws/progress/${jobId}`;
     webSocketRef.current = new WebSocket(wsUrl);
 
     webSocketRef.current.onopen = () => { setProcessingStatus("Connected to analysis engine..."); };
