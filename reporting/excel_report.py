@@ -145,7 +145,7 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
     logger.debug(f"Active directions derived from valid paths: {active_directions}")
 
     # --- Build RSA Direction Map ---
-    rsa_direction_map = _build_rsa_direction_map(primary_direction, active_directions, VALID_MOVEMENTS)
+    rsa_direction_map = _build_rsa_direction_map(primary_direction, active_directions, VALID_MOVEMENTS) if report_type=='standard' else None
 
     # --- 2. Create Intervals (Full 24 Hours) ---
     intervals = []; report_date = start_datetime.date(); day_start_dt = datetime.combine(report_date, time.min); day_end_dt = day_start_dt + timedelta(days=1); curr_interval_start = day_start_dt
