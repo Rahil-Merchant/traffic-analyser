@@ -282,8 +282,8 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
             elif not active_directions: logger.debug("Skipping directional sheets: No active directions.")
 
             # --- Sheet: RSA Format Output ---
-            logger.debug(f"Checking conditions for RSA sheet: Map size={len(rsa_direction_map)}, Valid paths count={len(valid_paths_structured)}")
             if rsa_direction_map and valid_paths_structured:
+                logger.debug(f"Checking conditions for RSA sheet: Map size={len(rsa_direction_map)}, Valid paths count={len(valid_paths_structured)}")
                 logger.debug("Generating RSA Format Output sheet...")
                 rsa_sheet_name = "RSA Output"
                 rsa_worksheet = writer.book.add_worksheet(rsa_sheet_name)
