@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-ENABLE_VISUALIZATION = True #--------------------------------------------------------
+ENABLE_VISUALIZATION = False #--------------------------------------------------------
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -124,7 +124,12 @@ BIDIRECTIONAL_REPORT_CATEGORIES = {
     'Buses': ['Bus'],
     'Mini-buses': ['Minibus Taxi']
 }
-
+TIA_REPORT_CATEGORIES = {
+    'Light': ['Light Vehicle'],
+    'Trucks': ['Short Truck','Medium Truck','Long Truck'],
+    'Buses': ['Bus'],
+    'Mini-buses': ['Minibus Taxi']
+}
 
 # --- Hardware Optimizations ---
 OPTIMAL_BATCH_SIZE = 128

@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta, time
 import os
 from collections import OrderedDict
-from config import VEHICLE_ID_MAP, REPORT_OUTPUT_DIR, VALID_MOVEMENTS, BIDIRECTIONAL_REPORT_CATEGORIES
+from config import VEHICLE_ID_MAP, REPORT_OUTPUT_DIR, VALID_MOVEMENTS, BIDIRECTIONAL_REPORT_CATEGORIES, TIA_REPORT_CATEGORIES
 from core.utils import get_display_direction
 from loguru import logger
 
@@ -83,9 +83,8 @@ def _build_rsa_direction_map(primary_direction, active_directions, valid_movemen
     logger.debug(f"RSA Direction Map created with {len(rsa_movement_map)} entries: {rsa_movement_map}")
     return rsa_movement_map
 
-
 # --- Main Report Function ---
-def create_excel_report(completed_paths_data, start_datetime, primary_direction, video_path):
+def create_excel_report(completed_paths_data, start_datetime, primary_direction, video_path, ignore_timestamp_date=True, report_type='standard'):
     """
     Creates a multi-sheet Excel report: Vehicle Logs (1 row/path), Intervals (24hr),
     Directional Counts (multi-header), RSA Output.
@@ -97,6 +96,10 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
     print(f"Received {len(completed_paths_data)} completed path summaries.")
 
     all_valid_vehicle_types = list(VEHICLE_ID_MAP.keys())
+    if report_type.lower() == 'tia':
+        # Flatten the TIA_REPORT_CATEGORIES keys as the categories to display
+        all_valid_vehicle_types = list(TIA_REPORT_CATEGORIES.keys())
+
     if not all_valid_vehicle_types:
         print("ERROR: VEHICLE_ID_MAP in config appears empty.")
         return None
@@ -116,6 +119,12 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
 
             if is_valid_status and is_valid_entry_dir and is_valid_exit_dir and has_valid_times and v_id is not None:
                 v_type = path.get('type', 'UnkType')
+                if report_type.lower() == 'tia':
+                    original_type = v_type
+                    for new_cat, orig_types_list in TIA_REPORT_CATEGORIES.items():
+                        if original_type in orig_types_list:
+                            v_type = new_cat
+                            break
                 if v_type not in all_valid_vehicle_types: continue
                 valid_path_ids.add(v_id)
                 entry_dir_disp = get_display_direction(entry_dir); exit_dir_disp = get_display_direction(exit_dir)
@@ -147,15 +156,25 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
 
     # --- 3. Prepare DataFrames ---
     df_log_summary = pd.DataFrame(vehicle_log_summary_data); df_intervals = pd.DataFrame(intervals)
-    if not valid_paths_structured:
+    if not valid_paths_structured:      # df is empty
         df_moves = pd.DataFrame(columns=['vehicle_type', 'direction_from', 'direction_to', 'timestamp', 'TIME'])
     else:
         # Create display names needed for pivot table columns
         for path in valid_paths_structured:
             path['direction_from_disp'] = get_display_direction(path['direction_from'])
             path['direction_to_disp'] = get_display_direction(path['direction_to'])
-        df_moves = pd.DataFrame(valid_paths_structured); df_moves['timestamp'] = pd.to_datetime(df_moves['timestamp'])
-        time_cat = pd.CategoricalDtype(categories=interval_labels, ordered=True); df_moves['TIME'] = pd.cut(df_moves['timestamp'], bins=interval_bins, labels=interval_labels, right=False, ordered=True).astype(time_cat)
+        df_moves = pd.DataFrame(valid_paths_structured); 
+        df_moves['timestamp'] = pd.to_datetime(df_moves['timestamp'])
+        # Whether or not to filter paths based on timestamp date
+        if ignore_timestamp_date:
+            logger.debug("(Excel Report) `ignore_timestamp_date` is True. Normalizing all timestamps.")
+            report_day_start = datetime.combine(start_datetime.date(), time.min)
+            time_deltas = pd.to_timedelta(df_moves['timestamp'].dt.strftime('%H:%M:%S'))
+            df_moves['binned_timestamp'] = report_day_start + time_deltas
+            timestamp_column_for_binning = 'binned_timestamp'
+        else:
+            timestamp_column_for_binning = 'timestamp'
+        time_cat = pd.CategoricalDtype(categories=interval_labels, ordered=True); df_moves['TIME'] = pd.cut(df_moves[timestamp_column_for_binning], bins=interval_bins, labels=interval_labels, right=False, ordered=True).astype(time_cat)
         vehicle_cat = pd.CategoricalDtype(categories=all_valid_vehicle_types, ordered=False); df_moves['vehicle_type'] = df_moves['vehicle_type'].astype(vehicle_cat)
 
     # --- Create Excel File ---
@@ -163,9 +182,8 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
     try:
         output_report_dir = REPORT_OUTPUT_DIR
         os.makedirs(output_report_dir, exist_ok=True)
-        output_filename_base=f"detection_logs_{os.path.splitext(os.path.basename(video_path))[0]}"
+        output_filename_base=f"{'tia_report' if report_type.lower()=='tia' else 'standard_report'}_{os.path.splitext(os.path.basename(video_path))[0]}"
         excel_full_path = os.path.join(output_report_dir, f"{output_filename_base}.xlsx")
-
 
         with pd.ExcelWriter(excel_full_path, engine='xlsxwriter') as writer:
             workbook = writer.book
@@ -208,17 +226,25 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     pivot_df = pd.pivot_table(df_from, index='TIME', columns=['direction_to_disp', 'vehicle_type'], aggfunc='size', fill_value=0, observed=False, dropna=False)
                     all_dest_display = [get_display_direction(d) for d in possible_to_dirs_keys]
                     multi_cols = pd.MultiIndex.from_product([all_dest_display, all_valid_vehicle_types], names=['direction_to', 'vehicle_type'])
-                    pivot_df = pivot_df.reindex(columns=multi_cols, fill_value=0); pivot_df = pivot_df.reindex(interval_labels, fill_value=0)
+                    pivot_df = pivot_df.reindex(columns=multi_cols, fill_value=0)
+                    pivot_df = pivot_df.reindex(interval_labels, fill_value=0)
                     for to_dir_disp in all_dest_display:
-                        vehicle_cols_tuples = [(to_dir_disp, vtype) for vtype in all_valid_vehicle_types]; cols_to_sum = [col for col in vehicle_cols_tuples if col in pivot_df.columns]
-                        if cols_to_sum: pivot_df[(to_dir_disp, 'TOTAL')] = pivot_df[cols_to_sum].sum(axis=1)
-                        else: pivot_df[(to_dir_disp, 'TOTAL')] = 0
+                        vehicle_cols_tuples = [(to_dir_disp, vtype) for vtype in all_valid_vehicle_types]
+                        cols_to_sum = [col for col in vehicle_cols_tuples if col in pivot_df.columns]
+                        if cols_to_sum: 
+                            pivot_df[(to_dir_disp, 'TOTAL')] = pivot_df[cols_to_sum].sum(axis=1)
+                        else: 
+                            pivot_df[(to_dir_disp, 'TOTAL')] = 0
                     final_col_order = [];
                     for to_dir_disp in all_dest_display:
-                        for vtype in all_valid_vehicle_types: final_col_order.append((to_dir_disp, vtype)); final_col_order.append((to_dir_disp, 'TOTAL'))
-                    final_col_order = [col for col in final_col_order if col in pivot_df.columns];
+                        for vtype in all_valid_vehicle_types: 
+                            final_col_order.append((to_dir_disp, vtype))
+                        final_col_order.append((to_dir_disp, 'TOTAL'))
+                    final_col_order = [col for col in final_col_order if col in pivot_df.columns]
                     if not final_col_order: continue
-                    df_sheet = pivot_df[final_col_order].copy(); df_sheet.index.name = 'TIME'; df_sheet.reset_index(inplace=True)
+                    df_sheet = pivot_df[final_col_order].copy()
+                    df_sheet.index.name = 'TIME'
+                    df_sheet.reset_index(inplace=True)
 
                     # Write Headers Manually
                     num_vehicle_types = len(all_valid_vehicle_types); cols_per_dest = num_vehicle_types + 1; last_data_col_index = 0
@@ -300,7 +326,7 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
 
     return excel_created_path
 
-def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction, video_duration_formatted="24 hours", station_number_str=""):
+def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction, video_duration_formatted="24 hours", station_number_str="",ignore_timestamp_date=True):
     """
     Creates a separate Excel report for bi-directional link counts based on user-selected "To" directions.
     The report includes individual and cumulative counts for specific vehicle categories over a 24-hour period.
@@ -368,13 +394,24 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
 
     # --- 4. Create DataFrame with Time Bins and Pivot for Individual Counts ---
     if not df_processed.empty:
-        # Bin timestamps into 15-minute intervals using the generated labels
-        # We use the start times (time_bin_labels_24hr) as the labels for the bins
+        df_processed['timestamp'] = pd.to_datetime(df_processed['timestamp'])
+
+        # Whether or not to filter paths based on timestamp date
+        if ignore_timestamp_date:
+            logger.debug("(Bi-directional) `ignore_timestamp_date` is True. Normalizing all timestamps.")
+            report_day_start = datetime.combine(start_datetime_video.date(), time.min)
+            time_deltas = pd.to_timedelta(df_processed['timestamp'].dt.strftime('%H:%M:%S'))
+            df_processed['binned_timestamp'] = report_day_start + time_deltas
+            timestamp_column_for_binning = 'binned_timestamp'
+        else:
+            timestamp_column_for_binning = 'timestamp'
+
+        # Bin timestamps into 15-minute intervals using the chosen column
         df_processed['Time Bin Start'] = pd.cut(
-            df_processed['timestamp'],
+            df_processed[timestamp_column_for_binning], # Use the normalized timestamp
             bins=time_bins_24hr,
-            labels=time_bin_labels_24hr, # Use the H:MM labels
-            right=False, # [start, end) interval
+            labels=time_bin_labels_24hr,
+            right=False,
             ordered=True
         )
         

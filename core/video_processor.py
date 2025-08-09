@@ -23,17 +23,16 @@ profile = builtins.profile
 from config import (
     TARGET_FPS, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH_VIZ, FRAME_HEIGHT_VIZ,
     VIDEO_OUTPUT_DIR, ENABLE_DETAILED_PERFORMANCE_METRICS, OPTIMAL_BATCH_SIZE,
-    MIXED_PRECISION, PARALLEL_STREAMS, THREAD_COUNT, IOU_THRESHOLD, TTA,
+    MIXED_PRECISION, PARALLEL_STREAMS, IOU_THRESHOLD, TTA,
     MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
     LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
     PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS, BYTETRACK_MATCH_THRESH,
-    BYTETRACK_MIN_CONF, BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH
+    BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH
 )
 from core.utils import is_valid_movement, cleanup_memory
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
 from tracking.zone_tracker import ZoneTracker
-from tracking.cleanup import cleanup_tracking_data
 from visualization import overlay as visual_overlay
 from reporting.excel_report import create_excel_report, create_bidirectional_link_count_report
 from core.converters import convert_dav_to_mp4_internal
@@ -431,7 +430,16 @@ class VideoProcessor:
             completed_paths_data=self.finalized_paths_for_report,
             start_datetime=init_data["start_datetime"],
             primary_direction=init_data["primary_direction"],
-            video_path=init_data["video_paths"][0]
+            video_path=init_data["video_paths"][0],
+            report_type='standard'
+        )
+
+        excel_tia_path = create_excel_report(
+            completed_paths_data=self.finalized_paths_for_report,
+            start_datetime=init_data["start_datetime"],
+            primary_direction=init_data["primary_direction"],
+            video_path=init_data["video_paths"][0],
+            report_type='tia'
         )
         
         excel_link_count_path = None
@@ -456,7 +464,8 @@ class VideoProcessor:
         results_dict = {
             "video_path": self.final_output_path,
             "excel_path": excel_path,
-            "bidirectional_excel_path": excel_link_count_path
+            "bidirectional_excel_path": excel_link_count_path,
+            "tia_excel_path": excel_tia_path
         }
         stats_dict = {
             "total_valid_paths": completed_paths,
@@ -514,7 +523,7 @@ class VideoProcessor:
             if progress_queue: progress_queue.put_nowait({"progress": 5, "status": "Processing..."})
             frames_processed = self._main_processing_loop(init_data, progress_queue)
             
-            # REFACTOR: Wait for the post-processor to finish its queue before finalizing
+            # Wait for the post-processor to finish its queue before finalizing
             logger.info("Inference complete. Waiting for post-processing to finish...")
             if self.postprocessor_thread and self.postprocessor_thread.is_alive():
                 self.postprocessor_thread.join()
@@ -576,10 +585,6 @@ class VideoProcessor:
                 if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0:
                     # Convert YOLO detections to supervision format [x1, y1, x2, y2, score, class_id]
                     detections_np = yolo_result.boxes.data.cpu().numpy()
-                    # print(detections_np)
-                    # print(yolo_result.boxes)
-                    # print(yolo_result.probs)
-                    # input()
                     if detections_np.shape[1] >= 6:  # [x1, y1, x2, y2, conf, cls]
                         # Reorder to supervision format: [x1, y1, x2, y2, score, class_id]
                         supervision_detections = np.column_stack([

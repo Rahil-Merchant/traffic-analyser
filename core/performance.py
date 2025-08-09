@@ -42,7 +42,7 @@ class PerformanceTracker:
             try:
                 self._gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             except Exception as e:
-                logger.warn(f"Failed to get NVML handle: {e}")
+                logger.info(f"Failed to get NVML handle: {e}")
                 self._gpu_handle = None
 
         # CPU Metrics
@@ -108,7 +108,7 @@ class PerformanceTracker:
             duration_ms = start_event.elapsed_time(end_event)
             self.timings['inference'] += duration_ms / 1000.0
         except Exception as e:
-            logger.warn(f"Error recording GPU inference time: {e}")
+            logger.info(f"Error recording GPU inference time: {e}")
 
     # --- Metric Recording ---
     def record_batch_processed(self, batch_size, batch_time):
@@ -165,7 +165,7 @@ class PerformanceTracker:
                      gpu_util = util_rates.gpu
                  self.gpu_metrics['utilization'].append(gpu_util)
             except Exception as e:
-                 logger.warn(f"Error sampling GPU metrics: {e}")
+                 logger.info(f"Error sampling GPU metrics: {e}")
                  # Append 0 to maintain list lengths if error
                  self.gpu_metrics['memory_allocated'].append(0)
                  self.gpu_metrics['memory_reserved'].append(0)
@@ -178,7 +178,7 @@ class PerformanceTracker:
             self.cpu_metrics['memory_percent'].append(mem_info.percent)
             self.system_metrics['ram_usage_gb'].append(mem_info.used / 1e9)
         except Exception as e:
-            logger.warn(f"Error sampling CPU/RAM metrics: {e}")
+            logger.info(f"Error sampling CPU/RAM metrics: {e}")
             self.cpu_metrics['utilization'].append(0)
             self.cpu_metrics['memory_percent'].append(0)
             self.system_metrics['ram_usage_gb'].append(0)
@@ -297,5 +297,5 @@ class PerformanceTracker:
     def __del__(self):
         try: pynvml.nvmlShutdown()
         except Exception as e:
-            logger.warn(f"Error while shutting pynvml: {e}") 
+            logger.info(f"Error while shutting pynvml: {e}") 
             pass # Ignore shutdown errors

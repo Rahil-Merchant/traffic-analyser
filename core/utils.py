@@ -92,7 +92,7 @@ def setup_thread_affinity(perf_cores=8):
                 p.cpu_affinity(p_core_indices)
                 logger.debug(f"Set main process affinity to P-cores: {p_core_indices}")
     except Exception as e:
-        logger.warn(f"Failed to set thread affinity: {e}")
+        logger.info(f"Failed to set thread affinity: {e}")
 
 def cleanup_memory():
     """Explicitly run garbage collection and clear CUDA cache."""
