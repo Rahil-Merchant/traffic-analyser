@@ -20,10 +20,13 @@ def load_model(model_path, device, conf_threshold, iou_threshold):
             logger.debug("Detected .pt file, using standard PyTorch loading.")
             model = YOLO(model_path)
             model.to(device)
-            model.conf = conf_threshold
-            model.iou = iou_threshold
+            # Allow conf and iou to be None for patch-based inference
+            if conf_threshold is not None:
+                model.conf = conf_threshold
+            if iou_threshold is not None:
+                model.iou = iou_threshold
             model.verbose = False
-            logger.debug(f".pt Model loaded. conf={model.conf}, iou={model.iou}")
+            logger.debug(f".pt Model loaded. conf={getattr(model, 'conf', 'N/A')}, iou={getattr(model, 'iou', 'N/A')}")
 
             # Warm-up for PyTorch models on CUDA
             if device == 'cuda':

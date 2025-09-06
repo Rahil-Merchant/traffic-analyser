@@ -25,6 +25,23 @@ IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 640 # Keep smaller size for performance
 TTA = True # Enables test-time augmentation (TTA) for predictions
 
+# --- INFERENCE MODE SWITCH ---
+USE_PATCHWISE_INFERENCE = True # Set to True to use patch-based, False for standard
+
+# --- PATCHWISE (SAHI-like) INFERENCE CONFIGURATION ---
+# This is only used if USE_PATCHWISE_INFERENCE is True
+PATCHWISE_INFERENCE_CONFIG = {
+    'model_input_size': 640,
+    'crop_width': 640,
+    'crop_height': 640,
+    'overlap_x': 15,  # Percentage
+    'overlap_y': 15,  # Percentage
+    'base_model_conf': 0.08, # Confidence for individual crops
+    'postprocess_iou_thresh': 0.8, # IOU for patch-level inference
+    'nms_thresh': 0.8, # NMS threshold for combining detections
+    'match_metric': 'IOS' # 'IOU' or 'IOS' for merging
+}
+
 # --- Tracking Configuration --- 
 BYTETRACK_MIN_CONF = 0.05    # Minimum detection confidence for ByteTrack to consider
 BYTETRACK_TRACK_THRESH = 0.15   # Detection confidence threshold for high-confidence matching

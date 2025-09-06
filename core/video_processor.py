@@ -27,8 +27,10 @@ from config import (
     MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
     LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
     PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS, BYTETRACK_MATCH_THRESH,
-    BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH
+    BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH,
+    USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG
 )
+from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
@@ -50,6 +52,8 @@ class VideoProcessor:
         self.batch_size = OPTIMAL_BATCH_SIZE
         self.num_inference_streams = max(1, NUM_INFERENCE_STREAMS)
         self.pvr_decode_segment_size = PYVIDEOREADER_DECODE_SEGMENT_SIZE
+        self.use_patchwise_inference = USE_PATCHWISE_INFERENCE
+        self.patchwise_detector = None
 
         self.device = get_device()
         self.processing_lock = threading.Lock()
@@ -112,11 +116,12 @@ class VideoProcessor:
         self.stop_event = threading.Event()
         self.last_cleanup_time = time.monotonic()
         
-        # REFACTOR: Initialize all queues. Sizes are tuned to prevent any stage from blocking another.
+        # Initialize all queues. Sizes are tuned to prevent any stage from blocking another.
         max_queue_size = max(self.batch_size * 4, 128)
         self.raw_frame_queue = queue.Queue(maxsize=max_queue_size)
-        self.preprocessed_tensor_queue = queue.Queue(maxsize=8) # Small queue, tensors are large
         self.results_queue = queue.Queue(maxsize=max_queue_size)
+        if not self.use_patchwise_inference:
+            self.preprocessed_tensor_queue = queue.Queue(maxsize=8)
         
         if self.device == 'cuda' and PARALLEL_STREAMS > 1:
             self.streams = [torch.cuda.Stream() for _ in range(PARALLEL_STREAMS)]
@@ -150,13 +155,22 @@ class VideoProcessor:
         if not self.zone_tracker or not self.zone_tracker.zones:
             raise RuntimeError("CRITICAL: ZoneTracker failed to initialize with valid zones.")
 
-        logger.info(f"Loading {self.num_inference_streams} model instance(s)...")
-        for i in range(self.num_inference_streams):
-            model_instance = load_model(str(MODEL_PATH), self.device, CONF_THRESHOLD, IOU_THRESHOLD)
+        # --- MODEL LOADING LOGIC ---
+        if self.use_patchwise_inference:
+            logger.info("Patchwise inference enabled. Loading one model instance.")
+            # For patchwise, conf/iou are handled internally, so pass None
+            model_instance = load_model(str(MODEL_PATH), self.device, None, None)
             if not self.class_id_to_name_map:
                 self.class_id_to_name_map = model_instance.names
-            self.models_list.append(model_instance)
-            logger.debug(f"Loaded model instance {i+1}/{self.num_inference_streams}.")
+            self.patchwise_detector = PatchwiseDetector(model_instance, PATCHWISE_INFERENCE_CONFIG)
+        else:
+            logger.info(f"Standard inference enabled. Loading {self.num_inference_streams} model instance(s)...")
+            for i in range(self.num_inference_streams):
+                model_instance = load_model(str(MODEL_PATH), self.device, CONF_THRESHOLD, IOU_THRESHOLD)
+                if not self.class_id_to_name_map:
+                    self.class_id_to_name_map = model_instance.names
+                self.models_list.append(model_instance)
+                logger.debug(f"Loaded model instance {i+1}/{self.num_inference_streams}.")
 
         try:
             time_part, ms_part = (start_time_str[:6], start_time_str[6:]) if len(start_time_str) > 6 else (start_time_str, "0")
@@ -181,9 +195,10 @@ class VideoProcessor:
         self.reader_thread = threading.Thread(target=self._frame_reader_task_pvr_segmented, args=reader_args, daemon=True)
         self.reader_thread.start()
 
-        # 2. Preprocessor Thread
-        self.preprocessor_thread = threading.Thread(target=self._preprocessor_task, daemon=True)
-        self.preprocessor_thread.start()
+        # 2. Preprocessor Thread (only for standard inference)
+        if not self.use_patchwise_inference:
+            self.preprocessor_thread = threading.Thread(target=self._preprocessor_task, daemon=True)
+            self.preprocessor_thread.start()
 
         # 3. Post-processor Thread
         postprocessor_args = (start_dt,)
@@ -314,9 +329,84 @@ class VideoProcessor:
             frame_times.append(frame_time_s)
         
         return frames_metadata, frame_numbers, frame_times
-
+    
     @profile
     def _main_processing_loop(self, init_data, progress_queue):
+        # This method now acts as a router to the correct inference loop
+        if self.use_patchwise_inference:
+            return self._main_processing_loop_patchwise(init_data, progress_queue)
+        else:
+            return self._main_processing_loop_standard(init_data, progress_queue)
+        
+    @profile
+    def _main_processing_loop_patchwise(self, init_data, progress_queue):
+        logger.info("Starting main processing loop (Inference Worker)...")
+        frames_processed_count = 0
+        last_prog_print_time = time.monotonic()
+        
+        while not self.stop_event.is_set():
+            try:
+                # 1. Get a batch of RAW frames from the reader queue
+                batch_data = self._get_batch_from_queue(self.raw_frame_queue)
+                if batch_data is None:
+                    break
+
+                frames_metadata, frame_numbers, frame_times = batch_data
+                actual_batch_size = len(frames_metadata)
+                yolo_results_batch = []
+
+                # 2. Run patchwise inference frame by frame (batching is internal to each frame)
+                batch_proc_start_time = time.monotonic()
+                if self.perf: self.perf.start_timer('inference')
+                
+                for frame_content, _ in frames_metadata:
+                    # The process_frame method handles everything: slicing, batching patches, inference, and NMS
+                    result = self.patchwise_detector.process_frame(frame_content)
+                    yolo_results_batch.append(result)
+
+                if self.perf: self.perf.end_timer('inference')
+
+                # 3. Put results into the queue for the post-processor
+                self.results_queue.put((yolo_results_batch, frames_metadata, frame_numbers, frame_times))
+                
+                # Performance and progress reporting
+                if self.perf:
+                    duration = time.monotonic() - batch_proc_start_time
+                    self.perf.record_batch_processed(actual_batch_size, duration)
+                    self.perf.record_detection(sum(len(r.boxes) for r in yolo_results_batch if r and r.boxes))
+                    self.perf.sample_system_metrics()
+                
+                frames_processed_count += actual_batch_size
+                if time.monotonic() - last_prog_print_time > 5.0:
+                    prog_stats = self.perf.get_progress()
+                    if progress_queue:
+                        progress_queue.put_nowait({"progress": round(prog_stats.get('percent', 0)), "status": f"{prog_stats['fps']:.1f} FPS", "eta": str(prog_stats.get('eta', '...'))})
+                    logger.debug(f"Progress: {prog_stats['percent']:.1f}% | FPS: {prog_stats['fps']:.1f} | ETA: {prog_stats['eta']}")
+                    print(f"\rProgress: {prog_stats['percent']:.1f}% | FPS: {prog_stats['fps']:.1f} | ETA: {prog_stats['eta']}      ", end="")
+                    last_prog_print_time = time.monotonic()
+
+                # Memory cleanup can stay here
+                if time.monotonic() - self.last_cleanup_time > MEMORY_CLEANUP_INTERVAL:
+                    if self.perf: self.perf.start_timer('memory_cleanup')
+                    # Note: cleanup_tracking_data is now implicitly handled by the post-processor
+                    cleanup_memory()
+                    self.last_cleanup_time = time.monotonic()
+                    if self.perf: self.perf.end_timer('memory_cleanup')
+
+            except queue.Empty:
+                logger.warning("Preprocessor queue empty for 60s. Assuming processing is complete.")
+                break
+            except Exception as e:
+                logger.exception("Fatal error in main processing loop.")
+                self.stop_event.set()
+                break
+        
+        self.results_queue.put(None) # Pass sentinel to post-processor
+        print()
+        return frames_processed_count
+
+    @profile
+    def _main_processing_loop_standard(self, init_data, progress_queue):
         logger.info("Starting main processing loop (Inference Worker)...")
         frames_processed_count = 0
         last_prog_print_time = time.monotonic()
@@ -756,7 +846,7 @@ class VideoProcessor:
             return results
         else: 
             with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
-                results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE)
+                results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA)
             return results
 
     def _format_duration(self, seconds):
@@ -794,7 +884,10 @@ class VideoProcessor:
     @profile
     def _frame_reader_task_pvr_segmented(self, video_paths, original_fps):
         try:
-            target_dim = self.model_input_size_config
+            # If using patchwise, we read frames without resizing.
+            # If standard, we resize to model input size.
+            resize_dim = self.model_input_size_config
+            
             cumulative_frames_offset = 0
 
             for video_path in video_paths:
@@ -805,7 +898,7 @@ class VideoProcessor:
                 current_video_frames = int(current_video_info.get('frame_count', 0))
                 if current_video_frames == 0: continue
                 
-                pvr = PyVideoReader(str(video_path), device='cuda', resize_shorter_side=target_dim, resize_longer_side=target_dim)
+                pvr = PyVideoReader(str(video_path), device='cuda', resize_shorter_side=resize_dim, resize_longer_side=resize_dim)
                 frame_interval = max(1, round(original_fps / self.target_fps))
                 
                 num_segments = math.ceil(current_video_frames / self.pvr_decode_segment_size)
