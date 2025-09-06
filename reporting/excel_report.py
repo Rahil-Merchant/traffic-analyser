@@ -269,6 +269,16 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                              try: value = df_sheet.loc[row_idx, col_tuple]; worksheet.write(start_row + row_idx, col_idx + 1, int(value))
                              except KeyError: worksheet.write(start_row + row_idx, col_idx + 1, 0)
                              except (ValueError, TypeError): worksheet.write(start_row + row_idx, col_idx + 1, 0)
+                    
+                    # Add total row at the end
+                    total_row = start_row + len(df_sheet)
+                    worksheet.write(total_row, 0, "TOTAL", header_format_sub)
+                    for col_idx, col_tuple in enumerate(header_col_tuples_written):
+                        try:
+                            sum_value = df_sheet[col_tuple].sum()
+                            worksheet.write(total_row, col_idx + 1, int(sum_value), data_format)
+                        except (KeyError, ValueError, TypeError):
+                            worksheet.write(total_row, col_idx + 1, 0, data_format)
 
                     # Apply Formatting
                     worksheet.set_column(0, 0, 18, time_col_format)

@@ -126,9 +126,9 @@ BIDIRECTIONAL_REPORT_CATEGORIES = {
 }
 TIA_REPORT_CATEGORIES = {
     'Light': ['Light Vehicle'],
+    'Mini-buses': ['Minibus Taxi'],
     'Trucks': ['Short Truck','Medium Truck','Long Truck'],
-    'Buses': ['Bus'],
-    'Mini-buses': ['Minibus Taxi']
+    'Buses': ['Bus']
 }
 
 # --- Hardware Optimizations ---
