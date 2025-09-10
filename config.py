@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-ENABLE_VISUALIZATION = False #--------------------------------------------------------
+ENABLE_VISUALIZATION = False
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -12,13 +12,13 @@ DEFAULT_PRIMARY_DIRECTION = 'south'
 
 # --- Core Settings ---
 TARGET_FPS = 20
-BASE_OUTPUT_DIR = r"C:\Users\swest\Documents\AI_output_videos"
+BASE_OUTPUT_DIR = r"C:\Users\EMAAN\Documents\AI_output_videos"
 VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\20072025\few_anchowy_win_fp16.engine"
-DATA_YAML_PATH = r""
+MODEL_PATH = r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\few_anchowy.engine"
+DATA_YAML_PATH = r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\silent_contract.yaml"
 NUM_INFERENCE_STREAMS = 1
 CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
@@ -50,10 +50,11 @@ BYTETRACK_MATCH_THRESH = 0.75    # IoU threshold for matching detections to trac
 BYTETRACK_TRACK_BUFFER_SECONDS = 25 # Seconds to keep a track alive if unmatched after it has stopped being associated with any new detections
 
 
+
 # #*############## Video 1 #################
 # # --- Input Settings (primarily for hardcoded mode) ---
-INPUT_VIDEO_PATH = [r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 minute test - 4 Way Intersection.mp4"]
-
+INPUT_VIDEO_PATH = [r"C:\Users\EMAAN\Documents\YOLO\5 minute test - 4 Way Intersection.mp4"]
+# INPUT_VIDEO_PATH = [r"C:\Users\EMAAN\Desktop\M1 - NORTH\M1 19710 6-8.mp4"]
 # --- Line & Zone Definitions ---
 LINE_POINTS = {
     'north': [(282, 339), 
@@ -161,12 +162,12 @@ else:
     OPTIMAL_BATCH_SIZE = 16
     
 OPTIMAL_BATCH_SIZE = 64
-PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7600
+PYVIDEOREADER_DECODE_SEGMENT_SIZE = 3200
 
 _cpu_count = os.cpu_count()
 THREAD_COUNT = min(64, _cpu_count * 2)
 MIXED_PRECISION = True
-PARALLEL_STREAMS = 32
+PARALLEL_STREAMS = 8
 
 # Timeout durations - In seconds
 VEHICLE_TIMEOUTS = {

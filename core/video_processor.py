@@ -9,7 +9,7 @@ import queue
 import gc
 import math
 import yaml
-from supervision_modified import ByteTrack
+from supervision_modified.tracker.byte_tracker.core import ByteTrack
 from datetime import datetime, timedelta
 import concurrent.futures
 from loguru import logger
