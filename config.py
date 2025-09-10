@@ -24,27 +24,28 @@ CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker dete
 IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 640 # Keep smaller size for performance
 TTA = True # Enables test-time augmentation (TTA) for predictions
+CROP_MODE = 'stretch'     # letterbox or stretch
 
 # --- INFERENCE MODE SWITCH ---
-USE_PATCHWISE_INFERENCE = True # Set to True to use patch-based, False for standard
-
+USE_PATCHWISE_INFERENCE = False # Set to True to use patch-based, False for standard
+PATCHWISE_USE_BATCH_PROCESSING = True
 # --- PATCHWISE (SAHI-like) INFERENCE CONFIGURATION ---
 # This is only used if USE_PATCHWISE_INFERENCE is True
 PATCHWISE_INFERENCE_CONFIG = {
-    'model_input_size': 640,
-    'crop_width': 640,
-    'crop_height': 640,
-    'overlap_x': 15,  # Percentage
-    'overlap_y': 15,  # Percentage
-    'base_model_conf': 0.08, # Confidence for individual crops
-    'postprocess_iou_thresh': 0.8, # IOU for patch-level inference
-    'nms_thresh': 0.8, # NMS threshold for combining detections
+    'model_input_size': 416,
+    'crop_width': 416,
+    'crop_height': 416,
+    'overlap_x': 10,  # Percentage
+    'overlap_y': 10,  # Percentage
+    'base_model_conf': 0.15, # Confidence for individual crops
+    'postprocess_iou_thresh': 0.75, # IOU for patch-level inference
+    'nms_thresh': 0.75, # NMS threshold for combining detections
     'match_metric': 'IOS' # 'IOU' or 'IOS' for merging
 }
 
 # --- Tracking Configuration --- 
 BYTETRACK_MIN_CONF = 0.05    # Minimum detection confidence for ByteTrack to consider
-BYTETRACK_TRACK_THRESH = 0.15   # Detection confidence threshold for high-confidence matching
+BYTETRACK_TRACK_THRESH = 0.22   # Detection confidence threshold for high-confidence matching
 BYTETRACK_MATCH_THRESH = 0.75    # IoU threshold for matching detections to tracks
 BYTETRACK_TRACK_BUFFER_SECONDS = 25 # Seconds to keep a track alive if unmatched after it has stopped being associated with any new detections
 
