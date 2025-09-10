@@ -27,8 +27,8 @@ from config import (
     MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
     LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
     PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS, BYTETRACK_MATCH_THRESH,
-    BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH,
-    USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG
+    BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH, CROP_MODE,
+    USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG, PATCHWISE_USE_BATCH_PROCESSING
 )
 from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory
@@ -78,13 +78,13 @@ class VideoProcessor:
         self.perf = None
         self.stop_event = None
         
-        # REFACTOR: Define all threads
+        # Define all threads
         self.reader_thread = None
         self.preprocessor_thread = None
         self.postprocessor_thread = None
         self.writer_thread = None
         
-        # REFACTOR: Define all queues for the new pipeline
+        # Define all queues for the new pipeline
         self.raw_frame_queue = None
         self.preprocessed_tensor_queue = None
         self.results_queue = None
@@ -187,7 +187,7 @@ class VideoProcessor:
         video_duration_seconds = total_frames / original_fps if original_fps > 0 else 0
         logger.info(f"Video Properties: ~{total_frames} frames, {original_fps:.2f} FPS (Original), Duration: {self._format_duration(video_duration_seconds)}")
 
-        # REFACTOR: Start all pipeline threads
+        # Start all pipeline threads
         logger.info("Starting all pipeline threads...")
         
         # 1. Reader Thread
@@ -346,27 +346,30 @@ class VideoProcessor:
         
         while not self.stop_event.is_set():
             try:
-                # 1. Get a batch of RAW frames from the reader queue
                 batch_data = self._get_batch_from_queue(self.raw_frame_queue)
                 if batch_data is None:
                     break
 
                 frames_metadata, frame_numbers, frame_times = batch_data
-                actual_batch_size = len(frames_metadata)
-                yolo_results_batch = []
-
-                # 2. Run patchwise inference frame by frame (batching is internal to each frame)
+                frames_bgr_list = [fm[0] for fm in frames_metadata]
+                actual_batch_size = len(frames_bgr_list)
                 batch_proc_start_time = time.monotonic()
-                if self.perf: self.perf.start_timer('inference')
-                
-                for frame_content, _ in frames_metadata:
-                    # The process_frame method handles everything: slicing, batching patches, inference, and NMS
-                    result = self.patchwise_detector.process_frame(frame_content)
-                    yolo_results_batch.append(result)
 
+                if self.perf: self.perf.start_timer('inference')
+
+                # --- LOGIC TO CHOOSE PROCESSING METHOD ---
+                if PATCHWISE_USE_BATCH_PROCESSING:
+                    # High-throughput mode
+                    yolo_results_batch = self.patchwise_detector.process_batch(frames_bgr_list)
+                else:
+                    # Low-latency mode: process each frame in the batch individually
+                    yolo_results_batch = []
+                    for frame in frames_bgr_list:
+                        result = self.patchwise_detector.process_frame(frame)
+                        yolo_results_batch.append(result)
+                
                 if self.perf: self.perf.end_timer('inference')
 
-                # 3. Put results into the queue for the post-processor
                 self.results_queue.put((yolo_results_batch, frames_metadata, frame_numbers, frame_times))
                 
                 # Performance and progress reporting
@@ -570,7 +573,7 @@ class VideoProcessor:
         logger.info("Cleaning up resources...")
         if self.stop_event: self.stop_event.set()
         
-        # REFACTOR: Wait for all threads to finish
+        # Wait for all threads to finish
         if self.reader_thread and self.reader_thread.is_alive(): self.reader_thread.join(timeout=10)
         if self.preprocessor_thread and self.preprocessor_thread.is_alive(): self.preprocessor_thread.join(timeout=10)
         if self.postprocessor_thread and self.postprocessor_thread.is_alive(): self.postprocessor_thread.join(timeout=10)
@@ -641,7 +644,6 @@ class VideoProcessor:
     @torch.no_grad()
     @profile
     def _preprocess_batch(self, frames_batch_with_metadata):
-        # This function remains the same, but is now called from its own thread
         if not frames_batch_with_metadata:
             return None
 
@@ -652,15 +654,50 @@ class VideoProcessor:
             return None
         
         count = len(valid_frames)
-        batch_np = np.zeros((count, 3, target_dim, target_dim), dtype=np.uint8)
+        # Pre-allocate the batch array. Using uint8 is memory efficient.
+        # The gray color (114) is a standard padding value for YOLO models.
+        batch_np = np.full((count, 3, target_dim, target_dim), 114, dtype=np.uint8)
 
         for i, frame_np in enumerate(valid_frames):
-            if frame_np.shape[0] != target_dim or frame_np.shape[1] != target_dim:
-                frame_np = cv2.resize(frame_np, (target_dim, target_dim), interpolation=cv2.INTER_LINEAR)
+            # --- CONDITIONAL RESIZING LOGIC BASED ON CROP_MODE ---
+            
+            if CROP_MODE == 'letterbox':
+                # Letterboxing: Preserves aspect ratio with padding
+                original_shape = frame_np.shape[:2]  # (height, width)
+                
+                ratio = min(target_dim / original_shape[0], target_dim / original_shape[1])
+                new_unpad_shape = (int(round(original_shape[1] * ratio)), int(round(original_shape[0] * ratio)))
+                
+                dw, dh = (target_dim - new_unpad_shape[0]) / 2, (target_dim - new_unpad_shape[1]) / 2
+                top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+                left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+                
+                if original_shape[::-1] != new_unpad_shape:
+                    frame_np = cv2.resize(frame_np, new_unpad_shape, interpolation=cv2.INTER_LINEAR)
+                
+                frame_np = cv2.copyMakeBorder(frame_np, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+
+            elif CROP_MODE == 'stretch':
+                # Stretching: Distorts aspect ratio to fit the target dimensions
+                if frame_np.shape[0] != target_dim or frame_np.shape[1] != target_dim:
+                    frame_np = cv2.resize(frame_np, (target_dim, target_dim), interpolation=cv2.INTER_LINEAR)
+            
+            else:
+                raise ValueError(f"Invalid CROP_MODE '{CROP_MODE}'. Must be 'letterbox' or 'stretch'.")
+            
+            # --- END OF CONDITIONAL LOGIC ---
+
+            # Transpose from HWC (Height, Width, Channels) to CHW (Channels, Height, Width)
+            # and place it in the pre-allocated batch array.
             batch_np[i] = frame_np.transpose(2, 0, 1)
 
+        # Convert the entire batch from a NumPy array to a PyTorch tensor
         batch_tensor = torch.from_numpy(batch_np).to(self.device, non_blocking=True)
+        
+        # Determine the final data type (float16 for mixed precision on CUDA, else float32)
         dtype_final = torch.float16 if (MIXED_PRECISION and self.device == 'cuda') else torch.float32
+        
+        # Convert to the final float type and normalize pixel values from [0, 255] to [0.0, 1.0]
         return batch_tensor.to(dtype_final) / 255.0
 
     @torch.no_grad()
@@ -841,12 +878,12 @@ class VideoProcessor:
         if stream_to_use and self.device == 'cuda':
             with torch.cuda.stream(stream_to_use):
                 with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
-                    results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA)
+                    results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA, half=True)
             stream_to_use.synchronize()
             return results
         else: 
             with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
-                results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA)
+                results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA, half=True)
             return results
 
     def _format_duration(self, seconds):
