@@ -437,11 +437,25 @@ class VideoProcessor:
                     for i in range(self.num_inference_streams):
                         start_idx = i * self.batch_size
                         end_idx = min((i + 1) * self.batch_size, actual_batch_size)
-                        if start_idx >= end_idx: continue
+                        if start_idx >= end_idx:
+                            continue
 
                         chunk = input_batch_tensor[start_idx:end_idx]
+
+                        # Pad if chunk is smaller than batch_size
+                        if chunk.shape[0] < OPTIMAL_BATCH_SIZE:
+                            pad_size = OPTIMAL_BATCH_SIZE - chunk.shape[0]
+                            pad_tensor = torch.zeros((pad_size, *chunk.shape[1:]), dtype=chunk.dtype, device=chunk.device)
+                            chunk = torch.cat([chunk, pad_tensor], dim=0)
+
                         stream = self.streams[i % len(self.streams)] if self.streams else None
-                        future = executor.submit(self._execute_single_model_inference, self.models_list[i], chunk, stream)
+                        future = executor.submit(
+                            self._execute_single_model_inference,
+                            self.models_list[i],
+                            chunk,
+                            stream
+                        )
+
                         futures_map[future] = list(range(start_idx, end_idx))
                     
                     for future in concurrent.futures.as_completed(futures_map):
