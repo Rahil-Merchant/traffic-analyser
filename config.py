@@ -17,14 +17,14 @@ VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-MODEL_PATH = r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\few_anchowy.engine"
-DATA_YAML_PATH = r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\silent_contract.yaml"
+MODEL_PATH = r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\premier_station.engine"
+DATA_YAML_PATH = r""
 NUM_INFERENCE_STREAMS = 1
 CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 640 # Keep smaller size for performance
 TTA = True # Enables test-time augmentation (TTA) for predictions
-CROP_MODE = 'stretch'     # letterbox or stretch
+CROP_MODE = 'letterbox'     # letterbox or stretch
 
 # --- INFERENCE MODE SWITCH ---
 USE_PATCHWISE_INFERENCE = False # Set to True to use patch-based, False for standard
@@ -161,7 +161,7 @@ elif MODEL_INPUT_SIZE<=960:
 else:
     OPTIMAL_BATCH_SIZE = 16
     
-OPTIMAL_BATCH_SIZE = 64
+OPTIMAL_BATCH_SIZE = 32
 PYVIDEOREADER_DECODE_SEGMENT_SIZE = 3200
 
 _cpu_count = os.cpu_count()
@@ -189,7 +189,7 @@ DEBUG_MODE = False # Keep False for performance runs
 PERFORMANCE_SAMPLE_INTERVAL = 15.0   # In seconds
 MEMORY_CLEANUP_INTERVAL = 300   # In seconds
 
-SERVER_PORT = 8080
+SERVER_PORT = 7862
 
 # --- Print Confirmation ---
 print(f"--- Configuration Loaded (Tuned for Exit Accuracy) ---")

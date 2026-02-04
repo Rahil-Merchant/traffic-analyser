@@ -1,11 +1,11 @@
 from ultralytics import YOLO
 
-MODEL_PATH = r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\20072025\few_anchowy_win_fp16_sz416_bs256.pt"
-MODEL_INPUT_SIZE = 416
+MODEL_PATH = r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\premier_station.pt"
+MODEL_INPUT_SIZE = 640
 EXPORT_FP16 = True
 EXPORT_INT8 = {'export':False,'yaml_path':r'C:\Users\swest\Desktop\traffic-capturing\training\datasets\relabelled12072025\data.yaml'}
 dynamic = True
-bs = 128
+bs = 32
 
 model = YOLO(MODEL_PATH)
 model.export(

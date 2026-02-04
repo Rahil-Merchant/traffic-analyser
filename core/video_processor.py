@@ -12,6 +12,7 @@ import yaml
 from supervision_modified.tracker.byte_tracker.core import ByteTrack
 from datetime import datetime, timedelta
 import concurrent.futures
+from ultralytics.data.augment import LetterBox
 from loguru import logger
 import builtins
 if not hasattr(builtins, "profile"):
@@ -677,19 +678,8 @@ class VideoProcessor:
             
             if CROP_MODE == 'letterbox':
                 # Letterboxing: Preserves aspect ratio with padding
-                original_shape = frame_np.shape[:2]  # (height, width)
-                
-                ratio = min(target_dim / original_shape[0], target_dim / original_shape[1])
-                new_unpad_shape = (int(round(original_shape[1] * ratio)), int(round(original_shape[0] * ratio)))
-                
-                dw, dh = (target_dim - new_unpad_shape[0]) / 2, (target_dim - new_unpad_shape[1]) / 2
-                top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-                left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-                
-                if original_shape[::-1] != new_unpad_shape:
-                    frame_np = cv2.resize(frame_np, new_unpad_shape, interpolation=cv2.INTER_LINEAR)
-                
-                frame_np = cv2.copyMakeBorder(frame_np, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+                transform = LetterBox(new_shape=(target_dim, target_dim))
+                frame_np = transform(image=frame_np)
 
             elif CROP_MODE == 'stretch':
                 # Stretching: Distorts aspect ratio to fit the target dimensions
