@@ -41,6 +41,13 @@ class FinalizedPathsStore:
             return None
 
     def append(self, path_data):
+        speed_val = path_data.get('average_speed_kmh')
+        if speed_val is not None:
+            try:
+                speed_val = float(speed_val)
+            except Exception:
+                speed_val = None
+
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT INTO finalized_paths 
@@ -55,7 +62,7 @@ class FinalizedPathsStore:
             self._dt_converter(path_data.get('exit_time')),
             path_data.get('time_in_intersection'),
             path_data.get('status'),
-            path_data.get('average_speed_kmh')
+            speed_val
         ))
         self.conn.commit()
 
