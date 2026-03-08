@@ -35,8 +35,12 @@ class PerformanceTracker:
         }
         self._timer_starts = {}
 
-        # GPU Metrics
-        self.gpu_metrics = {'memory_allocated': [], 'memory_reserved': [], 'utilization': []}
+        # System & GPU Metrics
+        self.rolling_metrics = {
+            'gpu_memory_allocated': 0.0, 'gpu_memory_reserved': 0.0, 'gpu_utilization': 0.0,
+            'cpu_utilization': 0.0, 'cpu_memory_percent': 0.0, 'ram_usage_gb': 0.0,
+            'samples': 0
+        }
         self._gpu_handle = None
         if torch.cuda.is_available():
             try:
@@ -44,10 +48,6 @@ class PerformanceTracker:
             except Exception as e:
                 logger.info(f"Failed to get NVML handle: {e}")
                 self._gpu_handle = None
-
-        # CPU Metrics
-        self.cpu_metrics = {'utilization': [], 'memory_percent': []}
-        self.system_metrics = {'ram_usage_gb': []}
 
         # Vehicle Tracking Metrics
         self.vehicle_metrics = {
@@ -59,8 +59,7 @@ class PerformanceTracker:
 
         # Batch Processing Metrics
         self.batch_metrics = {
-            'batch_sizes': [], 'batch_times': [],
-            'avg_batch_size': 0, 'avg_batch_time': 0.0, 'batch_throughput': 0.0
+            'avg_batch_size': 0.0, 'avg_batch_time': 0.0, 'samples': 0, 'batch_throughput': 0.0
         }
 
         # Sampling state
@@ -114,8 +113,10 @@ class PerformanceTracker:
     def record_batch_processed(self, batch_size, batch_time):
         self.frames_processed += batch_size
         if self.enabled and batch_size > 0 and batch_time > 0:
-            self.batch_metrics['batch_sizes'].append(batch_size)
-            self.batch_metrics['batch_times'].append(batch_time)
+            self.batch_metrics['samples'] += 1
+            n = self.batch_metrics['samples']
+            self.batch_metrics['avg_batch_size'] += (batch_size - self.batch_metrics['avg_batch_size']) / n
+            self.batch_metrics['avg_batch_time'] += (batch_time - self.batch_metrics['avg_batch_time']) / n
 
     def record_detection(self, count=1):
         self.detections_count += count
@@ -152,36 +153,34 @@ class PerformanceTracker:
         if not force and (current_time - self.last_sample_time < self.sample_interval):
             return
 
-        # GPU Metrics
+        alloc = 0.0; res = 0.0; gpu_util = 0.0
         if torch.cuda.is_available():
             try:
                  alloc = torch.cuda.memory_allocated() / 1e9
                  res = torch.cuda.memory_reserved() / 1e9
-                 self.gpu_metrics['memory_allocated'].append(alloc)
-                 self.gpu_metrics['memory_reserved'].append(res)
-                 gpu_util = 0
                  if self._gpu_handle:
                      util_rates = pynvml.nvmlDeviceGetUtilizationRates(self._gpu_handle)
                      gpu_util = util_rates.gpu
-                 self.gpu_metrics['utilization'].append(gpu_util)
             except Exception as e:
                  logger.info(f"Error sampling GPU metrics: {e}")
-                 # Append 0 to maintain list lengths if error
-                 self.gpu_metrics['memory_allocated'].append(0)
-                 self.gpu_metrics['memory_reserved'].append(0)
-                 self.gpu_metrics['utilization'].append(0)
 
-        # CPU / RAM Metrics
+        cpu_util = 0.0; mem_percent = 0.0; ram_usage = 0.0
         try:
-            self.cpu_metrics['utilization'].append(psutil.cpu_percent(interval=None))
+            cpu_util = psutil.cpu_percent(interval=None)
             mem_info = psutil.virtual_memory()
-            self.cpu_metrics['memory_percent'].append(mem_info.percent)
-            self.system_metrics['ram_usage_gb'].append(mem_info.used / 1e9)
+            mem_percent = mem_info.percent
+            ram_usage = mem_info.used / 1e9
         except Exception as e:
             logger.info(f"Error sampling CPU/RAM metrics: {e}")
-            self.cpu_metrics['utilization'].append(0)
-            self.cpu_metrics['memory_percent'].append(0)
-            self.system_metrics['ram_usage_gb'].append(0)
+
+        self.rolling_metrics['samples'] += 1
+        n = self.rolling_metrics['samples']
+        self.rolling_metrics['gpu_memory_allocated'] += (alloc - self.rolling_metrics['gpu_memory_allocated']) / n
+        self.rolling_metrics['gpu_memory_reserved'] += (res - self.rolling_metrics['gpu_memory_reserved']) / n
+        self.rolling_metrics['gpu_utilization'] += (gpu_util - self.rolling_metrics['gpu_utilization']) / n
+        self.rolling_metrics['cpu_utilization'] += (cpu_util - self.rolling_metrics['cpu_utilization']) / n
+        self.rolling_metrics['cpu_memory_percent'] += (mem_percent - self.rolling_metrics['cpu_memory_percent']) / n
+        self.rolling_metrics['ram_usage_gb'] += (ram_usage - self.rolling_metrics['ram_usage_gb']) / n
 
         self.last_sample_time = current_time
 
@@ -190,9 +189,7 @@ class PerformanceTracker:
         if not self.enabled or self.frames_processed == 0: return
 
         # Batch metrics
-        if self.batch_metrics['batch_times']:
-            self.batch_metrics['avg_batch_size'] = np.mean(self.batch_metrics['batch_sizes']) if self.batch_metrics['batch_sizes'] else 0
-            self.batch_metrics['avg_batch_time'] = np.mean(self.batch_metrics['batch_times']) if self.batch_metrics['batch_times'] else 0
+        if self.batch_metrics['samples'] > 0:
             if self.batch_metrics['avg_batch_time'] > 0:
                  self.batch_metrics['batch_throughput'] = self.batch_metrics['avg_batch_size'] / self.batch_metrics['avg_batch_time']
             else: self.batch_metrics['batch_throughput'] = 0
@@ -236,12 +233,12 @@ class PerformanceTracker:
         if not self.enabled: return basic_summary
 
         avg_metrics = {
-             'gpu_mem_allocated_gb': np.mean(self.gpu_metrics['memory_allocated']) if self.gpu_metrics['memory_allocated'] else 0,
-             'gpu_mem_reserved_gb': np.mean(self.gpu_metrics['memory_reserved']) if self.gpu_metrics['memory_reserved'] else 0,
-             'gpu_utilization_percent': np.mean(self.gpu_metrics['utilization']) if self.gpu_metrics['utilization'] else 0,
-             'cpu_utilization_percent': np.mean(self.cpu_metrics['utilization']) if self.cpu_metrics['utilization'] else 0,
-             'cpu_memory_percent': np.mean(self.cpu_metrics['memory_percent']) if self.cpu_metrics['memory_percent'] else 0,
-             'ram_usage_gb': np.mean(self.system_metrics['ram_usage_gb']) if self.system_metrics['ram_usage_gb'] else 0,
+             'gpu_mem_allocated_gb': self.rolling_metrics['gpu_memory_allocated'],
+             'gpu_mem_reserved_gb': self.rolling_metrics['gpu_memory_reserved'],
+             'gpu_utilization_percent': self.rolling_metrics['gpu_utilization'],
+             'cpu_utilization_percent': self.rolling_metrics['cpu_utilization'],
+             'cpu_memory_percent': self.rolling_metrics['cpu_memory_percent'],
+             'ram_usage_gb': self.rolling_metrics['ram_usage_gb'],
         }
         timing_percent = {k: (v / self.total_time * 100 if self.total_time > 0 else 0) for k, v in self.timings.items()}
 

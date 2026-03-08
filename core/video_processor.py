@@ -42,7 +42,7 @@ from visualization import overlay as visual_overlay
 from reporting.excel_report import create_excel_report, create_bidirectional_link_count_report
 from core.converters import convert_dav_to_mp4_internal
 from video_reader import PyVideoReader
-
+from core.finalized_paths_store import FinalizedPathsStore
 
 class VideoProcessor:
     @profile
@@ -98,7 +98,7 @@ class VideoProcessor:
 
         self.streams = None
         self.active_track_data = {}
-        self.finalized_paths_for_report = []
+        self.finalized_paths_store = FinalizedPathsStore()
         self.zone_polygons = {}
         self.detection_zones_polygons = None
         self.last_cleanup_time = 0
@@ -115,7 +115,7 @@ class VideoProcessor:
             frame_rate=self.target_fps
         )
         self.active_track_data.clear()
-        self.finalized_paths_for_report.clear()
+        self.finalized_paths_store.clear()
         self.temp_converted_files.clear()
         
         self.perf = PerformanceTracker(enabled=ENABLE_DETAILED_PERFORMANCE_METRICS)
@@ -549,10 +549,10 @@ class VideoProcessor:
         
         total_time = self.perf.total_time if self.perf else 0.0
         final_fps = frames_processed_count / total_time if total_time > 0 else 0.0
-        completed_paths = sum(1 for p in self.finalized_paths_for_report if p['status'] == 'exited')
+        completed_paths = self.finalized_paths_store.count_by_status('exited')
 
         excel_path = create_excel_report(
-            completed_paths_data=self.finalized_paths_for_report,
+            completed_paths_data=self.finalized_paths_store.get_all(),
             start_datetime=init_data["start_datetime"],
             primary_direction=init_data["primary_direction"],
             video_path=init_data["video_paths"][0],
@@ -560,7 +560,7 @@ class VideoProcessor:
         )
 
         excel_tia_path = create_excel_report(
-            completed_paths_data=self.finalized_paths_for_report,
+            completed_paths_data=self.finalized_paths_store.get_all(),
             start_datetime=init_data["start_datetime"],
             primary_direction=init_data["primary_direction"],
             video_path=init_data["video_paths"][0],
@@ -572,7 +572,7 @@ class VideoProcessor:
             secondary_dirs = [d for d in self.zone_polygons.keys() if d != init_data["primary_direction"]]
             if secondary_dirs:
                 excel_link_count_path = create_bidirectional_link_count_report(
-                    completed_paths_data=self.finalized_paths_for_report,
+                    completed_paths_data=self.finalized_paths_store.get_all(),
                     start_datetime_video=init_data["start_datetime"],
                     video_path=init_data["video_paths"][0],
                     primary_direction=init_data["primary_direction"],
@@ -620,7 +620,7 @@ class VideoProcessor:
         
         self.models_list.clear()
         self.active_track_data.clear()
-        self.finalized_paths_for_report.clear()
+        self.finalized_paths_store.clear()
         self.bytetracker = self.zone_tracker = self.perf = self.stop_event = None
         self.reader_thread = self.preprocessor_thread = self.postprocessor_thread = self.writer_thread = None
         self.raw_frame_queue = self.preprocessed_tensor_queue = self.results_queue = self.video_write_queue = self.streams = None
@@ -874,6 +874,7 @@ class VideoProcessor:
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['status'] = 'exited'
                                 track_data['confirmed'] = True
+                                track_data['exit_time'] = current_global_timestamp
                                 temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'EXIT'
 
             last_frame_time_in_batch = frame_times_in_batch[-1]
@@ -890,6 +891,23 @@ class VideoProcessor:
                     if self.perf: self.perf.record_vehicle_exit('timed_out')
                     track_data['confirmed'] = True
                     track_data['status'] = 'timed_out'
+                    track_data['exit_time'] = last_global_timestamp_in_batch
+
+            # Prune exited and timed_out tracks after their timeout duration
+            tracks_to_remove = []
+            for track_id, track_data in self.active_track_data.items():
+                if track_data['status'] in ('exited', 'timed_out'):
+                    t_limit = VEHICLE_TIMEOUTS.get(track_data.get('current_type'), VEHICLE_TIMEOUTS['default'])
+                    t_since_exit = (last_global_timestamp_in_batch - track_data.get('exit_time', last_global_timestamp_in_batch)).total_seconds()
+                    if t_since_exit > t_limit:
+                        tracks_to_remove.append(track_id)
+
+            for track_id in tracks_to_remove:
+                del self.active_track_data[track_id]
+                if self.zone_tracker:
+                    self.zone_tracker.remove_vehicle_data(track_id)
+            if tracks_to_remove and self.zone_tracker:
+                 self.zone_tracker.cleanup_cooldowns(last_frame_time_in_batch)
 
         if ENABLE_VISUALIZATION:
             for i in range(len(yolo_results_batch)):
@@ -950,6 +968,7 @@ class VideoProcessor:
 
         track_data['status'] = 'exited'
         track_data['confirmed'] = True
+        track_data['exit_time'] = now_ts
         return True
 
     
@@ -964,7 +983,7 @@ class VideoProcessor:
             'time_in_intersection': round(time_in_intersection_val, 2) if time_in_intersection_val is not None else 0.0,
             'status': final_status_str,
         }
-        self.finalized_paths_for_report.append(path_report_entry)
+        self.finalized_paths_store.append(path_report_entry)
 
     @profile
     def _execute_single_model_inference(self, model_instance, input_tensor_chunk, stream_to_use=None):
@@ -1024,11 +1043,14 @@ class VideoProcessor:
                 if self.stop_event.is_set(): break
                 logger.info(f"Reader starting video: {os.path.basename(str(video_path))}")
                 
-                current_video_info = PyVideoReader(str(video_path)).get_info()
-                current_video_frames = int(current_video_info.get('frame_count', 0))
-                if current_video_frames == 0: continue
-                
                 pvr = PyVideoReader(str(video_path), device='cuda', resize_shorter_side=resize_dim, resize_longer_side=resize_dim)
+                
+                current_video_info = pvr.get_info()
+                current_video_frames = int(current_video_info.get('frame_count', 0))
+                if current_video_frames == 0: 
+                    del pvr
+                    continue
+                
                 frame_interval = max(1, round(original_fps / self.target_fps))
                 
                 num_segments = math.ceil(current_video_frames / self.pvr_decode_segment_size)
