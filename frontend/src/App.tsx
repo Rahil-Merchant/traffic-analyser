@@ -53,7 +53,7 @@ function App() {
   // Speed Calibration State
   const [roadWidthMeters, setRoadWidthMeters] = useState<number | ''>('');
   const [roadLengthMeters, setRoadLengthMeters] = useState<number | ''>('');
-  const [speedLimitKmh, setSpeedLimitKmh] = useState<number | ''>('');
+  const [speedLimitKmh, setSpeedLimitKmh] = useState<number | ''>(60);
   const [nightHoursStart, setNightHoursStart] = useState<string>('18:00');
   const [nightHoursEnd, setNightHoursEnd] = useState<string>('06:00');
 

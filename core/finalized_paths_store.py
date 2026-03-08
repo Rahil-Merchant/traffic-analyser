@@ -65,6 +65,13 @@ class FinalizedPathsStore:
         rows = cursor.fetchall()
         results = []
         for row in rows:
+            speed_val = row[8]
+            if speed_val is not None:
+                try:
+                    speed_val = float(speed_val)
+                except Exception:
+                    speed_val = None
+                    
             results.append({
                 'id': row[0],
                 'type': row[1],
@@ -74,7 +81,7 @@ class FinalizedPathsStore:
                 'exit_time': self._dt_parser(row[5]),
                 'time_in_intersection': row[6],
                 'status': row[7],
-                'average_speed_kmh': row[8]
+                'average_speed_kmh': speed_val
             })
         return results
 
