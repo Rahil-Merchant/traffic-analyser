@@ -54,8 +54,8 @@ function App() {
   const [roadWidthMeters, setRoadWidthMeters] = useState<number | ''>('');
   const [roadLengthMeters, setRoadLengthMeters] = useState<number | ''>('');
   const [speedLimitKmh, setSpeedLimitKmh] = useState<number | ''>('');
-  const [nightHoursStart, setNightHoursStart] = useState<string>('');
-  const [nightHoursEnd, setNightHoursEnd] = useState<string>('');
+  const [nightHoursStart, setNightHoursStart] = useState<string>('18:00');
+  const [nightHoursEnd, setNightHoursEnd] = useState<string>('06:00');
 
   // Results Modal State
   const [showResults, setShowResults] = useState(false);

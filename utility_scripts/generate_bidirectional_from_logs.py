@@ -117,7 +117,11 @@ def process_log_file(filepath):
             video_path="", # Not needed when custom_filename is used
             primary_direction=primary_direction,
             secondary_direction=secondary_direction,
-            station_number_str=station_number_str,
+            video_duration_formatted="24 hours",
+            station_number_str="",
+            speed_limit_kmh=None,
+            night_hours_start=None,
+            night_hours_end=None,
             output_dir=OUTPUT_DIRECTORY,
             custom_filename=custom_filename
         )

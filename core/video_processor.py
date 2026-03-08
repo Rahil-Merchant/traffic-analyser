@@ -617,7 +617,10 @@ class VideoProcessor:
                     primary_direction=init_data["primary_direction"],
                     secondary_direction=secondary_dirs[0],
                     video_duration_formatted=init_data["video_duration_formatted"],
-                    station_number_str=init_data["station_number"]
+                    station_number_str=init_data["station_number"],
+                    speed_limit_kmh=self.speed_limit_kmh,
+                    night_hours_start=self.night_hours_start,
+                    night_hours_end=self.night_hours_end
                 )
 
         result_msg = "✅ Processing completed."

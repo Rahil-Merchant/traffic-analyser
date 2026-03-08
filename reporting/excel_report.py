@@ -1,5 +1,6 @@
 # project/reporting/excel_report.py
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta, time
 import os
 from collections import OrderedDict
@@ -338,7 +339,7 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
 
     return excel_created_path
 
-def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction, video_duration_formatted="24 hours", station_number_str="",ignore_timestamp_date=True):
+def create_bidirectional_link_count_report(completed_paths_data, start_datetime_video, video_path, primary_direction, secondary_direction, video_duration_formatted="24 hours", station_number_str="",ignore_timestamp_date=True, speed_limit_kmh=None, night_hours_start=None, night_hours_end=None):
     """
     Creates a separate Excel report for bi-directional link counts based on user-selected "To" directions.
     The report includes individual and cumulative counts for specific vehicle categories over a 24-hour period.
@@ -584,6 +585,113 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             # --- Sheet 2: Cumulative Counts ---
             write_sheet_content("Cumulative Counts", df_cumulative_counts, include_total_row=False)
             logger.debug("(Bi-directional Report) Writing 'Cumulative Counts' sheet.")
+
+            # --- Sheet 3: Vehicle Speed Statistics ---
+            speed_stats_sheet_name = "Vehicle Speed Statistics"
+            ws_speed = workbook.add_worksheet(speed_stats_sheet_name)
+            
+            # Formats
+            header_format = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1})
+            data_format = workbook.add_format({'align': 'center', 'num_format': '0.1'})
+            
+            # Setup Night Hours Parsing
+            def is_night(dt_obj):
+                if not night_hours_start or not night_hours_end:
+                    return False
+                try:
+                    start_t = datetime.strptime(night_hours_start, "%H:%M").time()
+                    end_t = datetime.strptime(night_hours_end, "%H:%M").time()
+                    dt_time = dt_obj.time()
+                    if start_t <= end_t:
+                        return start_t <= dt_time <= end_t
+                    else:
+                        return dt_time >= start_t or dt_time <= end_t
+                except Exception:
+                    return False
+
+            dir1_speeds = []; dir2_speeds = []
+            dir1_light = []; dir1_heavy = []; dir1_night = []
+            dir2_light = []; dir2_heavy = []; dir2_night = []
+            
+            for path in completed_paths_data:
+                if path.get('status') != 'exited' or not path.get('exit_time'): continue
+                spd = path.get('average_speed_kmh')
+                if spd is None: continue
+                
+                ex_dir = path.get('exit_direction', '').lower()
+                v_type = path.get('type')
+                ex_time = path['exit_time']
+                
+                is_l = v_type in BIDIRECTIONAL_REPORT_CATEGORIES.get('Light', [])
+                n_flag = is_night(ex_time)
+                
+                if ex_dir == primary_direction:
+                    dir1_speeds.append(spd)
+                    if is_l: dir1_light.append(spd)
+                    else: dir1_heavy.append(spd)
+                    if n_flag: dir1_night.append(spd)
+                elif ex_dir == secondary_direction:
+                    dir2_speeds.append(spd)
+                    if is_l: dir2_light.append(spd)
+                    else: dir2_heavy.append(spd)
+                    if n_flag: dir2_night.append(spd)
+                    
+            tot_speeds = dir1_speeds + dir2_speeds
+            tot_light = dir1_light + dir2_light
+            tot_heavy = dir1_heavy + dir2_heavy
+            tot_night = dir1_night + dir2_night
+            
+            def calc_stats(s_list, l_list, h_list, n_list):
+                if not s_list: return ["", "", "", "", "", "", "", ""]
+                avg_spd = np.mean(s_list)
+                avg_l = np.mean(l_list) if l_list else ""
+                avg_h = np.mean(h_list) if h_list else ""
+                avg_n = np.mean(n_list) if n_list else ""
+                p15 = np.percentile(s_list, 15)
+                p85 = np.percentile(s_list, 85)
+                
+                pct_ex = ""
+                if speed_limit_kmh:
+                    try:
+                        lim = float(speed_limit_kmh)
+                        ex_count = sum(1 for s in s_list if s > lim)
+                        pct_ex = (ex_count / len(s_list)) * 100
+                    except: pass
+                
+                lim_out = speed_limit_kmh if speed_limit_kmh else ""
+                return [lim_out, avg_spd, avg_l, avg_h, avg_n, p15, p85, pct_ex]
+                
+            st1 = calc_stats(dir1_speeds, dir1_light, dir1_heavy, dir1_night)
+            st2 = calc_stats(dir2_speeds, dir2_light, dir2_heavy, dir2_night)
+            stTot = calc_stats(tot_speeds, tot_light, tot_heavy, tot_night)
+            
+            row_lbls = [
+                "3.1 Speed limit (km/hr)", "3.2 Average speed (km/hr)",
+                "3.3 Average speed - light vehicles (km/hr)", "3.4 Average speed - heavy vehicles (km/hr)",
+                "3.5 Average night speed (km/hr)", "3.6 15th centile speed (km/hr)",
+                "3.7 85th centile speed (km/hr)", "3.8 Percentage vehicles in excess of speed limit"
+            ]
+            
+            dir1_display_name = get_display_direction(primary_direction)
+            dir2_display_name = get_display_direction(secondary_direction)
+
+            ws_speed.write(0, 1, f"To {dir1_display_name}", header_format)
+            ws_speed.write(0, 2, f"To {dir2_display_name}", header_format)
+            ws_speed.write(0, 3, "Total", header_format)
+            
+            for r, lbl in enumerate(row_lbls):
+                ws_speed.write(r + 1, 0, lbl)
+                v1, v2, v3 = st1[r], st2[r], stTot[r]
+                if isinstance(v1, float) and np.isnan(v1): v1 = ""
+                if isinstance(v2, float) and np.isnan(v2): v2 = ""
+                if isinstance(v3, float) and np.isnan(v3): v3 = ""
+                if v1 != "": ws_speed.write(r + 1, 1, float(v1), data_format)
+                if v2 != "": ws_speed.write(r + 1, 2, float(v2), data_format)
+                if v3 != "": ws_speed.write(r + 1, 3, float(v3), data_format)
+                
+            ws_speed.set_column(0, 0, 45)
+            ws_speed.set_column(1, 3, 15)
+            logger.debug("(Bi-directional Report) Writing 'Vehicle Speed Statistics' sheet.")
 
         print(f"Bi-directional Link Count report generated: {excel_full_path}")
         return excel_full_path
