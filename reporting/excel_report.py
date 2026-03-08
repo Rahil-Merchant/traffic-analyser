@@ -679,7 +679,7 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             ws_speed.write(0, 2, f"To {dir2_display_name}", header_format)
             ws_speed.write(0, 3, "Total", header_format)
             
-            speed_data_format = wb.add_format({'border': 1, 'align': 'center', 'num_format': '0.00'})
+            speed_data_format = workbook.add_format({'border': 1, 'align': 'center', 'num_format': '0.00'})
             for r, lbl in enumerate(row_lbls):
                 ws_speed.write(r + 1, 0, lbl)
                 v1, v2, v3 = st1[r], st2[r], stTot[r]
