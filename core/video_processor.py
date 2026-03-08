@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 import concurrent.futures
 from ultralytics.data.augment import LetterBox
 from loguru import logger
+from collections import deque
 import builtins
 if not hasattr(builtins, "profile"):
     def profile(func):
@@ -29,7 +30,8 @@ from config import (
     LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
     PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS, BYTETRACK_MATCH_THRESH,
     BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH, CROP_MODE,
-    USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG, PATCHWISE_USE_BATCH_PROCESSING
+    USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG, PATCHWISE_USE_BATCH_PROCESSING,
+    MOTION_INFERENCE_MIN_FRAMES, MOTION_INFERENCE_MAX_PROJECTION, MOTION_INFERENCE_MIN_DIST
 )
 from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory
@@ -59,6 +61,9 @@ class VideoProcessor:
         self.device = get_device()
         self.processing_lock = threading.Lock()
         self.tracker_lock = threading.Lock()
+
+        self.zone_axis = None
+        self.zone_pair = None
 
         self.class_id_to_name_map = {}
         if data_yaml_path and os.path.exists(data_yaml_path):
@@ -155,6 +160,19 @@ class VideoProcessor:
         self.zone_tracker = ZoneTracker(self.detection_zones_polygons)
         if not self.zone_tracker or not self.zone_tracker.zones:
             raise RuntimeError("CRITICAL: ZoneTracker failed to initialize with valid zones.")
+        
+        if len(self.zone_tracker.zones) == 2:
+            zone_names = list(self.zone_tracker.zones.keys())
+            z1, z2 = zone_names[0], zone_names[1]
+            c1 = np.mean(self.zone_tracker.zones[z1], axis=0)
+            c2 = np.mean(self.zone_tracker.zones[z2], axis=0)
+            axis = c2 - c1
+            axis = axis / (np.linalg.norm(axis) + 1e-6)
+            self.zone_axis = axis
+            self.zone_pair = (z1, z2)
+        else:
+            self.zone_axis = None
+            self.zone_pair = None
 
         # --- MODEL LOADING LOGIC ---
         if self.use_patchwise_inference:
@@ -392,7 +410,6 @@ class VideoProcessor:
                 # Memory cleanup can stay here
                 if time.monotonic() - self.last_cleanup_time > MEMORY_CLEANUP_INTERVAL:
                     if self.perf: self.perf.start_timer('memory_cleanup')
-                    # Note: cleanup_tracking_data is now implicitly handled by the post-processor
                     cleanup_memory()
                     self.last_cleanup_time = time.monotonic()
                     if self.perf: self.perf.end_timer('memory_cleanup')
@@ -463,7 +480,7 @@ class VideoProcessor:
                         original_indices = futures_map[future]
                         try:
                             results_chunk = future.result()
-                            for i, res in enumerate(results_chunk):
+                            for i, res in enumerate(results_chunk[:len(original_indices)]):
                                 yolo_results_batch[original_indices[i]] = res
                         except Exception as e:
                             logger.error(f"Error during concurrent inference for indices {original_indices}: {e}")
@@ -633,8 +650,21 @@ class VideoProcessor:
             
             # Wait for the post-processor to finish its queue before finalizing
             logger.info("Inference complete. Waiting for post-processing to finish...")
+            # Wait for reader
+            if self.reader_thread and self.reader_thread.is_alive():
+                self.reader_thread.join()
+
+            # Wait for preprocessor
+            if self.preprocessor_thread and self.preprocessor_thread.is_alive():
+                self.preprocessor_thread.join()
+
+            # Wait for postprocessor
             if self.postprocessor_thread and self.postprocessor_thread.is_alive():
                 self.postprocessor_thread.join()
+
+            # Wait for writer
+            if self.writer_thread and self.writer_thread.is_alive():
+                self.writer_thread.join()
 
             if progress_queue: progress_queue.put_nowait({"progress": 95, "status": "Finalizing..."})
             result_msg, results_dict, stats_dict = self._finalize_and_report(init_data, frames_processed)
@@ -674,8 +704,7 @@ class VideoProcessor:
         batch_np = np.full((count, 3, target_dim, target_dim), 114, dtype=np.uint8)
 
         for i, frame_np in enumerate(valid_frames):
-            # --- CONDITIONAL RESIZING LOGIC BASED ON CROP_MODE ---
-            
+
             if CROP_MODE == 'letterbox':
                 # Letterboxing: Preserves aspect ratio with padding
                 transform = LetterBox(new_shape=(target_dim, target_dim))
@@ -689,8 +718,6 @@ class VideoProcessor:
             else:
                 raise ValueError(f"Invalid CROP_MODE '{CROP_MODE}'. Must be 'letterbox' or 'stretch'.")
             
-            # --- END OF CONDITIONAL LOGIC ---
-
             # Transpose from HWC (Height, Width, Channels) to CHW (Channels, Height, Width)
             # and place it in the pre-allocated batch array.
             batch_np[i] = frame_np.transpose(2, 0, 1)
@@ -799,13 +826,27 @@ class VideoProcessor:
                 if track_id_str not in self.active_track_data:
                     for zone_dir in zone_keys:
                         if self.zone_tracker._check_point_in_zone(tuple(bottom_center), self.zone_tracker.zones[zone_dir]):
-                            self.active_track_data[track_id_str] = { 'id': track_id_str, 'entry_direction': zone_dir, 'entry_time': current_global_timestamp, 'type_history': {vehicle_type: 1}, 'current_type': vehicle_type, 'last_pos_zone': bottom_center, 'last_seen_frame': current_frame_num, 'status': 'active' }
+                            self.active_track_data[track_id_str] = {
+                                                            'id': track_id_str,
+                                                            'entry_direction': zone_dir,
+                                                            'entry_time': current_global_timestamp,
+                                                            'type_history': {vehicle_type: 1},
+                                                            'current_type': vehicle_type,
+                                                            'last_pos_zone': bottom_center,
+                                                            'last_seen_frame': current_frame_num,
+                                                            'status': 'active',
+                                                            'positions': deque(maxlen=10),
+                                                            'frames_seen': 0,
+                                                            'confirmed': False
+                                                        }
                             if self.perf: self.perf.record_vehicle_entry()
                             temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'ENTRY'
                             break
                 else:
                     track_data = self.active_track_data[track_id_str]
                     track_data['last_seen_frame'] = current_frame_num
+                    track_data['positions'].append(bottom_center)
+                    track_data['frames_seen'] += 1
                     track_data['type_history'][vehicle_type] = track_data['type_history'].get(vehicle_type, 0) + 1
                     track_data['current_type'] = max(track_data['type_history'], key=track_data['type_history'].get)
                     prev_pos = track_data.get('last_pos_zone')
@@ -820,7 +861,7 @@ class VideoProcessor:
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
                                 self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
-                                
+                                track_data['confirmed'] = True
                                 track_data['entry_direction'] = event_dir
                                 track_data['entry_time'] = current_global_timestamp
                                 if self.perf: self.perf.record_vehicle_entry()
@@ -832,17 +873,22 @@ class VideoProcessor:
                                 self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['status'] = 'exited'
+                                track_data['confirmed'] = True
                                 temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'EXIT'
 
             last_frame_time_in_batch = frame_times_in_batch[-1]
             last_global_timestamp_in_batch = start_datetime_obj_global + timedelta(seconds=last_frame_time_in_batch)
             for track_id, track_data in list(self.active_track_data.items()):
                 if track_data['status'] != 'active': continue
+                if self._try_motion_inference(track_id, track_data, current_global_timestamp):
+                    if self.perf:
+                        self.perf.record_vehicle_exit('motion_inferred')
                 duration = (last_global_timestamp_in_batch - track_data['entry_time']).total_seconds()
                 timeout_limit = VEHICLE_TIMEOUTS.get(track_data['current_type'], VEHICLE_TIMEOUTS['default'])
                 if duration > timeout_limit:
                     self._add_to_finalized_paths(track_id, track_data, 'timed_out', 'TIMEOUT', last_global_timestamp_in_batch, duration)
                     if self.perf: self.perf.record_vehicle_exit('timed_out')
+                    track_data['confirmed'] = True
                     track_data['status'] = 'timed_out'
 
         if ENABLE_VISUALIZATION:
@@ -864,6 +910,49 @@ class VideoProcessor:
         if self.perf: self.perf.end_timer('app_logic_batch')
         return [], processed_frames_list_viz
     
+    def _try_motion_inference(self, track_id, track_data, now_ts):
+        if self.zone_axis is None or track_data['confirmed']:
+            return False
+        print(f"[Motion Inference] Number of frames: {track_data['frames_seen']}")
+        if track_data['frames_seen'] < MOTION_INFERENCE_MIN_FRAMES:
+            return False
+
+        pts = list(track_data['positions'])
+        print(f"[Motion Inference] Points: {pts}")
+        if len(pts) < MOTION_INFERENCE_MIN_FRAMES:
+            return False
+
+        disp = np.array(pts[-1]) - np.array(pts[0])
+        norm = np.linalg.norm(disp)
+        print(f"[Motion Inference] Dist: {norm}")
+        if norm < MOTION_INFERENCE_MIN_DIST:
+            return False
+
+        motion_dir = disp / norm
+        proj = np.dot(motion_dir, self.zone_axis)
+        print(f"[Motion Inference] Proj Angle: {proj}")
+        if abs(proj) <MOTION_INFERENCE_MAX_PROJECTION:
+            return False
+
+        from_zone, to_zone = self.zone_pair
+        inferred_exit = to_zone if proj > 0 else from_zone
+
+        duration = (now_ts - track_data['entry_time']).total_seconds()
+        print(f"[Motion Inference] Exit confirmed to: {inferred_exit}")
+        self._add_to_finalized_paths(
+            track_id,
+            track_data,
+            'exited',
+            inferred_exit,
+            now_ts,
+            duration
+        )
+
+        track_data['status'] = 'exited'
+        track_data['confirmed'] = True
+        return True
+
+    
     def _add_to_finalized_paths(self, track_id_str, app_data, final_status_str, exit_direction_str, exit_time_dt, time_in_intersection_val):
         path_report_entry = {
             'id': track_id_str,
@@ -879,16 +968,16 @@ class VideoProcessor:
 
     @profile
     def _execute_single_model_inference(self, model_instance, input_tensor_chunk, stream_to_use=None):
+        t0 = time.time()
         if stream_to_use and self.device == 'cuda':
             with torch.cuda.stream(stream_to_use):
                 with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
-                    results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA, half=True)
+                    results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA, half=True, device=self.device)
             stream_to_use.synchronize()
-            return results
         else: 
             with torch.amp.autocast(device_type=self.device, enabled=(MIXED_PRECISION and self.device == 'cuda')):
-                results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA, half=True)
-            return results
+                results = model_instance(input_tensor_chunk, verbose=False, imgsz=MODEL_INPUT_SIZE, augment=TTA, half=True, device=self.device)
+        return results
 
     def _format_duration(self, seconds):
         return str(timedelta(seconds=int(seconds)))
@@ -950,7 +1039,11 @@ class VideoProcessor:
                     end_idx = min((i + 1) * self.pvr_decode_segment_size, current_video_frames)
                     if start_idx >= end_idx: continue
 
-                    segment_frames = pvr.decode(start_frame=start_idx, end_frame=end_idx)
+                    try:
+                        segment_frames = pvr.decode(start_frame=start_idx, end_frame=end_idx)
+                    except Exception as e:
+                        logger.warning(f"Skipping corrupted segment {start_idx}-{end_idx}: {e}")
+                        continue
                     if segment_frames is None or segment_frames.shape[0] == 0: continue
 
                     for frame_in_seg_idx, frame_content in enumerate(segment_frames):

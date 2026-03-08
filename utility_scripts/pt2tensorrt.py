@@ -5,7 +5,7 @@ MODEL_INPUT_SIZE = 640
 EXPORT_FP16 = True
 EXPORT_INT8 = {'export':False,'yaml_path':r'C:\Users\swest\Desktop\traffic-capturing\training\datasets\relabelled12072025\data.yaml'}
 dynamic = True
-bs = 32
+bs = 64
 
 model = YOLO(MODEL_PATH)
 model.export(

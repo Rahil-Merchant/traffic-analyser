@@ -45,11 +45,13 @@ PATCHWISE_INFERENCE_CONFIG = {
 
 # --- Tracking Configuration --- 
 BYTETRACK_MIN_CONF = 0.05    # Minimum detection confidence for ByteTrack to consider
-BYTETRACK_TRACK_THRESH = 0.22   # Detection confidence threshold for high-confidence matching
-BYTETRACK_MATCH_THRESH = 0.75    # IoU threshold for matching detections to tracks
+BYTETRACK_TRACK_THRESH = 0.12   # Detection confidence threshold for high-confidence matching
+BYTETRACK_MATCH_THRESH = 0.88    # IoU threshold for matching detections to tracks
 BYTETRACK_TRACK_BUFFER_SECONDS = 25 # Seconds to keep a track alive if unmatched after it has stopped being associated with any new detections
 
-
+MOTION_INFERENCE_MIN_FRAMES = 7
+MOTION_INFERENCE_MIN_DIST = 15
+MOTION_INFERENCE_MAX_PROJECTION = 0.5
 
 # #*############## Video 1 #################
 # # --- Input Settings (primarily for hardcoded mode) ---
@@ -161,8 +163,8 @@ elif MODEL_INPUT_SIZE<=960:
 else:
     OPTIMAL_BATCH_SIZE = 16
     
-OPTIMAL_BATCH_SIZE = 32
-PYVIDEOREADER_DECODE_SEGMENT_SIZE = 3200
+OPTIMAL_BATCH_SIZE = 64
+PYVIDEOREADER_DECODE_SEGMENT_SIZE = 7600
 
 _cpu_count = os.cpu_count()
 THREAD_COUNT = min(64, _cpu_count * 2)

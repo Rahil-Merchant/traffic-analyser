@@ -50,5 +50,5 @@ if __name__ == "__main__":
     run_local_processing()
 
     profiler.disable()
-    stats = pstats.Stats(profiler).sort_stats('cumulative')
-    stats.print_stats(30)
+    stats = pstats.Stats(profiler).sort_stats('time')
+    stats.print_stats(100)
