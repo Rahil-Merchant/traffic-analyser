@@ -643,7 +643,7 @@ class VideoProcessor:
             "processing_time_seconds": round(total_time, 2),
             "processing_fps": round(final_fps, 2),
             "total_frames_processed": frames_processed_count,
-            "average_speed_kmh": avg_speed
+            "fleet_average_speed_kmh": avg_speed
         }
         return result_msg, results_dict, stats_dict
 
