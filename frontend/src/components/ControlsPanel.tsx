@@ -65,7 +65,8 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     red: 'from-red-500 to-red-600 border-red-400/50 text-red-50'
   };
 
-  const isBiDirectionalAvailable = drawnZones.length === 2;
+  const directionalZones = drawnZones.filter(z => z !== 'road');
+  const isBiDirectionalAvailable = directionalZones.length === 2;
 
   return (
     <div className="h-full bg-gradient-to-br from-gray-900/95 via-gray-800/95 to-gray-900/95 backdrop-blur-sm border border-gray-700/50 rounded-2xl shadow-2xl overflow-hidden flex flex-col">

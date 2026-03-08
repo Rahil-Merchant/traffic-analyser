@@ -63,7 +63,8 @@ function App() {
   const [analysisStatistics, setAnalysisStatistics] = useState<any>(null);
 
   const webSocketRef = useRef<WebSocket | null>(null);
-  const isLaunchable = files.length > 0 && Object.keys(polygons).length > 0 && !!primaryDirection && !isProcessing;
+  const directionalZonesCount = Object.keys(polygons).filter(z => z !== 'road').length;
+  const isLaunchable = files.length > 0 && directionalZonesCount > 0 && !!primaryDirection && !isProcessing;
 
   const fetchPreview = async (path: string) => {
     setIsLoadingPreview(true);
