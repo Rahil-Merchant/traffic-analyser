@@ -66,6 +66,15 @@ function App() {
   const directionalZonesCount = Object.keys(polygons).filter(z => z !== 'road').length;
   const isLaunchable = files.length > 0 && directionalZonesCount > 0 && !!primaryDirection && !isProcessing;
 
+  // Auto-set report type based on number of directional zones
+  useEffect(() => {
+    if (directionalZonesCount === 2) {
+      setReportType('Standard + Bi-directional Report');
+    } else {
+      setReportType('Standard Report');
+    }
+  }, [directionalZonesCount]);
+
   const fetchPreview = async (path: string) => {
     setIsLoadingPreview(true);
     setStatusText(`[PROCESSING] Generating preview from first frame...`);
@@ -156,12 +165,15 @@ function App() {
 
     const { date, time } = formatTimestampForBackend(selectedTimestamp);
 
+    const filteredPolygons = { ...polygons };
+    delete filteredPolygons['road'];
+
     const configPayload = {
       video_paths: files.map(f => f.path),
       start_date: date,
       start_time: time,
       station_number: stationNumber,
-      polygons,
+      polygons: filteredPolygons,
       primary_direction: primaryDirection || '',
       report_type: reportType,
       // Exact image dimensions used for polygon drawing
