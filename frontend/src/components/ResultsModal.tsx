@@ -118,7 +118,7 @@ const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics
               <div className="bg-gradient-to-br from-indigo-500/20 to-indigo-600/20 border border-indigo-500/30 rounded-xl p-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-indigo-400 text-sm font-medium">Avg Fleet Speed</p>
+                    <p className="text-indigo-400 text-sm font-medium">Average Speed</p>
                     <p className="text-3xl font-bold text-white">
                       {statistics.fleet_average_speed_kmh ? `${statistics.fleet_average_speed_kmh.toFixed(1)} km/h` : 'N/A'}
                     </p>

@@ -679,15 +679,16 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             ws_speed.write(0, 2, f"To {dir2_display_name}", header_format)
             ws_speed.write(0, 3, "Total", header_format)
             
+            speed_data_format = wb.add_format({'border': 1, 'align': 'center', 'num_format': '0.00'})
             for r, lbl in enumerate(row_lbls):
                 ws_speed.write(r + 1, 0, lbl)
                 v1, v2, v3 = st1[r], st2[r], stTot[r]
                 if isinstance(v1, float) and np.isnan(v1): v1 = ""
                 if isinstance(v2, float) and np.isnan(v2): v2 = ""
                 if isinstance(v3, float) and np.isnan(v3): v3 = ""
-                if v1 != "": ws_speed.write(r + 1, 1, float(v1), data_format)
-                if v2 != "": ws_speed.write(r + 1, 2, float(v2), data_format)
-                if v3 != "": ws_speed.write(r + 1, 3, float(v3), data_format)
+                if v1 != "": ws_speed.write(r + 1, 1, float(v1), speed_data_format)
+                if v2 != "": ws_speed.write(r + 1, 2, float(v2), speed_data_format)
+                if v3 != "": ws_speed.write(r + 1, 3, float(v3), speed_data_format)
                 
             ws_speed.set_column(0, 0, 45)
             ws_speed.set_column(1, 3, 15)
