@@ -53,6 +53,12 @@ MOTION_INFERENCE_MIN_FRAMES = 7
 MOTION_INFERENCE_MIN_DIST = 15
 MOTION_INFERENCE_MAX_PROJECTION = 0.5
 
+# --- Speed Estimation ---
+MIN_SPEED_POSITIONS = max(5, TARGET_FPS)
+MIN_SPEED_DURATION_SEC = 2.0
+MAX_PLAUSIBLE_SPEED_KMH = 200.0
+JUMP_THRESHOLD_MULTIPLIER = 3.0
+
 # #*############## Video 1 #################
 # # --- Input Settings (primarily for hardcoded mode) ---
 INPUT_VIDEO_PATH = [r"C:\Users\EMAAN\Documents\YOLO\5 minute test - 4 Way Intersection.mp4"]

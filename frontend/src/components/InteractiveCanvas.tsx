@@ -43,7 +43,7 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
         });
       }
     };
-    
+
     updateSize();
     window.addEventListener('resize', updateSize);
     return () => window.removeEventListener('resize', updateSize);
@@ -58,9 +58,9 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
 
     const containerAspect = containerSize.width / containerSize.height;
     const imageAspect = image.width / image.height;
-    
+
     let scale, width, height, offsetX = 0, offsetY = 0;
-    
+
     if (imageAspect > containerAspect) {
       scale = containerSize.width / image.width;
       width = containerSize.width;
@@ -84,10 +84,10 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
       if (!stage) return;
       const pos = stage.getPointerPosition();
       if (!pos) return;
-      
+
       const originalX = (pos.x - offsetX) / scale;
       const originalY = (pos.y - offsetY) / scale;
-      
+
       if (originalX >= 0 && originalX <= image.width && originalY >= 0 && originalY <= image.height) {
         onCanvasClick(originalX, originalY);
       }
@@ -96,13 +96,14 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
 
   const directionColors = {
     north: '#10b981',
-    south: '#f59e0b', 
+    south: '#f59e0b',
     east: '#3b82f6',
-    west: '#ef4444'
+    west: '#ef4444',
+    road: '#f97316'
   };
 
   return (
-    <div 
+    <div
       id="canvas-container"
       className="relative w-full h-full bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 rounded-2xl overflow-hidden shadow-2xl border border-gray-700/50"
     >
@@ -122,7 +123,7 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
 
       {/* Premium Empty State */}
       {!isLoading && !imageUrl && (
-        <div 
+        <div
           onClick={onEmptyCanvasClick}
           className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer group transition-all duration-500 hover:bg-gray-800/30"
         >
@@ -160,82 +161,82 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
 
       {/* Premium Canvas with Perfect Aspect Ratio */}
       {!isLoading && imageUrl && (
-        <Stage 
-          width={containerSize.width} 
+        <Stage
+          width={containerSize.width}
           height={containerSize.height}
           onClick={handleStageClick}
           className={activeDirection ? 'cursor-crosshair' : 'cursor-default'}
         >
           <Layer>
             {image && (
-              <Image 
-                image={image} 
-                width={canvasWidth} 
-                height={canvasHeight} 
-                x={offsetX} 
+              <Image
+                image={image}
+                width={canvasWidth}
+                height={canvasHeight}
+                x={offsetX}
                 y={offsetY}
                 shadowColor="rgba(0,0,0,0.3)"
                 shadowBlur={10}
                 shadowOffset={{ x: 0, y: 4 }}
               />
             )}
-            
+
             {/* Drawn Polygons with Premium Styling */}
             {Object.entries(polygons).map(([direction, points]) => {
               const center = calculatePolygonCenter(points);
               const color = directionColors[direction.toLowerCase() as keyof typeof directionColors] || '#3b82f6';
               return (
                 <React.Fragment key={direction}>
-                  <Line 
-                    points={points.flat().map((coord, i) => i % 2 === 0 ? coord * scale + offsetX : coord * scale + offsetY)} 
-                    stroke={color} 
-                    strokeWidth={3} 
-                    closed={true} 
+                  <Line
+                    points={points.flat().map((coord, i) => i % 2 === 0 ? coord * scale + offsetX : coord * scale + offsetY)}
+                    stroke={color}
+                    strokeWidth={3}
+                    closed={true}
                     fill={`${color}20`}
                     shadowColor={color}
                     shadowBlur={8}
                     shadowOpacity={0.3}
-                    listening={false} 
+                    listening={false}
                   />
-                  <Text 
-                    text={direction.toUpperCase()} 
-                    x={center[0] * scale + offsetX} 
-                    y={center[1] * scale + offsetY} 
-                    fontSize={16} 
-                    fontFamily="Inter, system-ui, sans-serif" 
-                    fill="white" 
+                  <Text
+                    text={direction.toUpperCase()}
+                    x={center[0] * scale + offsetX}
+                    y={center[1] * scale + offsetY}
+                    fontSize={16}
+                    fontFamily="Inter, system-ui, sans-serif"
+                    fill="white"
                     fontStyle="bold"
                     shadowColor="rgba(0,0,0,0.8)"
                     shadowBlur={4}
-                    offsetX={direction.length * 4} 
-                    offsetY={8} 
-                    listening={false} 
+                    offsetX={direction.length * 4}
+                    offsetY={8}
+                    listening={false}
                   />
                 </React.Fragment>
               );
             })}
-            
+
             {/* Current Drawing Line with Premium Effect */}
             {currentPoints.length > 0 && (
               <>
-                <Line 
-                  points={currentPoints.flat().map((coord, i) => i % 2 === 0 ? coord * scale + offsetX : coord * scale + offsetY)} 
-                  stroke="#fbbf24" 
-                  strokeWidth={4} 
-                  lineCap="round" 
+                <Line
+                  points={currentPoints.flat().map((coord, i) => i % 2 === 0 ? coord * scale + offsetX : coord * scale + offsetY)}
+                  stroke="#fbbf24"
+                  strokeWidth={4}
+                  lineCap="round"
                   lineJoin="round"
                   shadowColor="#fbbf24"
                   shadowBlur={8}
                   shadowOpacity={0.6}
                 />
                 {currentPoints.map((point, i) => (
-                  <Circle 
-                    key={i} 
-                    x={point[0] * scale + offsetX} 
-                    y={point[1] * scale + offsetY} 
-                    radius={6} 
-                    fill="#fbbf24" 
-                    stroke="white" 
+                  <Circle
+                    key={i}
+                    x={point[0] * scale + offsetX}
+                    y={point[1] * scale + offsetY}
+                    radius={6}
+                    fill="#fbbf24"
+                    stroke="white"
                     strokeWidth={2}
                     shadowColor="#fbbf24"
                     shadowBlur={6}

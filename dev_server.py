@@ -12,6 +12,7 @@ from core.utils import setup_torch_global_settings, setup_thread_affinity
 from core.video_processor import VideoProcessor
 import signal
 import atexit
+from typing import Optional
 
 print("--- Initializing EMAAN DEVELOPMENT Server (File System Access API) ---")
 
@@ -101,6 +102,12 @@ class AnalysisConfigPayload(BaseModel):
     polygons: dict
     preview_image_width: int
     preview_image_height: int
+    road_polygon: Optional[list] = None
+    road_width_meters: Optional[float] = None
+    road_length_meters: Optional[float] = None
+    speed_limit_kmh: Optional[float] = None
+    night_hours_start: Optional[str] = None
+    night_hours_end: Optional[str] = None
 
 # --- API Endpoints ---
 @app.get("/api/v1/health", tags=["System"])
@@ -160,6 +167,12 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
     job_queues[job_id] = progress_queue
 
     processor.zone_polygons = config.polygons
+    processor.road_polygon_raw = config.road_polygon
+    processor.road_width_meters = config.road_width_meters
+    processor.road_length_meters = config.road_length_meters
+    processor.speed_limit_kmh = config.speed_limit_kmh
+    processor.night_hours_start = config.night_hours_start
+    processor.night_hours_end = config.night_hours_end
     
     background_tasks.add_task(
         processor.process_video,

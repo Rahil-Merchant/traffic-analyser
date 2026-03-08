@@ -22,7 +22,8 @@ class FinalizedPathsStore:
                 entry_time TEXT,
                 exit_time TEXT,
                 time_in_intersection REAL,
-                status TEXT
+                status TEXT,
+                average_speed_kmh REAL
             )
         ''')
         self.conn.commit()
@@ -43,8 +44,8 @@ class FinalizedPathsStore:
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT INTO finalized_paths 
-            (id, type, entry_direction, exit_direction, entry_time, exit_time, time_in_intersection, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (id, type, entry_direction, exit_direction, entry_time, exit_time, time_in_intersection, status, average_speed_kmh)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             path_data.get('id'),
             path_data.get('type'),
@@ -53,7 +54,8 @@ class FinalizedPathsStore:
             self._dt_converter(path_data.get('entry_time')),
             self._dt_converter(path_data.get('exit_time')),
             path_data.get('time_in_intersection'),
-            path_data.get('status')
+            path_data.get('status'),
+            path_data.get('average_speed_kmh')
         ))
         self.conn.commit()
 
@@ -71,7 +73,8 @@ class FinalizedPathsStore:
                 'entry_time': self._dt_parser(row[4]),
                 'exit_time': self._dt_parser(row[5]),
                 'time_in_intersection': row[6],
-                'status': row[7]
+                'status': row[7],
+                'average_speed_kmh': row[8]
             })
         return results
 

@@ -31,7 +31,9 @@ from config import (
     PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS, BYTETRACK_MATCH_THRESH,
     BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH, CROP_MODE,
     USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG, PATCHWISE_USE_BATCH_PROCESSING,
-    MOTION_INFERENCE_MIN_FRAMES, MOTION_INFERENCE_MAX_PROJECTION, MOTION_INFERENCE_MIN_DIST
+    MOTION_INFERENCE_MIN_FRAMES, MOTION_INFERENCE_MAX_PROJECTION, MOTION_INFERENCE_MIN_DIST,
+    MIN_SPEED_POSITIONS, MIN_SPEED_DURATION_SEC, MAX_PLAUSIBLE_SPEED_KMH,
+    JUMP_THRESHOLD_MULTIPLIER
 )
 from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory
@@ -105,6 +107,15 @@ class VideoProcessor:
         self.final_output_path = None
         self.temp_converted_files = []
 
+        # Speed estimation
+        self.homography_matrix = None
+        self.road_polygon_raw = None
+        self.road_width_meters = None
+        self.road_length_meters = None
+        self.speed_limit_kmh = None
+        self.night_hours_start = None
+        self.night_hours_end = None
+
     @profile
     def _initialize_run(self, video_paths, start_date_str, start_time_str, primary_direction, station_number_str, generate_link_count_report_flag, preview_image_width, preview_image_height):
         logger.info("--- Initializing New Video Processing Run ---")
@@ -164,15 +175,43 @@ class VideoProcessor:
         if len(self.zone_tracker.zones) == 2:
             zone_names = list(self.zone_tracker.zones.keys())
             z1, z2 = zone_names[0], zone_names[1]
-            c1 = np.mean(self.zone_tracker.zones[z1], axis=0)
-            c2 = np.mean(self.zone_tracker.zones[z2], axis=0)
-            axis = c2 - c1
-            axis = axis / (np.linalg.norm(axis) + 1e-6)
-            self.zone_axis = axis
             self.zone_pair = (z1, z2)
+
+            # Homography from user-defined road polygon
+            if (self.road_polygon_raw and len(self.road_polygon_raw) >= 4
+                    and self.road_width_meters and self.road_length_meters):
+                scaled_road_poly = self._scale_polygons_to_processing_coordinates(
+                    {'road': self.road_polygon_raw}, preview_image_width, preview_image_height
+                ).get('road', [])
+                if len(scaled_road_poly) >= 4:
+                    W, L = self.road_width_meters, self.road_length_meters
+                    src = np.array(scaled_road_poly[:4], dtype=np.float32)
+                    dst = np.array([[0, 0], [W, 0], [W, L], [0, L]], dtype=np.float32)
+                    if len(scaled_road_poly) > 4:
+                        self.homography_matrix, _ = cv2.findHomography(src, dst, cv2.RANSAC)
+                    else:
+                        self.homography_matrix = cv2.getPerspectiveTransform(src, dst)
+                    # Zone axis from road polygon midpoints
+                    mid_top = (src[1] + src[2]) / 2
+                    mid_bot = (src[0] + src[3]) / 2
+                    axis = mid_top - mid_bot
+                    self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
+                    logger.info(f"Homography computed from road polygon ({len(scaled_road_poly)} pts), "
+                                f"road={W}m x {L}m")
+                else:
+                    self.homography_matrix = None
+                    self.zone_axis = None
+            else:
+                self.homography_matrix = None
+                # Fallback: centroid-based zone axis
+                c1 = np.mean(self.zone_tracker.zones[z1], axis=0)
+                c2 = np.mean(self.zone_tracker.zones[z2], axis=0)
+                axis = c2 - c1
+                self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
         else:
             self.zone_axis = None
             self.zone_pair = None
+            self.homography_matrix = None
 
         # --- MODEL LOADING LOGIC ---
         if self.use_patchwise_inference:
@@ -592,11 +631,16 @@ class VideoProcessor:
             "bidirectional_excel_path": excel_link_count_path,
             "tia_excel_path": excel_tia_path
         }
+        all_paths = self.finalized_paths_store.get_all()
+        speeds = [p['average_speed_kmh'] for p in all_paths if p.get('average_speed_kmh') is not None]
+        avg_speed = round(sum(speeds) / len(speeds), 1) if speeds else None
+
         stats_dict = {
             "total_valid_paths": completed_paths,
             "processing_time_seconds": round(total_time, 2),
             "processing_fps": round(final_fps, 2),
-            "total_frames_processed": frames_processed_count
+            "total_frames_processed": frames_processed_count,
+            "average_speed_kmh": avg_speed
         }
         return result_msg, results_dict, stats_dict
 
@@ -826,6 +870,8 @@ class VideoProcessor:
                 if track_id_str not in self.active_track_data:
                     for zone_dir in zone_keys:
                         if self.zone_tracker._check_point_in_zone(tuple(bottom_center), self.zone_tracker.zones[zone_dir]):
+                            timeout = VEHICLE_TIMEOUTS.get(vehicle_type, VEHICLE_TIMEOUTS['default'])
+                            pos_maxlen = int(timeout * self.target_fps)
                             self.active_track_data[track_id_str] = {
                                                             'id': track_id_str,
                                                             'entry_direction': zone_dir,
@@ -835,7 +881,7 @@ class VideoProcessor:
                                                             'last_pos_zone': bottom_center,
                                                             'last_seen_frame': current_frame_num,
                                                             'status': 'active',
-                                                            'positions': deque(maxlen=10),
+                                                            'positions': deque(maxlen=pos_maxlen),
                                                             'frames_seen': 0,
                                                             'confirmed': False
                                                         }
@@ -845,7 +891,7 @@ class VideoProcessor:
                 else:
                     track_data = self.active_track_data[track_id_str]
                     track_data['last_seen_frame'] = current_frame_num
-                    track_data['positions'].append(bottom_center)
+                    track_data['positions'].append((bottom_center, current_frame_time_sec))
                     track_data['frames_seen'] += 1
                     track_data['type_history'][vehicle_type] = track_data['type_history'].get(vehicle_type, 0) + 1
                     track_data['current_type'] = max(track_data['type_history'], key=track_data['type_history'].get)
@@ -859,7 +905,8 @@ class VideoProcessor:
                         if event_type == "ENTRY" and track_data.get('entry_direction') != event_dir:
                             if is_valid_movement(track_data['entry_direction'], event_dir, zone_keys):
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
-                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration)
+                                speed = self._compute_average_speed_kmh(list(track_data['positions']))
+                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['confirmed'] = True
                                 track_data['entry_direction'] = event_dir
@@ -870,7 +917,8 @@ class VideoProcessor:
                         elif event_type == "EXIT":
                             if is_valid_movement(track_data['entry_direction'], event_dir, zone_keys):
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
-                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration)
+                                speed = self._compute_average_speed_kmh(list(track_data['positions']))
+                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['status'] = 'exited'
                                 track_data['confirmed'] = True
@@ -935,7 +983,8 @@ class VideoProcessor:
         if track_data['frames_seen'] < MOTION_INFERENCE_MIN_FRAMES:
             return False
 
-        pts = list(track_data['positions'])
+        positions_with_times = list(track_data['positions'])
+        pts = [p[0] for p in positions_with_times]
         print(f"[Motion Inference] Points: {pts}")
         if len(pts) < MOTION_INFERENCE_MIN_FRAMES:
             return False
@@ -956,6 +1005,7 @@ class VideoProcessor:
         inferred_exit = to_zone if proj > 0 else from_zone
 
         duration = (now_ts - track_data['entry_time']).total_seconds()
+        speed = self._compute_average_speed_kmh(positions_with_times)
         print(f"[Motion Inference] Exit confirmed to: {inferred_exit}")
         self._add_to_finalized_paths(
             track_id,
@@ -963,7 +1013,8 @@ class VideoProcessor:
             'exited',
             inferred_exit,
             now_ts,
-            duration
+            duration,
+            average_speed_kmh=speed
         )
 
         track_data['status'] = 'exited'
@@ -972,7 +1023,7 @@ class VideoProcessor:
         return True
 
     
-    def _add_to_finalized_paths(self, track_id_str, app_data, final_status_str, exit_direction_str, exit_time_dt, time_in_intersection_val):
+    def _add_to_finalized_paths(self, track_id_str, app_data, final_status_str, exit_direction_str, exit_time_dt, time_in_intersection_val, average_speed_kmh=None):
         path_report_entry = {
             'id': track_id_str,
             'type': app_data.get('current_type', 'UnknownType'),
@@ -982,8 +1033,55 @@ class VideoProcessor:
             'exit_time': exit_time_dt,
             'time_in_intersection': round(time_in_intersection_val, 2) if time_in_intersection_val is not None else 0.0,
             'status': final_status_str,
+            'average_speed_kmh': average_speed_kmh,
         }
         self.finalized_paths_store.append(path_report_entry)
+
+    def _pixel_to_world(self, point):
+        pt = np.array([[[float(point[0]), float(point[1])]]], dtype=np.float32)
+        world = cv2.perspectiveTransform(pt, self.homography_matrix)
+        return world[0][0]
+
+    def _compute_average_speed_kmh(self, positions_with_times):
+        if self.homography_matrix is None or len(positions_with_times) < MIN_SPEED_POSITIONS:
+            return None
+        dt = positions_with_times[-1][1] - positions_with_times[0][1]
+        if dt < MIN_SPEED_DURATION_SEC:
+            return None
+
+        world_points = []
+        for pos, _ in positions_with_times:
+            try:
+                wp = self._pixel_to_world(pos)
+                if wp[0] < -self.road_width_meters or wp[1] < -self.road_length_meters:
+                    continue
+                if wp[0] > self.road_width_meters * 2 or wp[1] > self.road_length_meters * 2:
+                    continue
+                world_points.append(wp)
+            except Exception:
+                continue
+
+        if len(world_points) < 2:
+            return None
+
+        segments = [np.linalg.norm(np.array(world_points[i + 1]) - np.array(world_points[i]))
+                    for i in range(len(world_points) - 1)]
+        if not segments:
+            return None
+
+        median_seg = np.median(segments)
+        threshold = median_seg * JUMP_THRESHOLD_MULTIPLIER
+        clean_segments = [s for s in segments if s <= max(threshold, 0.5)]
+
+        total_meters = sum(clean_segments)
+        if total_meters < 1.0:
+            return 0.0
+
+        speed = (total_meters / dt) * 3.6
+        if speed > MAX_PLAUSIBLE_SPEED_KMH:
+            return None
+
+        return round(speed, 1)
 
     @profile
     def _execute_single_model_inference(self, model_instance, input_tensor_chunk, stream_to_use=None):

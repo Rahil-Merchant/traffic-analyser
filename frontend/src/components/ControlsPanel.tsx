@@ -6,12 +6,22 @@ interface ControlsPanelProps {
   primaryDirection: string | null;
   reportType: string;
   isLaunchable: boolean;
+  roadWidthMeters: number | '';
+  roadLengthMeters: number | '';
+  speedLimitKmh: number | '';
+  nightHoursStart: string;
+  nightHoursEnd: string;
   onSetDirection: (direction: string) => void;
   onFinishZone: () => void;
   onUndoPoint: () => void;
   onClearAllZones: () => void;
   onPrimaryDirectionChange: (direction: string) => void;
   onReportTypeChange: (type: string) => void;
+  onRoadWidthChange: (val: number | '') => void;
+  onRoadLengthChange: (val: number | '') => void;
+  onSpeedLimitChange: (val: number | '') => void;
+  onNightHoursStartChange: (val: string) => void;
+  onNightHoursEndChange: (val: string) => void;
   onLaunch: () => void;
 }
 
@@ -22,12 +32,22 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     primaryDirection,
     reportType,
     isLaunchable,
+    roadWidthMeters,
+    roadLengthMeters,
+    speedLimitKmh,
+    nightHoursStart,
+    nightHoursEnd,
     onSetDirection,
     onFinishZone,
     onUndoPoint,
     onClearAllZones,
     onPrimaryDirectionChange,
     onReportTypeChange,
+    onRoadWidthChange,
+    onRoadLengthChange,
+    onSpeedLimitChange,
+    onNightHoursStartChange,
+    onNightHoursEndChange,
     onLaunch
   } = props;
 
@@ -155,6 +175,92 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                 </svg>
                 <span>Clear All</span>
               </button>
+            </div>
+          </div>
+
+          {/* Speed Calibration Section */}
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <div className="w-4 h-4 bg-orange-500/20 rounded-md flex items-center justify-center">
+                <span className="text-orange-400 font-bold text-xs">🏎️</span>
+              </div>
+              <p className="font-semibold text-gray-200 text-sm">Speed Calibration</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => onSetDirection('road')}
+                className={`
+                  col-span-2 relative p-2 rounded-lg border-2 transition-all duration-300 transform hover:scale-105 flex items-center justify-center space-x-2
+                  ${activeDirection === 'road'
+                    ? 'bg-gradient-to-br from-orange-500 to-orange-600 shadow-lg ring-2 ring-white/20 border-orange-400/50 text-white'
+                    : drawnZones.includes('road')
+                      ? 'bg-gradient-to-br from-orange-500/80 to-orange-600/80 hover:opacity-100 border-orange-400/50 text-white'
+                      : 'bg-gray-800/50 border-gray-600/50 text-gray-300 hover:bg-gray-700/50 hover:border-gray-500/50'
+                  }
+                `}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8v8M20 8v8M4 16l16-8M4 8l16 8" />
+                </svg>
+                <span className="text-xs font-semibold">{drawnZones.includes('road') ? 'Road Polygon Drawn' : 'Draw Road Area'}</span>
+              </button>
+
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Road Width (m)</label>
+                <input
+                  type="number"
+                  min="0" step="0.1"
+                  value={roadWidthMeters}
+                  onChange={e => onRoadWidthChange(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder="e.g. 7.5"
+                />
+              </div>
+
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Road Length (m)</label>
+                <input
+                  type="number"
+                  min="0" step="0.1"
+                  value={roadLengthMeters}
+                  onChange={e => onRoadLengthChange(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder="e.g. 30.0"
+                />
+              </div>
+
+              <div className="col-span-2 bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Speed Limit (km/h)</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={speedLimitKmh}
+                  onChange={e => onSpeedLimitChange(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder="e.g. 60"
+                />
+              </div>
+
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Night Start</label>
+                <input
+                  type="time"
+                  value={nightHoursStart}
+                  onChange={e => onNightHoursStartChange(e.target.value)}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Night End</label>
+                <input
+                  type="time"
+                  value={nightHoursEnd}
+                  onChange={e => onNightHoursEndChange(e.target.value)}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
             </div>
           </div>
 

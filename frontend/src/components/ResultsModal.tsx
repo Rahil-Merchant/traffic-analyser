@@ -8,6 +8,7 @@ interface ResultsModalProps {
     processing_time_seconds: number;
     processing_fps: number;
     total_frames_processed: number;
+    fleet_average_speed_kmh?: number;
   } | null;
   results: {
     video_path: string;
@@ -23,7 +24,7 @@ const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
-    
+
     if (hours > 0) {
       return `${hours}h ${minutes}m ${secs}s`;
     } else if (minutes > 0) {
@@ -50,7 +51,7 @@ const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics
                 <p className="text-green-400 text-sm">Processing finished successfully</p>
               </div>
             </div>
-            <button 
+            <button
               onClick={onClose}
               className="w-8 h-8 bg-gray-700/50 hover:bg-gray-600/50 rounded-lg flex items-center justify-center transition-colors duration-200"
             >
@@ -70,7 +71,7 @@ const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics
               </svg>
               <span>Processing Statistics</span>
             </h3>
-            
+
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-gradient-to-br from-green-500/20 to-green-600/20 border border-green-500/30 rounded-xl p-4">
                 <div className="flex items-center justify-between">
@@ -114,6 +115,22 @@ const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics
                 </div>
               </div>
 
+              <div className="bg-gradient-to-br from-indigo-500/20 to-indigo-600/20 border border-indigo-500/30 rounded-xl p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-indigo-400 text-sm font-medium">Avg Fleet Speed</p>
+                    <p className="text-3xl font-bold text-white">
+                      {statistics.fleet_average_speed_kmh ? `${statistics.fleet_average_speed_kmh.toFixed(1)} km/h` : 'N/A'}
+                    </p>
+                  </div>
+                  <div className="w-12 h-12 bg-indigo-500/30 rounded-lg flex items-center justify-center">
+                    <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                  </div>
+                </div>
+              </div>
+
               <div className="bg-gradient-to-br from-orange-500/20 to-orange-600/20 border border-orange-500/30 rounded-xl p-4">
                 <div className="flex items-center justify-between">
                   <div>
@@ -140,7 +157,7 @@ const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics
               </svg>
               <span>Generated Reports</span>
             </h3>
-            
+
             <div className="space-y-3">
               {results.excel_path && (
                 <div className="bg-gray-800/50 border border-gray-600/30 rounded-lg p-3 flex items-center justify-between">
@@ -198,7 +215,7 @@ const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics
 
         {/* Footer */}
         <div className="bg-gray-800/50 border-t border-gray-700/30 p-4 flex justify-end">
-          <button 
+          <button
             onClick={onClose}
             className="px-6 py-2 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-lg hover:from-blue-500 hover:to-blue-600 transition-all duration-200 shadow-lg"
           >

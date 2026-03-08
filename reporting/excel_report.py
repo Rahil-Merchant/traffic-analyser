@@ -134,7 +134,9 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     'Vehicle Tracker ID': v_id, 'Object ID': VEHICLE_ID_MAP.get(v_type, ''), 'Object Name': v_type,
                     'Entry Direction': entry_dir_disp, 'Exit Direction': exit_dir_disp,
                     'Entry Time': entry_time_str, 'Exit Time': exit_time_str,
-                    'Time in Intersection (s)': round(t_in_int, 2) if t_in_int is not None else 'N/A' })
+                    'Time in Intersection (s)': round(t_in_int, 2) if t_in_int is not None else 'N/A',
+                    'Average Speed (km/h)': path.get('average_speed_kmh', 'N/A') if path.get('average_speed_kmh') is not None else 'N/A'
+                })
                 # Data for other sheets (use raw keys for direction map lookup)
                 valid_paths_structured.append({
                      'vehicle_type': v_type, 'direction_from': entry_dir, 'direction_to': exit_dir,

@@ -50,6 +50,13 @@ function App() {
   const [imageDimensions, setImageDimensions] = useState<{ width: number, height: number }>({ width: 640, height: 480 });
   const [stationNumber, setStationNumber] = useState<string>('');
 
+  // Speed Calibration State
+  const [roadWidthMeters, setRoadWidthMeters] = useState<number | ''>('');
+  const [roadLengthMeters, setRoadLengthMeters] = useState<number | ''>('');
+  const [speedLimitKmh, setSpeedLimitKmh] = useState<number | ''>('');
+  const [nightHoursStart, setNightHoursStart] = useState<string>('');
+  const [nightHoursEnd, setNightHoursEnd] = useState<string>('');
+
   // Results Modal State
   const [showResults, setShowResults] = useState(false);
   const [analysisResults, setAnalysisResults] = useState<any>(null);
@@ -165,7 +172,14 @@ function App() {
         exact_height: imageDimensions.height,
         aspect_ratio: imageDimensions.width / imageDimensions.height,
         total_pixels: imageDimensions.width * imageDimensions.height
-      }
+      },
+      // Speed Calibration optional inputs
+      road_polygon: polygons['road'] || null,
+      road_width_meters: roadWidthMeters || null,
+      road_length_meters: roadLengthMeters || null,
+      speed_limit_kmh: speedLimitKmh || null,
+      night_hours_start: nightHoursStart || null,
+      night_hours_end: nightHoursEnd || null
     };
 
     console.log('Sending exact image dimensions:', {
@@ -221,9 +235,32 @@ function App() {
   const handleClearAllFiles = () => { setFiles([]); handleClearAllZones(); };
   const handleSetDirection = (direction: string) => { if (activeDirection) { handleFinishZone(); } setCurrentPoints([]); setActiveDirection(direction); setStatusText(`[DRAWING] Active zone: ${direction.toUpperCase()} • Click to place points`); };
   const handleCanvasClick = (x: number, y: number) => { if (activeDirection) { setCurrentPoints(prev => [...prev, [x, y]]); } };
-  const handleFinishZone = () => { if (!activeDirection || currentPoints.length < 3) { setStatusText(`[WARNING] Zone must have at least 3 points to be valid`); return; } setPolygons(prev => ({ ...prev, [activeDirection]: currentPoints })); setCurrentPoints([]); setActiveDirection(null); setStatusText(`[SAVED] Zone ${activeDirection.toUpperCase()} defined successfully`); };
+  const handleFinishZone = () => {
+    if (!activeDirection) return;
+    const minPoints = activeDirection === 'road' ? 4 : 3;
+    if (currentPoints.length < minPoints) {
+      setStatusText(`[WARNING] Zone must have at least ${minPoints} points to be valid`);
+      return;
+    }
+    setPolygons(prev => ({ ...prev, [activeDirection]: currentPoints }));
+    setCurrentPoints([]);
+    setActiveDirection(null);
+    setStatusText(`[SAVED] Zone ${activeDirection.toUpperCase()} defined successfully`);
+  };
   const handleUndoPoint = () => { if (currentPoints.length > 0) { setCurrentPoints(prev => prev.slice(0, -1)); } };
-  const handleClearAllZones = () => { setPolygons({}); setCurrentPoints([]); setActiveDirection(null); setPrimaryDirection(null); setReportType('Standard Report'); setStatusText("[CLEARED] All zones removed • Ready for new configuration"); };
+  const handleClearAllZones = () => {
+    setPolygons({});
+    setCurrentPoints([]);
+    setActiveDirection(null);
+    setPrimaryDirection(null);
+    setReportType('Standard Report');
+    setRoadWidthMeters('');
+    setRoadLengthMeters('');
+    setSpeedLimitKmh('');
+    setNightHoursStart('');
+    setNightHoursEnd('');
+    setStatusText("[CLEARED] All zones and settings removed • Ready for new configuration");
+  };
 
   const handleCloseResults = () => {
     setShowResults(false);
@@ -368,12 +405,22 @@ function App() {
             primaryDirection={primaryDirection}
             reportType={reportType}
             isLaunchable={isLaunchable}
+            roadWidthMeters={roadWidthMeters}
+            roadLengthMeters={roadLengthMeters}
+            speedLimitKmh={speedLimitKmh}
+            nightHoursStart={nightHoursStart}
+            nightHoursEnd={nightHoursEnd}
             onSetDirection={handleSetDirection}
             onFinishZone={handleFinishZone}
             onUndoPoint={handleUndoPoint}
             onClearAllZones={handleClearAllZones}
             onPrimaryDirectionChange={setPrimaryDirection}
             onReportTypeChange={setReportType}
+            onRoadWidthChange={setRoadWidthMeters}
+            onRoadLengthChange={setRoadLengthMeters}
+            onSpeedLimitChange={setSpeedLimitKmh}
+            onNightHoursStartChange={setNightHoursStart}
+            onNightHoursEndChange={setNightHoursEnd}
             onLaunch={handleLaunch}
           />
         </div>
