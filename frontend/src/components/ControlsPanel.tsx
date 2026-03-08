@@ -296,51 +296,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                 </select>
               </div>
 
-              {/* Report Type */}
-              <div className={`bg-gray-900/50 rounded-lg border border-gray-700/30 p-2 transition-all duration-300 ${!isBiDirectionalAvailable ? 'opacity-60' : ''}`}>
-                <label className="block text-xs font-medium text-gray-400 mb-1">Report Type</label>
-                <div className="space-y-1">
-                  <label className="flex items-center space-x-2 cursor-pointer group">
-                    <input
-                      type="radio"
-                      name="reportType"
-                      value="Standard Report"
-                      checked={reportType === 'Standard Report'}
-                      onChange={e => onReportTypeChange(e.target.value)}
-                      className="w-3 h-3 text-blue-500 border-gray-600 focus:ring-blue-500 focus:ring-1"
-                    />
-                    <div className="flex-1">
-                      <div className="text-white font-medium text-xs group-hover:text-blue-300 transition-colors duration-200">
-                        Standard Report
-                      </div>
-                      <div className="text-xs text-gray-500">Basic traffic analysis</div>
-                    </div>
-                  </label>
-
-                  <label className={`flex items-center space-x-2 cursor-pointer group transition-all duration-200 ${!isBiDirectionalAvailable ? 'cursor-not-allowed' : ''}`}>
-                    <input
-                      type="radio"
-                      name="reportType"
-                      value="Standard + Bi-directional Report"
-                      checked={reportType === 'Standard + Bi-directional Report'}
-                      onChange={e => onReportTypeChange(e.target.value)}
-                      disabled={!isBiDirectionalAvailable}
-                      className="w-3 h-3 text-blue-500 border-gray-600 focus:ring-blue-500 focus:ring-1 disabled:opacity-50"
-                    />
-                    <div className="flex-1">
-                      <div className={`font-medium text-xs transition-colors duration-200 ${isBiDirectionalAvailable ? 'text-white group-hover:text-blue-300' : 'text-gray-500'}`}>
-                        Standard + Bi-directional
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {isBiDirectionalAvailable ? 'Advanced flow analysis' : 'Requires 2 zones'}
-                      </div>
-                    </div>
-                    {isBiDirectionalAvailable && (
-                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                    )}
-                  </label>
-                </div>
-              </div>
+              {/* Report Type Auto-inferred */}
             </div>
           </div>
         </div>

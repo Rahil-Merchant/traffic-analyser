@@ -666,10 +666,10 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             stTot = calc_stats(tot_speeds, tot_light, tot_heavy, tot_night)
             
             row_lbls = [
-                "3.1 Speed limit (km/hr)", "3.2 Average speed (km/hr)",
-                "3.3 Average speed - light vehicles (km/hr)", "3.4 Average speed - heavy vehicles (km/hr)",
-                "3.5 Average night speed (km/hr)", "3.6 15th centile speed (km/hr)",
-                "3.7 85th centile speed (km/hr)", "3.8 Percentage vehicles in excess of speed limit"
+                "Speed limit (km/hr)", "Average speed (km/hr)",
+                "Average speed - light vehicles (km/hr)", "Average speed - heavy vehicles (km/hr)",
+                "Average night speed (km/hr)", "15th percentile speed (km/hr)",
+                "85th percentile speed (km/hr)", "Percentage vehicles in excess of speed limit"
             ]
             
             dir1_display_name = get_display_direction(primary_direction)
@@ -679,16 +679,26 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             ws_speed.write(0, 2, f"To {dir2_display_name}", header_format)
             ws_speed.write(0, 3, "Total", header_format)
             
-            speed_data_format = wb.add_format({'border': 1, 'align': 'center', 'num_format': '0.00'})
+            speed_data_format = wb.add_format({'border': 1, 'align': 'center'})
+            speed_data_format = wb.add_format({'border': 1, 'align': 'center'})
             for r, lbl in enumerate(row_lbls):
                 ws_speed.write(r + 1, 0, lbl)
                 v1, v2, v3 = st1[r], st2[r], stTot[r]
-                if isinstance(v1, float) and np.isnan(v1): v1 = ""
-                if isinstance(v2, float) and np.isnan(v2): v2 = ""
-                if isinstance(v3, float) and np.isnan(v3): v3 = ""
-                if v1 != "": ws_speed.write(r + 1, 1, float(v1), speed_data_format)
-                if v2 != "": ws_speed.write(r + 1, 2, float(v2), speed_data_format)
-                if v3 != "": ws_speed.write(r + 1, 3, float(v3), speed_data_format)
+                
+                if r == 0:
+                    # Speed Limit row: merge columns 1 to 3
+                    val = v1 if v1 != "" else ""
+                    if val != "": 
+                        ws_speed.merge_range(r + 1, 1, r + 1, 3, f"{float(val):.2f}", speed_data_format)
+                    else:
+                        ws_speed.merge_range(r + 1, 1, r + 1, 3, "", speed_data_format)
+                else:
+                    if isinstance(v1, float) and np.isnan(v1): v1 = ""
+                    if isinstance(v2, float) and np.isnan(v2): v2 = ""
+                    if isinstance(v3, float) and np.isnan(v3): v3 = ""
+                    if v1 != "": ws_speed.write(r + 1, 1, f"{float(v1):.2f}", speed_data_format)
+                    if v2 != "": ws_speed.write(r + 1, 2, f"{float(v2):.2f}", speed_data_format)
+                    if v3 != "": ws_speed.write(r + 1, 3, f"{float(v3):.2f}", speed_data_format)
                 
             ws_speed.set_column(0, 0, 45)
             ws_speed.set_column(1, 3, 15)
