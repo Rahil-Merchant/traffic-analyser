@@ -16,7 +16,7 @@ def visualize_performance(perf_tracker):
     if not MATPLOTLIB_AVAILABLE: print("Matplotlib not found, skipping viz."); return
     if perf_tracker is None or not hasattr(perf_tracker, 'get_summary'): print("Perf tracker invalid."); return
 
-    print("Generating performance visualizations..."); output_dir = "performance_charts"; os.makedirs(output_dir, exist_ok=True)
+    print("Generating performance visualizations..."); output_dir = "output/performance_charts"; os.makedirs(output_dir, exist_ok=True)
     try:
         summary = perf_tracker.get_summary()
 

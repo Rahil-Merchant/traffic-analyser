@@ -1,10 +1,7 @@
 # project/tracking/zone_tracker.py
 import numpy as np
 import cv2
-from collections import defaultdict
 from config import FRAME_WIDTH, FRAME_HEIGHT # Use frame dimensions from config
-from core.line_detection import Line # Assumes Line class is defined correctly
-from core.utils import debug_print # For optional debug messages
 
 class ZoneTracker:
     """Manages intersection zones and detects vehicle entries/exits."""
@@ -27,7 +24,6 @@ class ZoneTracker:
 
     def _check_point_in_zone(self, point, zone_polygon):
         if zone_polygon is None or len(zone_polygon) < 3:
-            # print(f"DEBUG ZoneCheck: Invalid polygon received: {zone_polygon}") # Optional debug
             return False
         try:
             # Ensure point is tuple of standard Python ints for pointPolygonTest

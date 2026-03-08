@@ -1,0 +1,29 @@
+{
+  "productName": "EMAAN Urban Reconnaissance",
+  "version": "1.0.0",
+  "identifier": "com.emaan.urbanreconnaissance",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "EMAAN Urban Reconnaissance",
+        "width": 1920,
+        "height": 1080,
+        "minWidth": 1600,
+        "minHeight": 900,
+        "resizable": true,
+        "maximized": true,
+        "decorations": true,
+        "transparent": false,
+        "fullscreen": false,
+        "alwaysOnTop": false,
+        "devtools": true
+      }
+    ]
+  }
+}

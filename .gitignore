@@ -57,7 +57,15 @@ coverage.xml
 *.log
 
 *.pt
+*.engine
+*.onnx
+*.trt
 
 *.mp4
+*.jpg
+*.png
 
 models/weights/*
+utility_scripts/*.jpg
+utility_scripts/*.json
+utility_scripts/*.txt

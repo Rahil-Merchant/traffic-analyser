@@ -1,38 +1,13 @@
 # project/core/performance.py
 import time
 import torch
-import os
-import gc # Make sure gc is imported
 import numpy as np # Import numpy
 from datetime import timedelta
-from config import (
-    ENABLE_DETAILED_PERFORMANCE_METRICS, PERFORMANCE_SAMPLE_INTERVAL,
-    DEBUG_MODE
-)
-
-# Optional imports
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    PSUTIL_AVAILABLE = False
-    psutil = None
-    if DEBUG_MODE: print("psutil not found, CPU/RAM monitoring disabled.")
-
-try:
-    import pynvml
-    PYNVML_AVAILABLE = True
-    pynvml.nvmlInit()
-    if DEBUG_MODE: print("pynvml initialized for GPU monitoring.")
-except ImportError:
-    PYNVML_AVAILABLE = False
-    pynvml = None
-    if DEBUG_MODE: print("pynvml not found, detailed GPU monitoring disabled.")
-except pynvml.NVMLError as e:
-    PYNVML_AVAILABLE = False
-    pynvml = None
-    if DEBUG_MODE: print(f"Could not initialize pynvml: {e}")
-
+from config import (ENABLE_DETAILED_PERFORMANCE_METRICS, PERFORMANCE_SAMPLE_INTERVAL)
+import psutil
+from loguru import logger
+import pynvml
+pynvml.nvmlInit()
 
 class PerformanceTracker:
     """Comprehensive performance tracking system."""
@@ -63,11 +38,11 @@ class PerformanceTracker:
         # GPU Metrics
         self.gpu_metrics = {'memory_allocated': [], 'memory_reserved': [], 'utilization': []}
         self._gpu_handle = None
-        if PYNVML_AVAILABLE and torch.cuda.is_available():
+        if torch.cuda.is_available():
             try:
                 self._gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             except Exception as e:
-                if DEBUG_MODE: print(f"Failed to get NVML handle: {e}")
+                logger.info(f"Failed to get NVML handle: {e}")
                 self._gpu_handle = None
 
         # CPU Metrics
@@ -133,7 +108,7 @@ class PerformanceTracker:
             duration_ms = start_event.elapsed_time(end_event)
             self.timings['inference'] += duration_ms / 1000.0
         except Exception as e:
-             if DEBUG_MODE: print(f"Error recording GPU inference time: {e}")
+            logger.info(f"Error recording GPU inference time: {e}")
 
     # --- Metric Recording ---
     def record_batch_processed(self, batch_size, batch_time):
@@ -190,24 +165,23 @@ class PerformanceTracker:
                      gpu_util = util_rates.gpu
                  self.gpu_metrics['utilization'].append(gpu_util)
             except Exception as e:
-                 if DEBUG_MODE: print(f"Error sampling GPU metrics: {e}")
+                 logger.info(f"Error sampling GPU metrics: {e}")
                  # Append 0 to maintain list lengths if error
                  self.gpu_metrics['memory_allocated'].append(0)
                  self.gpu_metrics['memory_reserved'].append(0)
                  self.gpu_metrics['utilization'].append(0)
 
         # CPU / RAM Metrics
-        if PSUTIL_AVAILABLE:
-            try:
-                 self.cpu_metrics['utilization'].append(psutil.cpu_percent(interval=None))
-                 mem_info = psutil.virtual_memory()
-                 self.cpu_metrics['memory_percent'].append(mem_info.percent)
-                 self.system_metrics['ram_usage_gb'].append(mem_info.used / 1e9)
-            except Exception as e:
-                if DEBUG_MODE: print(f"Error sampling CPU/RAM metrics: {e}")
-                self.cpu_metrics['utilization'].append(0)
-                self.cpu_metrics['memory_percent'].append(0)
-                self.system_metrics['ram_usage_gb'].append(0)
+        try:
+            self.cpu_metrics['utilization'].append(psutil.cpu_percent(interval=None))
+            mem_info = psutil.virtual_memory()
+            self.cpu_metrics['memory_percent'].append(mem_info.percent)
+            self.system_metrics['ram_usage_gb'].append(mem_info.used / 1e9)
+        except Exception as e:
+            logger.info(f"Error sampling CPU/RAM metrics: {e}")
+            self.cpu_metrics['utilization'].append(0)
+            self.cpu_metrics['memory_percent'].append(0)
+            self.system_metrics['ram_usage_gb'].append(0)
 
         self.last_sample_time = current_time
 
@@ -321,6 +295,7 @@ class PerformanceTracker:
         print("="*80)
 
     def __del__(self):
-         if PYNVML_AVAILABLE and hasattr(pynvml, 'nvmlShutdown'):
-             try: pynvml.nvmlShutdown()
-             except: pass # Ignore shutdown errors
+        try: pynvml.nvmlShutdown()
+        except Exception as e:
+            logger.info(f"Error while shutting pynvml: {e}") 
+            pass # Ignore shutdown errors
