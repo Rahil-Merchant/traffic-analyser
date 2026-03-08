@@ -197,7 +197,7 @@ DEBUG_MODE = False # Keep False for performance runs
 PERFORMANCE_SAMPLE_INTERVAL = 15.0   # In seconds
 MEMORY_CLEANUP_INTERVAL = 300   # In seconds
 
-SERVER_PORT = 7862
+SERVER_PORT = 8080
 
 # --- Print Confirmation ---
 print(f"--- Configuration Loaded (Tuned for Exit Accuracy) ---")

@@ -45,7 +45,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo ✓ Environment activated successfully
+echo > Environment activated successfully
 
 :: Check if backend files exist
 echo [2/4] Checking backend files...
@@ -56,20 +56,20 @@ if not exist "%PROJECT_DIR%dev_server.py" (
     pause
     exit /b 1
 )
-echo ✓ Backend files found
+echo > Backend files found
 
 :: Start backend server
 echo [3/4] Starting backend server...
 cd /d "%PROJECT_DIR%"
 start "EMAAN-Backend" /min cmd /k "title EMAAN Backend Server && conda activate %CONDA_ENV% && echo Starting backend on port %BACKEND_PORT%... && python dev_server.py"
 
-echo ✓ Backend server initiated
-echo   → Running on http://localhost:%BACKEND_PORT%
-echo   → Check backend window if issues occur
+echo > Backend server initiated
+echo   > Running on http://localhost:%BACKEND_PORT%
+echo   > Check backend window if issues occur
 
 :: Wait for backend to start
 echo [4/4] Starting frontend application...
-echo   → Waiting for backend to initialize...
+echo   > Waiting for backend to initialize...
 timeout /t 5 /nobreak >nul
 
 :: Check if frontend exists
@@ -84,7 +84,7 @@ if not exist "%PROJECT_DIR%frontend\EMAAN Urban Reconnaissance.exe" (
     echo Press any key when done...
     pause >nul
 ) else (
-    echo ✓ Starting desktop application...
+    echo > Starting desktop application...
     cd "%PROJECT_DIR%frontend"
     start /wait "" "EMAAN Urban Reconnaissance.exe"
 )
