@@ -607,7 +607,10 @@ class VideoProcessor:
         )
         
         excel_link_count_path = None
-        if init_data["generate_link_count_report"]:
+        # Always generate bidirectional report if there are exactly 2 directional zones
+        should_generate_bidirectional = len(self.zone_polygons) == 2
+        
+        if should_generate_bidirectional or init_data.get("generate_link_count_report", False):
             secondary_dirs = [d for d in self.zone_polygons.keys() if d != init_data["primary_direction"]]
             if secondary_dirs:
                 excel_link_count_path = create_bidirectional_link_count_report(
