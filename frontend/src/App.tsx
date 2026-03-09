@@ -42,7 +42,6 @@ function App() {
   const [currentPoints, setCurrentPoints] = useState<Point[]>([]);
   const [activeDirection, setActiveDirection] = useState<string | null>(null);
   const [primaryDirection, setPrimaryDirection] = useState<string | null>(null);
-  const [reportType, setReportType] = useState('Standard Report');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [progress, setProgress] = useState(0);
   const [processingStatus, setProcessingStatus] = useState("");
@@ -65,15 +64,6 @@ function App() {
   const webSocketRef = useRef<WebSocket | null>(null);
   const directionalZonesCount = Object.keys(polygons).filter(z => z !== 'road').length;
   const isLaunchable = files.length > 0 && directionalZonesCount > 0 && !!primaryDirection && !isProcessing;
-
-  // Auto-set report type based on number of directional zones
-  useEffect(() => {
-    if (directionalZonesCount === 2) {
-      setReportType('Standard + Bi-directional Report');
-    } else {
-      setReportType('Standard Report');
-    }
-  }, [directionalZonesCount]);
 
   const fetchPreview = async (path: string) => {
     setIsLoadingPreview(true);
@@ -175,7 +165,6 @@ function App() {
       station_number: stationNumber,
       polygons: filteredPolygons,
       primary_direction: primaryDirection || '',
-      report_type: reportType,
       // Exact image dimensions used for polygon drawing
       preview_image_width: imageDimensions.width,
       preview_image_height: imageDimensions.height,
@@ -266,12 +255,11 @@ function App() {
     setCurrentPoints([]);
     setActiveDirection(null);
     setPrimaryDirection(null);
-    setReportType('Standard Report');
     setRoadWidthMeters('');
     setRoadLengthMeters('');
-    setSpeedLimitKmh('');
-    setNightHoursStart('');
-    setNightHoursEnd('');
+    setSpeedLimitKmh(60);
+    setNightHoursStart('18:00');
+    setNightHoursEnd('06:00');
     setStatusText("[CLEARED] All zones and settings removed • Ready for new configuration");
   };
 
@@ -282,7 +270,7 @@ function App() {
   };
 
   useEffect(() => { if (files.length > 0 && files[0].path) { fetchPreview(files[0].path); } else { setPreviewUrl(null); setStatusText("[READY] Select video files to begin analysis"); } }, [files[0]?.path]);
-  useEffect(() => { const zones = Object.keys(polygons); if (primaryDirection && !zones.includes(primaryDirection)) { setPrimaryDirection(null); } if (zones.length === 2) { setReportType('Standard + Bi-directional Report'); } else { setReportType('Standard Report'); } }, [polygons, primaryDirection]);
+  useEffect(() => { const zones = Object.keys(polygons); if (primaryDirection && !zones.includes(primaryDirection)) { setPrimaryDirection(null); } }, [polygons, primaryDirection]);
   useEffect(() => {
     axios.get(`${API_BASE_URL}/api/v1/health`)
       .then(() => console.log("✅ Backend Connection Established"))
@@ -416,7 +404,6 @@ function App() {
             activeDirection={activeDirection}
             drawnZones={Object.keys(polygons)}
             primaryDirection={primaryDirection}
-            reportType={reportType}
             isLaunchable={isLaunchable}
             roadWidthMeters={roadWidthMeters}
             roadLengthMeters={roadLengthMeters}
@@ -428,7 +415,6 @@ function App() {
             onUndoPoint={handleUndoPoint}
             onClearAllZones={handleClearAllZones}
             onPrimaryDirectionChange={setPrimaryDirection}
-            onReportTypeChange={setReportType}
             onRoadWidthChange={setRoadWidthMeters}
             onRoadLengthChange={setRoadLengthMeters}
             onSpeedLimitChange={setSpeedLimitKmh}

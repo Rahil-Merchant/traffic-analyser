@@ -4,7 +4,6 @@ interface ControlsPanelProps {
   activeDirection: string | null;
   drawnZones: string[];
   primaryDirection: string | null;
-  reportType: string;
   isLaunchable: boolean;
   roadWidthMeters: number | '';
   roadLengthMeters: number | '';
@@ -16,7 +15,6 @@ interface ControlsPanelProps {
   onUndoPoint: () => void;
   onClearAllZones: () => void;
   onPrimaryDirectionChange: (direction: string) => void;
-  onReportTypeChange: (type: string) => void;
   onRoadWidthChange: (val: number | '') => void;
   onRoadLengthChange: (val: number | '') => void;
   onSpeedLimitChange: (val: number | '') => void;
@@ -30,7 +28,6 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     activeDirection,
     drawnZones,
     primaryDirection,
-    reportType,
     isLaunchable,
     roadWidthMeters,
     roadLengthMeters,
@@ -42,7 +39,6 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     onUndoPoint,
     onClearAllZones,
     onPrimaryDirectionChange,
-    onReportTypeChange,
     onRoadWidthChange,
     onRoadLengthChange,
     onSpeedLimitChange,
@@ -64,9 +60,6 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     blue: 'from-blue-500 to-blue-600 border-blue-400/50 text-blue-50',
     red: 'from-red-500 to-red-600 border-red-400/50 text-red-50'
   };
-
-  const directionalZones = drawnZones.filter(z => z !== 'road');
-  const isBiDirectionalAvailable = directionalZones.length === 2;
 
   return (
     <div className="h-full bg-gradient-to-br from-gray-900/95 via-gray-800/95 to-gray-900/95 backdrop-blur-sm border border-gray-700/50 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
@@ -288,11 +281,14 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                   disabled={drawnZones.length === 0}
                 >
                   <option value="" disabled>Select from zones...</option>
-                  {drawnZones.map(zone => (
-                    <option key={zone} value={zone}>
-                      {zone.charAt(0).toUpperCase() + zone.slice(1)}
-                    </option>
-                  ))}
+                  {drawnZones
+                    .filter(zone => zone !== "road")
+                    .map(zone => (
+                      <option key={zone} value={zone}>
+                        {zone.charAt(0).toUpperCase() + zone.slice(1)}
+                      </option>
+                    ))
+                  }
                 </select>
               </div>
 

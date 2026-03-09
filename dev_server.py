@@ -98,7 +98,6 @@ class AnalysisConfigPayload(BaseModel):
     start_time: str
     station_number: str
     primary_direction: str
-    report_type: str
     polygons: dict
     preview_image_width: int
     preview_image_height: int
@@ -181,7 +180,7 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
         start_time_str=config.start_time,
         station_number_str=config.station_number,
         primary_direction=config.primary_direction.lower(),
-        generate_link_count_report_flag=(config.report_type == "Standard + Bi-directional Report"),
+        generate_link_count_report_flag=(len(config.polygons) == 2),
         progress_queue=progress_queue,
         preview_image_width=config.preview_image_width,
         preview_image_height=config.preview_image_height
