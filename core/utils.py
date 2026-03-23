@@ -3,9 +3,11 @@ import os
 import torch
 import gc
 from datetime import datetime
-from config import VALID_MOVEMENTS
+from config import VALID_MOVEMENTS, MIN_SPEED_POSITIONS, MIN_SPEED_DURATION_SEC, JUMP_THRESHOLD_MULTIPLIER, MAX_PLAUSIBLE_SPEED_KMH
 import psutil
 from loguru import logger
+import numpy as np
+import cv2
 
 def format_timestamp(dt: datetime):
     """Convert datetime to date (YYMMDD) and time (HHMMSSmmm) strings."""
@@ -100,3 +102,66 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     logger.debug("Performed memory cleanup (GC + CUDA Cache)")
+
+def compute_speed_from_trajectory(trajectory_data, homography_matrix, road_width_meters, road_length_meters):
+    if homography_matrix is None or not trajectory_data or len(trajectory_data) < MIN_SPEED_POSITIONS:
+        return None
+    if road_width_meters is None or road_length_meters is None:
+        return None
+    
+    total_dt = trajectory_data[-1][1] - trajectory_data[0][1]
+    if total_dt < MIN_SPEED_DURATION_SEC:
+        return None
+
+    # Build world points WITH their timestamps so filtering doesn't corrupt dt
+    margin_w = road_width_meters * 0.5
+    margin_l = road_length_meters * 0.5
+    world_points_with_time = []
+    for pos, t in trajectory_data:
+        try:
+            pt = np.array([[[float(pos[0]), float(pos[1])]]], dtype=np.float32)
+            world = cv2.perspectiveTransform(pt, homography_matrix)[0][0]
+            if (world[0] < -margin_w or world[1] < -margin_l or
+                    world[0] > road_width_meters + margin_w or world[1] > road_length_meters + margin_l):
+                continue
+            world_points_with_time.append((world, t))
+        except Exception:
+            continue
+
+    if len(world_points_with_time) < 2:
+        return None
+
+    # Compute per-segment distances and durations
+    seg_distances = []
+    seg_durations = []
+    for i in range(len(world_points_with_time) - 1):
+        dist = float(np.linalg.norm(world_points_with_time[i + 1][0] - world_points_with_time[i][0]))
+        dur = world_points_with_time[i + 1][1] - world_points_with_time[i][1]
+        if dur > 0:
+            seg_distances.append(dist)
+            seg_durations.append(dur)
+
+    if not seg_distances:
+        return None
+
+    # Jump filtering: remove outlier segments (both distance and corresponding time)
+    median_seg = np.median(seg_distances)
+    threshold = max(median_seg * JUMP_THRESHOLD_MULTIPLIER, 0.5)
+    clean_total_meters = 0.0
+    clean_total_time = 0.0
+    per_segment_speeds = []
+    for dist, dur in zip(seg_distances, seg_durations):
+        if dist <= threshold:
+            clean_total_meters += dist
+            clean_total_time += dur
+            per_segment_speeds.append((dist / dur) * 3.6)  # km/h
+
+    if clean_total_meters < 1.0 or clean_total_time < 0.1:
+        return 0.0
+
+    # Use median of per-segment speeds for robustness against outliers
+    speed = float(np.median(per_segment_speeds))
+    if speed > MAX_PLAUSIBLE_SPEED_KMH:
+        return None
+
+    return round(speed, 1)

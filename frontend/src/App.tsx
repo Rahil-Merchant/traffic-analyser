@@ -207,6 +207,47 @@ function App() {
     }
   };
 
+  const handleRecalibrate = async (newWidth: number, newLength: number) => {
+    setRoadWidthMeters(newWidth);
+    setRoadLengthMeters(newLength);
+    
+    const { date, time } = formatTimestampForBackend(selectedTimestamp);
+    const filteredPolygons = { ...polygons };
+    delete filteredPolygons['road'];
+
+    const configPayload = {
+      video_paths: files.map(f => f.path),
+      start_date: date,
+      start_time: time,
+      station_number: stationNumber,
+      polygons: filteredPolygons,
+      primary_direction: primaryDirection || '',
+      preview_image_width: imageDimensions.width,
+      preview_image_height: imageDimensions.height,
+      road_polygon: polygons['road'] || null,
+      road_width_meters: newWidth,
+      road_length_meters: newLength,
+      speed_limit_kmh: speedLimitKmh || null,
+      night_hours_start: nightHoursStart || null,
+      night_hours_end: nightHoursEnd || null,
+      video_duration_formatted: "NA"
+    };
+
+    try {
+      const response = await axios.post(`${API_BASE_URL}/api/v1/recalibrate-speed`, configPayload);
+      if (response.data.status === 'success') {
+        setAnalysisResults(response.data.results);
+        setAnalysisStatistics((prev: any) => ({
+          ...prev,
+          fleet_average_speed_kmh: response.data.statistics.fleet_average_speed_kmh
+        }));
+      }
+    } catch (error: any) {
+      console.error("Error recalibrating:", error);
+      alert("Failed to recalibrate speed.");
+    }
+  };
+
 
   const handleSelectFiles = async () => {
     try {
@@ -262,6 +303,7 @@ function App() {
     setNightHoursEnd('06:00');
     setStatusText("[CLEARED] All zones and settings removed • Ready for new configuration");
   };
+
 
   const handleCloseResults = () => {
     setShowResults(false);
@@ -421,6 +463,8 @@ function App() {
             onNightHoursStartChange={setNightHoursStart}
             onNightHoursEndChange={setNightHoursEnd}
             onLaunch={handleLaunch}
+            hasPreviousResults={!!analysisResults}
+            onReopenResults={() => setShowResults(true)}
           />
         </div>
       </main>
@@ -431,6 +475,10 @@ function App() {
         onClose={handleCloseResults}
         statistics={analysisStatistics}
         results={analysisResults}
+        onRecalibrate={handleRecalibrate}
+        initialRoadWidth={typeof roadWidthMeters === 'number' ? roadWidthMeters : undefined}
+        initialRoadLength={typeof roadLengthMeters === 'number' ? roadLengthMeters : undefined}
+        canRecalibrate={!!polygons['road']}
       />
     </div>
   );

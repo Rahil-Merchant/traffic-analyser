@@ -21,6 +21,8 @@ interface ControlsPanelProps {
   onNightHoursStartChange: (val: string) => void;
   onNightHoursEndChange: (val: string) => void;
   onLaunch: () => void;
+  hasPreviousResults?: boolean;
+  onReopenResults?: () => void;
 }
 
 const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
@@ -44,7 +46,9 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     onSpeedLimitChange,
     onNightHoursStartChange,
     onNightHoursEndChange,
-    onLaunch
+    onLaunch,
+    hasPreviousResults,
+    onReopenResults
   } = props;
 
   const directions = [
@@ -337,6 +341,18 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
               {drawnZones.length > 0 && !primaryDirection && "Set primary direction"}
             </p>
           </div>
+        )}
+
+        {hasPreviousResults && onReopenResults && (
+          <button
+            onClick={onReopenResults}
+            className="w-full mt-3 p-3 rounded-xl font-bold text-sm transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-500/25 bg-gray-800 border border-green-500/30 text-green-400 hover:bg-gray-700 shadow-lg shadow-green-500/10 flex items-center justify-center space-x-2"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            <span>VIEW PREVIOUS RESULTS</span>
+          </button>
         )}
       </div>
     </div>

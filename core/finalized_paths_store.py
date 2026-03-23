@@ -2,6 +2,7 @@
 import sqlite3
 import tempfile
 import os
+import json
 from datetime import datetime
 
 class FinalizedPathsStore:
@@ -23,7 +24,8 @@ class FinalizedPathsStore:
                 exit_time TEXT,
                 time_in_intersection REAL,
                 status TEXT,
-                average_speed_kmh REAL
+                average_speed_kmh REAL,
+                trajectory_data TEXT
             )
         ''')
         self.conn.commit()
@@ -48,11 +50,18 @@ class FinalizedPathsStore:
             except Exception:
                 speed_val = None
 
+        trajectory_data_json = None
+        if path_data.get('trajectory_data'):
+            try:
+                trajectory_data_json = json.dumps(path_data.get('trajectory_data'))
+            except Exception:
+                trajectory_data_json = None
+
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT INTO finalized_paths 
-            (id, type, entry_direction, exit_direction, entry_time, exit_time, time_in_intersection, status, average_speed_kmh)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, type, entry_direction, exit_direction, entry_time, exit_time, time_in_intersection, status, average_speed_kmh, trajectory_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             path_data.get('id'),
             path_data.get('type'),
@@ -62,7 +71,8 @@ class FinalizedPathsStore:
             self._dt_converter(path_data.get('exit_time')),
             path_data.get('time_in_intersection'),
             path_data.get('status'),
-            speed_val
+            speed_val,
+            trajectory_data_json
         ))
         self.conn.commit()
 
@@ -78,7 +88,13 @@ class FinalizedPathsStore:
                     speed_val = float(speed_val)
                 except Exception:
                     speed_val = None
-                    
+            trajectory_data = None
+            if len(row) > 9 and row[9] is not None:
+                try:
+                    trajectory_data = json.loads(row[9])
+                except Exception:
+                    trajectory_data = None
+
             results.append({
                 'id': row[0],
                 'type': row[1],
@@ -88,9 +104,15 @@ class FinalizedPathsStore:
                 'exit_time': self._dt_parser(row[5]),
                 'time_in_intersection': row[6],
                 'status': row[7],
-                'average_speed_kmh': speed_val
+                'average_speed_kmh': speed_val,
+                'trajectory_data': trajectory_data
             })
         return results
+
+    def update_speed(self, path_id, new_speed):
+        cursor = self.conn.cursor()
+        cursor.execute('UPDATE finalized_paths SET average_speed_kmh = ? WHERE id = ?', (new_speed, path_id))
+        self.conn.commit()
 
     def count_by_status(self, status):
         cursor = self.conn.cursor()

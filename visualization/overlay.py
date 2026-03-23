@@ -76,3 +76,26 @@ def draw_event_marker(frame, point, event_type):
     elif event_type == "RE-ENTRY":
         cv2.circle(frame, point_int, 8, COLOR_YELLOW, -1)
         cv2.circle(frame, point_int, 8, COLOR_BLACK, 1)
+
+def draw_speed_annotation(frame, box_coords, speed_kmh):
+    """Draw speed annotation near a vehicle's bounding box."""
+    if speed_kmh is None:
+        return
+    try:
+        x1, y1, x2, y2 = map(int, box_coords)
+    except (TypeError, ValueError):
+        return
+
+    label = f"{speed_kmh} km/h"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    thickness = 1
+    (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+
+    # Position: above the box, right-aligned
+    text_x = max(0, x2 - text_w - 2)
+    text_y = max(text_h + 4, y1 - 6)
+
+    # Draw background rectangle for readability
+    cv2.rectangle(frame, (text_x - 2, text_y - text_h - 4), (text_x + text_w + 2, text_y + 2), (0, 0, 0), -1)
+    cv2.putText(frame, label, (text_x, text_y - 2), font, font_scale, COLOR_CYAN, thickness, cv2.LINE_AA)

@@ -33,7 +33,7 @@ from config import (
     USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG, PATCHWISE_USE_BATCH_PROCESSING,
     MOTION_INFERENCE_MIN_FRAMES, MOTION_INFERENCE_MAX_PROJECTION, MOTION_INFERENCE_MIN_DIST,
     MIN_SPEED_POSITIONS, MIN_SPEED_DURATION_SEC, MAX_PLAUSIBLE_SPEED_KMH,
-    JUMP_THRESHOLD_MULTIPLIER
+    JUMP_THRESHOLD_MULTIPLIER, DEBUG_SPEED, DEBUG_MODE, BASE_OUTPUT_DIR
 )
 from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory
@@ -178,6 +178,9 @@ class VideoProcessor:
             self.zone_pair = (z1, z2)
 
             # Homography from user-defined road polygon
+            # User draws N >= 4 points tracing the road boundary.
+            # Points are mapped to corresponding positions on a world-space rectangle
+            # via perimeter parameterization, then findHomography with RANSAC.
             if (self.road_polygon_raw and len(self.road_polygon_raw) >= 4
                     and self.road_width_meters and self.road_length_meters):
                 scaled_road_poly = self._scale_polygons_to_processing_coordinates(
@@ -185,18 +188,18 @@ class VideoProcessor:
                 ).get('road', [])
                 if len(scaled_road_poly) >= 4:
                     W, L = self.road_width_meters, self.road_length_meters
-                    src = np.array(scaled_road_poly[:4], dtype=np.float32)
-                    dst = np.array([[0, 0], [W, 0], [W, L], [0, L]], dtype=np.float32)
-                    if len(scaled_road_poly) > 4:
-                        self.homography_matrix, _ = cv2.findHomography(src, dst, cv2.RANSAC)
-                    else:
-                        self.homography_matrix = cv2.getPerspectiveTransform(src, dst)
-                    # Zone axis from road polygon midpoints
-                    mid_top = (src[1] + src[2]) / 2
-                    mid_bot = (src[0] + src[3]) / 2
-                    axis = mid_top - mid_bot
+                    src, dst = self._build_homography_points(scaled_road_poly, W, L)
+                    n_pts = len(src)
+                    self.homography_matrix, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+                    inliers = int(mask.sum()) if mask is not None else n_pts
+                    logger.info(f"Homography RANSAC: {inliers}/{n_pts} inliers")
+                    # Zone axis from the ordered polygon's first-half → second-half centroids
+                    half_n = n_pts // 2
+                    centroid_near = np.mean(src[:half_n], axis=0)
+                    centroid_far = np.mean(src[half_n:], axis=0)
+                    axis = centroid_far - centroid_near
                     self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
-                    logger.info(f"Homography computed from road polygon ({len(scaled_road_poly)} pts), "
+                    logger.info(f"Homography computed from road polygon ({n_pts} pts), "
                                 f"road={W}m x {L}m")
                 else:
                     self.homography_matrix = None
@@ -903,37 +906,47 @@ class VideoProcessor:
                     track_data['last_pos_zone'] = bottom_center
                     temp_drawing_info_list[batch_idx][track_id_str]['type'] = track_data['current_type']
 
+                    # Compute live speed for debug annotations
+                    if DEBUG_MODE and track_data['frames_seen'] >= 3:
+                        live_speed = self._compute_live_speed_kmh(list(track_data['positions']))
+                        temp_drawing_info_list[batch_idx][track_id_str]['speed'] = live_speed
+
                     if prev_pos is not None and track_data['status'] == 'active':
                         event_type, event_dir = self.zone_tracker.check_zone_transition(tuple(prev_pos), tuple(bbox_scaled), track_id_str, current_frame_time_sec)
                         
                         if event_type == "ENTRY" and track_data.get('entry_direction') != event_dir:
                             if is_valid_movement(track_data['entry_direction'], event_dir, zone_keys):
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
-                                speed = self._compute_average_speed_kmh(list(track_data['positions']))
-                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed)
+                                current_frame_img = frames_batch_with_metadata[batch_idx][0] if frames_batch_with_metadata else None
+                                speed = self._compute_average_speed_kmh(list(track_data['positions']), current_frame=current_frame_img)
+                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed, current_frame=current_frame_img)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['confirmed'] = True
                                 track_data['entry_direction'] = event_dir
                                 track_data['entry_time'] = current_global_timestamp
                                 if self.perf: self.perf.record_vehicle_entry()
                                 temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'RE-ENTRY'
+                                logger.info(f"[Re-Entry triggered] Track ID - {track_id_str} | Speed - {speed} km/h")
 
                         elif event_type == "EXIT":
                             if is_valid_movement(track_data['entry_direction'], event_dir, zone_keys):
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
-                                speed = self._compute_average_speed_kmh(list(track_data['positions']))
-                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed)
+                                current_frame_img = frames_batch_with_metadata[batch_idx][0] if frames_batch_with_metadata else None
+                                speed = self._compute_average_speed_kmh(list(track_data['positions']), current_frame=current_frame_img)
+                                self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed, current_frame=current_frame_img)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['status'] = 'exited'
                                 track_data['confirmed'] = True
                                 track_data['exit_time'] = current_global_timestamp
                                 temp_drawing_info_list[batch_idx][track_id_str]['event'] = 'EXIT'
+                                logger.info(f"[Exit triggered] Track ID - {track_id_str} | Speed - {speed} km/h")
 
             last_frame_time_in_batch = frame_times_in_batch[-1]
             last_global_timestamp_in_batch = start_datetime_obj_global + timedelta(seconds=last_frame_time_in_batch)
             for track_id, track_data in list(self.active_track_data.items()):
                 if track_data['status'] != 'active': continue
-                if self._try_motion_inference(track_id, track_data, current_global_timestamp):
+                current_frame_img = frames_batch_with_metadata[-1][0] if frames_batch_with_metadata else None
+                if self._try_motion_inference(track_id, track_data, current_global_timestamp, current_frame=current_frame_img):
                     if self.perf:
                         self.perf.record_vehicle_exit('motion_inferred')
                 duration = (last_global_timestamp_in_batch - track_data['entry_time']).total_seconds()
@@ -975,33 +988,36 @@ class VideoProcessor:
                         visual_overlay.draw_detection_box(output_frame_viz, draw_data['box'], track_id, draw_data['type'], status=final_status)
                     if draw_data.get('event') and 'center' in draw_data:
                         visual_overlay.draw_event_marker(output_frame_viz, draw_data['center'], draw_data['event'])
+                    # Draw speed annotation when DEBUG_MODE is enabled
+                    if DEBUG_MODE and draw_data.get('speed') is not None and 'box' in draw_data:
+                        visual_overlay.draw_speed_annotation(output_frame_viz, draw_data['box'], draw_data['speed'])
                 processed_frames_list_viz[i] = output_frame_viz
         
         if self.perf: self.perf.end_timer('app_logic_batch')
         return [], processed_frames_list_viz
     
-    def _try_motion_inference(self, track_id, track_data, now_ts):
+    def _try_motion_inference(self, track_id, track_data, now_ts, current_frame=None):
         if self.zone_axis is None or track_data['confirmed']:
             return False
-        print(f"[Motion Inference] Number of frames: {track_data['frames_seen']}")
+        # print(f"[Motion Inference] Number of frames: {track_data['frames_seen']}")
         if track_data['frames_seen'] < MOTION_INFERENCE_MIN_FRAMES:
             return False
 
         positions_with_times = list(track_data['positions'])
         pts = [p[0] for p in positions_with_times]
-        print(f"[Motion Inference] Points: {pts}")
+        # print(f"[Motion Inference] Points: {pts}")
         if len(pts) < MOTION_INFERENCE_MIN_FRAMES:
             return False
 
         disp = np.array(pts[-1]) - np.array(pts[0])
         norm = np.linalg.norm(disp)
-        print(f"[Motion Inference] Dist: {norm}")
+        # print(f"[Motion Inference] Dist: {norm}")
         if norm < MOTION_INFERENCE_MIN_DIST:
             return False
 
         motion_dir = disp / norm
         proj = np.dot(motion_dir, self.zone_axis)
-        print(f"[Motion Inference] Proj Angle: {proj}")
+        # print(f"[Motion Inference] Proj Angle: {proj}")
         if abs(proj) <MOTION_INFERENCE_MAX_PROJECTION:
             return False
 
@@ -1009,8 +1025,8 @@ class VideoProcessor:
         inferred_exit = to_zone if proj > 0 else from_zone
 
         duration = (now_ts - track_data['entry_time']).total_seconds()
-        speed = self._compute_average_speed_kmh(positions_with_times)
-        print(f"[Motion Inference] Exit confirmed to: {inferred_exit}")
+        speed = self._compute_average_speed_kmh(positions_with_times, current_frame=current_frame)
+        logger.info(f"[Motion Inference] Track ID - {track_id} | Exit confirmed to: {inferred_exit} | Speed - {speed} km/h")
         self._add_to_finalized_paths(
             track_id,
             track_data,
@@ -1018,7 +1034,8 @@ class VideoProcessor:
             inferred_exit,
             now_ts,
             duration,
-            average_speed_kmh=speed
+            average_speed_kmh=speed,
+            current_frame=current_frame
         )
 
         track_data['status'] = 'exited'
@@ -1027,7 +1044,12 @@ class VideoProcessor:
         return True
 
     
-    def _add_to_finalized_paths(self, track_id_str, app_data, final_status_str, exit_direction_str, exit_time_dt, time_in_intersection_val, average_speed_kmh=None):
+    def _add_to_finalized_paths(self, track_id_str, app_data, final_status_str, exit_direction_str, exit_time_dt, time_in_intersection_val, average_speed_kmh=None, current_frame=None):
+        trajectory_data = []
+        if 'positions' in app_data:
+            for pos, ts in app_data['positions']:
+                trajectory_data.append(([float(pos[0]), float(pos[1])], float(ts)))
+
         path_report_entry = {
             'id': track_id_str,
             'type': app_data.get('current_type', 'UnknownType'),
@@ -1038,53 +1060,288 @@ class VideoProcessor:
             'time_in_intersection': round(time_in_intersection_val, 2) if time_in_intersection_val is not None else 0.0,
             'status': final_status_str,
             'average_speed_kmh': average_speed_kmh,
+            'trajectory_data': trajectory_data
         }
         self.finalized_paths_store.append(path_report_entry)
+
+        # Save warped bird's-eye view for homography verification
+        if current_frame is not None and self.homography_matrix is not None and self.road_width_meters and self.road_length_meters:
+            try:
+                warped_dir = os.path.join(BASE_OUTPUT_DIR, "warped_road")
+                os.makedirs(warped_dir, exist_ok=True)
+                # Output size: scale meters to pixels (100 px/m for readable images)
+                px_per_m = 100
+                out_w = int(self.road_width_meters * px_per_m)
+                out_h = int(self.road_length_meters * px_per_m)
+                warped = cv2.warpPerspective(current_frame, self.homography_matrix, (out_w, out_h))
+                # Draw trajectory on warped image
+                for pos, _ in trajectory_data[-20:]:
+                    try:
+                        wp = self._pixel_to_world(pos)
+                        px = int(wp[0] * px_per_m)
+                        py = int(wp[1] * px_per_m)
+                        cv2.circle(warped, (px, py), 4, (0, 255, 0), -1)
+                    except Exception:
+                        pass
+                vtype = app_data.get('current_type', 'unknown')
+                speed_str = f"{average_speed_kmh}kmh" if average_speed_kmh is not None else "nospeed"
+                filename = f"{track_id_str}_{vtype}_{speed_str}.jpg"
+                cv2.imwrite(os.path.join(warped_dir, filename), warped)
+            except Exception as e:
+                logger.warning(f"Failed to save warped road image: {e}")
+
+    @staticmethod
+    def _build_homography_points(polygon_points, road_width, road_length):
+        """
+        Build src/dst point pairs for homography from arbitrarily ordered
+        road boundary points.
+
+        Steps:
+        1. Orders points into a coherent polygon via angular sort around centroid
+        2. Uses minimum area bounding rectangle to determine road orientation
+        3. Aligns polygon start and walk direction to match TL→TR→BR→BL
+        4. Maps each polygon point to world coords via perimeter parameterization
+
+        Returns:
+            (src, dst) numpy arrays of N corresponding point pairs.
+        """
+        pts = np.array(polygon_points, dtype=np.float32)
+        n = len(pts)
+
+        # --- Step 1: Order points into a coherent polygon ---
+        # Angular sort around centroid gives clockwise order in screen coords (y-down)
+        centroid = pts.mean(axis=0)
+        angles = np.arctan2(pts[:, 1] - centroid[1], pts[:, 0] - centroid[0])
+        pts_ordered = pts[np.argsort(angles)]
+
+        # --- Step 2: Find oriented minimum area bounding rectangle ---
+        rect = cv2.minAreaRect(pts_ordered)
+        box = cv2.boxPoints(rect).astype(np.float32)
+
+        # --- Step 3: Order box corners as [TL, TR, BR, BL] clockwise ---
+        # Sort box corners by angle from their centroid
+        bc = box.mean(axis=0)
+        box = box[np.argsort(np.arctan2(box[:, 1] - bc[1], box[:, 0] - bc[0]))]
+        # Roll so TL (smallest x+y sum) is first
+        tl_idx = int(np.argmin(box[:, 0] + box[:, 1]))
+        box = np.roll(box, -tl_idx, axis=0)
+        # Ensure clockwise on screen (cross product > 0 with y-down)
+        v1, v2 = box[1] - box[0], box[2] - box[1]
+        if v1[0] * v2[1] - v1[1] * v2[0] < 0:
+            box = np.array([box[0], box[3], box[2], box[1]], dtype=np.float32)
+
+        # --- Step 4: Determine which MABR side is road width vs length ---
+        side_top = float(np.linalg.norm(box[1] - box[0]))    # TL → TR
+        side_right = float(np.linalg.norm(box[2] - box[1]))  # TR → BR
+        target_ratio = float(road_width) / (float(road_length) + 1e-8)
+        ratio_top_is_w = side_top / (side_right + 1e-8)
+        ratio_right_is_w = side_right / (side_top + 1e-8)
+        if abs(ratio_top_is_w - target_ratio) > abs(ratio_right_is_w - target_ratio):
+            # Top side is actually length → rotate box so width side becomes top
+            box = np.roll(box, -1, axis=0)
+
+        # --- Step 5: Align polygon start and direction to box ---
+        # Start polygon from the point nearest to box TL
+        dists_to_tl = np.linalg.norm(pts_ordered - box[0], axis=1)
+        start_idx = int(np.argmin(dists_to_tl))
+        pts_ordered = np.roll(pts_ordered, -start_idx, axis=0)
+        # Ensure polygon walks CW (toward TR, not BL)
+        if n >= 3:
+            if float(np.linalg.norm(pts_ordered[1] - box[3])) < float(np.linalg.norm(pts_ordered[1] - box[1])):
+                pts_ordered = np.concatenate([pts_ordered[:1], pts_ordered[1:][::-1]])
+
+        # --- Step 6: Perimeter parameterization ---
+        cum_dists = [0.0]
+        for i in range(1, n):
+            cum_dists.append(cum_dists[-1] + float(np.linalg.norm(pts_ordered[i] - pts_ordered[i - 1])))
+        total_perimeter = cum_dists[-1] + float(np.linalg.norm(pts_ordered[0] - pts_ordered[-1]))
+
+        W, L = float(road_width), float(road_length)
+        rect_perim = 2.0 * (W + L)
+
+        src_list = []
+        dst_list = []
+        for i in range(n):
+            t = cum_dists[i] / total_perimeter if total_perimeter > 0 else 0.0
+            d = t * rect_perim
+            if d <= W:
+                world = [d, 0.0]                      # Top: TL → TR
+            elif d <= W + L:
+                world = [W, d - W]                    # Right: TR → BR
+            elif d <= 2 * W + L:
+                world = [W - (d - W - L), L]          # Bottom: BR → BL
+            else:
+                world = [0.0, L - (d - 2 * W - L)]   # Left: BL → TL
+            src_list.append(pts_ordered[i])
+            dst_list.append(world)
+
+        return np.array(src_list, dtype=np.float32), np.array(dst_list, dtype=np.float32)
 
     def _pixel_to_world(self, point):
         pt = np.array([[[float(point[0]), float(point[1])]]], dtype=np.float32)
         world = cv2.perspectiveTransform(pt, self.homography_matrix)
         return world[0][0]
 
-    def _compute_average_speed_kmh(self, positions_with_times):
-        if self.homography_matrix is None or len(positions_with_times) < MIN_SPEED_POSITIONS:
+    def _compute_average_speed_kmh(self, positions_with_times, current_frame=None):
+        if self.homography_matrix is None:
             return None
-        dt = positions_with_times[-1][1] - positions_with_times[0][1]
-        if dt < MIN_SPEED_DURATION_SEC:
+        if self.road_width_meters is None or self.road_length_meters is None:
+            return None
+        if len(positions_with_times) < MIN_SPEED_POSITIONS:
+            logger.info(f"[Speed Calculation] Position thresh not met: {len(positions_with_times)} < {MIN_SPEED_POSITIONS}")
+            return None
+        total_dt = positions_with_times[-1][1] - positions_with_times[0][1]
+        if total_dt < MIN_SPEED_DURATION_SEC:
+            logger.info(f"[Speed Calculation] Time thresh not met: {total_dt} < {MIN_SPEED_DURATION_SEC}")
             return None
 
-        world_points = []
-        for pos, _ in positions_with_times:
+        margin_w = self.road_width_meters * 0.5
+        margin_l = self.road_length_meters * 0.5
+
+        world_points_with_time = []
+        
+        # --- Dynamic Visualization Debugger ---
+        if DEBUG_SPEED:
+            min_x_m = -margin_w
+            max_x_m = self.road_width_meters + margin_w
+            min_y_m = -margin_l
+            max_y_m = self.road_length_meters + margin_l
+            
+            span_x_m = (max_x_m - min_x_m) * 1.2
+            span_y_m = (max_y_m - min_y_m) * 1.2
+            
+            scale = min(800 / span_x_m if span_x_m > 0 else 1, 800 / span_y_m if span_y_m > 0 else 1)
+            canvas_w, canvas_h = int(span_x_m * scale), int(span_y_m * scale)
+            
+            center_x_m, center_y_m = (min_x_m + max_x_m) / 2, (min_y_m + max_y_m) / 2
+            off_x = int((canvas_w / 2) - (center_x_m * scale))
+            off_y = int((canvas_h / 2) + (center_y_m * scale))
+            
+            def m2p(x_m, y_m):
+                return int((x_m * scale) + off_x), int((-y_m * scale) + off_y)
+                
+            canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+            cv2.rectangle(canvas, m2p(min_x_m, min_y_m), m2p(max_x_m, max_y_m), (255, 0, 0), 2)
+            
+            if current_frame is not None:
+                dbg_frame = current_frame.copy()
+            else:
+                dbg_frame = None
+                
+        for pos, t in positions_with_times:
             try:
                 wp = self._pixel_to_world(pos)
-                if wp[0] < -self.road_width_meters or wp[1] < -self.road_length_meters:
+                
+                out_of_bounds = (wp[0] < -margin_w or wp[1] < -margin_l or 
+                                 wp[0] > self.road_width_meters + margin_w or 
+                                 wp[1] > self.road_length_meters + margin_l)
+                
+                if DEBUG_SPEED:
+                    cx, cy = m2p(wp[0], wp[1])
+                    if out_of_bounds:
+                        cv2.circle(canvas, (cx, cy), 3, (0, 0, 255), -1)
+                    else:
+                        cv2.circle(canvas, (cx, cy), 3, (0, 255, 0), -1)
+                        
+                    if dbg_frame is not None:
+                        cv2.circle(dbg_frame, (int(pos[0]), int(pos[1])), 4, (0, 0, 255) if out_of_bounds else (0, 255, 0), -1)
+                        cv2.imshow("Real Frame Debug", dbg_frame)
+                    
+                    cv2.imshow("Dynamic Bounding Box Debug", canvas)
+                    cv2.waitKey(1)
+                    
+                if out_of_bounds:
                     continue
-                if wp[0] > self.road_width_meters * 2 or wp[1] > self.road_length_meters * 2:
-                    continue
-                world_points.append(wp)
+                    
+                world_points_with_time.append((wp, t))
             except Exception:
                 continue
 
-        if len(world_points) < 2:
+        if len(world_points_with_time) < 2:
+            logger.info(f"[Speed Calculation] World points not found: {len(world_points_with_time)} < 2")
             return None
 
-        segments = [np.linalg.norm(np.array(world_points[i + 1]) - np.array(world_points[i]))
-                    for i in range(len(world_points) - 1)]
-        if not segments:
+        # Compute per-segment distances and durations
+        seg_distances = []
+        seg_durations = []
+        for i in range(len(world_points_with_time) - 1):
+            dist = float(np.linalg.norm(world_points_with_time[i + 1][0] - world_points_with_time[i][0]))
+            dur = world_points_with_time[i + 1][1] - world_points_with_time[i][1]
+            if dur > 0:
+                seg_distances.append(dist)
+                seg_durations.append(dur)
+
+        if not seg_distances:
+            logger.info(f"[Speed Calculation] Segments not found")
             return None
 
-        median_seg = np.median(segments)
-        threshold = median_seg * JUMP_THRESHOLD_MULTIPLIER
-        clean_segments = [s for s in segments if s <= max(threshold, 0.5)]
+        # Jump filtering: remove outlier segments (both distance and corresponding time)
+        median_seg = np.median(seg_distances)
+        threshold = max(median_seg * JUMP_THRESHOLD_MULTIPLIER, 0.5)
+        clean_total_meters = 0.0
+        clean_total_time = 0.0
+        per_segment_speeds = []
+        for dist, dur in zip(seg_distances, seg_durations):
+            if dist <= threshold:
+                clean_total_meters += dist
+                clean_total_time += dur
+                per_segment_speeds.append((dist / dur) * 3.6)  # km/h
 
-        total_meters = sum(clean_segments)
-        if total_meters < 1.0:
+        if clean_total_meters < 1.0 or clean_total_time < 0.1:
+            logger.info(f"[Speed Calculation] Distance thresh not met: {clean_total_meters} < 1.0")
             return 0.0
 
-        speed = (total_meters / dt) * 3.6
+        # Use median of per-segment speeds for robustness
+        speed = float(np.median(per_segment_speeds))
         if speed > MAX_PLAUSIBLE_SPEED_KMH:
+            logger.info(f"[Speed Calculation] Speed thresh not met: {speed} > {MAX_PLAUSIBLE_SPEED_KMH}")
             return None
 
+        return round(speed, 1)
+
+    def _compute_live_speed_kmh(self, positions_with_times, window_sec=2.0):
+        """Compute a sliding-window speed for debug annotation on frames."""
+        if self.homography_matrix is None or self.road_width_meters is None or self.road_length_meters is None:
+            return None
+        if len(positions_with_times) < 3:
+            return None
+
+        # Use only the last `window_sec` seconds of positions
+        latest_time = positions_with_times[-1][1]
+        window_start = latest_time - window_sec
+        windowed = [(p, t) for p, t in positions_with_times if t >= window_start]
+        if len(windowed) < 2:
+            return None
+
+        margin_w = self.road_width_meters * 0.5
+        margin_l = self.road_length_meters * 0.5
+        world_pts_with_time = []
+        for pos, t in windowed:
+            try:
+                wp = self._pixel_to_world(pos)
+                if (wp[0] < -margin_w or wp[1] < -margin_l or
+                        wp[0] > self.road_width_meters + margin_w or
+                        wp[1] > self.road_length_meters + margin_l):
+                    continue
+                world_pts_with_time.append((wp, t))
+            except Exception:
+                continue
+
+        if len(world_pts_with_time) < 2:
+            return None
+
+        per_seg_speeds = []
+        for i in range(len(world_pts_with_time) - 1):
+            dist = float(np.linalg.norm(world_pts_with_time[i + 1][0] - world_pts_with_time[i][0]))
+            dur = world_pts_with_time[i + 1][1] - world_pts_with_time[i][1]
+            if dur > 0:
+                per_seg_speeds.append((dist / dur) * 3.6)
+
+        if not per_seg_speeds:
+            return None
+        speed = float(np.median(per_seg_speeds))
+        if speed > MAX_PLAUSIBLE_SPEED_KMH:
+            return None
         return round(speed, 1)
 
     @profile

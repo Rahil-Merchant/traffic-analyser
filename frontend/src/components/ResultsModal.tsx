@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface ResultsModalProps {
   isOpen: boolean;
@@ -15,9 +15,19 @@ interface ResultsModalProps {
     excel_path: string;
     bidirectional_excel_path: string;
   } | null;
+  onRecalibrate?: (newWidth: number, newLength: number) => Promise<void>;
+  initialRoadWidth?: number;
+  initialRoadLength?: number;
+  canRecalibrate?: boolean;
 }
 
-const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics, results }) => {
+const ResultsModal: React.FC<ResultsModalProps> = ({ 
+  isOpen, onClose, statistics, results, onRecalibrate, initialRoadWidth, initialRoadLength, canRecalibrate 
+}) => {
+  const [roadWidth, setRoadWidth] = useState<number | ''>(initialRoadWidth ?? '');
+  const [roadLength, setRoadLength] = useState<number | ''>(initialRoadLength ?? '');
+  const [isRecalibrating, setIsRecalibrating] = useState(false);
+
   if (!isOpen) return null;
 
   const formatTime = (seconds: number): string => {
@@ -210,6 +220,60 @@ const ResultsModal: React.FC<ResultsModalProps> = ({ isOpen, onClose, statistics
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Recalibration Section */}
+        {canRecalibrate && onRecalibrate && (
+          <div className="p-6 border-t border-gray-700/30 bg-gray-800/30">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center space-x-2">
+              <svg className="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8v8M20 8v8M4 16l16-8M4 8l16 8" />
+              </svg>
+              <span>Speed Recalibration</span>
+            </h3>
+            
+            <div className="flex items-end space-x-4">
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Road Width (m)</label>
+                <input
+                  type="number" min="0" step="0.1"
+                  value={roadWidth}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoadWidth(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-full bg-gray-900 border border-gray-600/50 rounded-lg p-2 text-white focus:ring-1 focus:ring-orange-500"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Road Length (m)</label>
+                <input
+                  type="number" min="0" step="0.1"
+                  value={roadLength}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoadLength(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-full bg-gray-900 border border-gray-600/50 rounded-lg p-2 text-white focus:ring-1 focus:ring-orange-500"
+                />
+              </div>
+              <button
+                onClick={async () => {
+                  if (typeof roadWidth === 'number' && typeof roadLength === 'number') {
+                    setIsRecalibrating(true);
+                    await onRecalibrate(roadWidth, roadLength);
+                    setIsRecalibrating(false);
+                  }
+                }}
+                disabled={isRecalibrating || typeof roadWidth !== 'number' || typeof roadLength !== 'number'}
+                className="px-6 py-2 bg-gradient-to-r from-orange-600 to-orange-700 text-white font-semibold rounded-lg hover:from-orange-500 hover:to-orange-600 transition-all duration-200 shadow-lg disabled:opacity-50 flex items-center h-[42px]"
+              >
+                {isRecalibrating ? (
+                  <svg className="w-5 h-5 animate-spin mx-auto text-white" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                  </svg>
+                ) : (
+                  "Recalibrate"
+                )}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">Update distance calibration to instantly recalculate speed metrics and reports.</p>
           </div>
         )}
 
