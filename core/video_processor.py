@@ -107,6 +107,10 @@ class VideoProcessor:
         self.final_output_path = None
         self.temp_converted_files = []
 
+        # Letterbox inverse-mapping parameters (dw, dh, unpad_w, unpad_h)
+        # Computed once in _preprocess_batch from the first frame's dimensions.
+        self.letterbox_params = None
+
         # Speed estimation
         self.homography_matrix = None
         self.road_polygon_raw = None
@@ -185,19 +189,25 @@ class VideoProcessor:
                 ).get('road', [])
                 if len(scaled_road_poly) >= 4:
                     W, L = self.road_width_meters, self.road_length_meters
-                    src = np.array(scaled_road_poly[:4], dtype=np.float32)
-                    dst = np.array([[0, 0], [W, 0], [W, L], [0, L]], dtype=np.float32)
-                    if len(scaled_road_poly) > 4:
-                        self.homography_matrix, _ = cv2.findHomography(src, dst, cv2.RANSAC)
-                    else:
+                    # Build matched src↔dst pairs for all N polygon points.
+                    # Points are sorted by angle for consistent correspondence,
+                    # and extra points beyond 4 are interpolated along the
+                    # destination rectangle perimeter.
+                    src, dst = self._build_homography_correspondences(scaled_road_poly, W, L)
+                    if len(src) == 4:
                         self.homography_matrix = cv2.getPerspectiveTransform(src, dst)
-                    # Zone axis from road polygon midpoints
-                    mid_top = (src[1] + src[2]) / 2
-                    mid_bot = (src[0] + src[3]) / 2
-                    axis = mid_top - mid_bot
+                    else:
+                        self.homography_matrix, _ = cv2.findHomography(src, dst, cv2.RANSAC)
+                    # Zone axis: midpoint of first half of sorted src to midpoint
+                    # of second half.  This approximates the road's length axis
+                    # regardless of how many points define the polygon.
+                    half = len(src) // 2
+                    mid_a = src[:half].mean(axis=0)
+                    mid_b = src[half:].mean(axis=0)
+                    axis = mid_b - mid_a
                     self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
-                    logger.info(f"Homography computed from road polygon ({len(scaled_road_poly)} pts), "
-                                f"road={W}m x {L}m")
+                    logger.info(f"Homography computed from road polygon ({len(scaled_road_poly)} pts, "
+                                f"{len(src)} correspondences), road={W}m x {L}m")
                 else:
                     self.homography_matrix = None
                     self.zone_axis = None
@@ -673,6 +683,7 @@ class VideoProcessor:
         self.reader_thread = self.preprocessor_thread = self.postprocessor_thread = self.writer_thread = None
         self.raw_frame_queue = self.preprocessed_tensor_queue = self.results_queue = self.video_write_queue = self.streams = None
         self.final_output_path = None
+        self.letterbox_params = None
         
         cleanup_memory()
         if self.processing_lock.locked():
@@ -750,6 +761,25 @@ class VideoProcessor:
         # Pre-allocate the batch array. Using uint8 is memory efficient.
         # The gray color (114) is a standard padding value for YOLO models.
         batch_np = np.full((count, 3, target_dim, target_dim), 114, dtype=np.uint8)
+
+        # Compute letterbox inverse-mapping parameters once from the first frame.
+        # These are used by _process_inference_results to correctly map model-space
+        # coordinates back to processing coordinates, accounting for padding offsets.
+        if self.letterbox_params is None:
+            frame_h, frame_w = valid_frames[0].shape[:2]
+            if CROP_MODE == 'letterbox':
+                ratio = min(target_dim / frame_h, target_dim / frame_w)
+                new_unpad_w = int(round(frame_w * ratio))
+                new_unpad_h = int(round(frame_h * ratio))
+                dw = (target_dim - new_unpad_w) / 2.0
+                dh = (target_dim - new_unpad_h) / 2.0
+                self.letterbox_params = (dw, dh, new_unpad_w, new_unpad_h)
+                if dw > 0.5 or dh > 0.5:
+                    logger.info(f"Letterbox padding detected: dw={dw:.1f}, dh={dh:.1f}, "
+                                f"unpad=({new_unpad_w}x{new_unpad_h}) from frame ({frame_w}x{frame_h})")
+            else:
+                # Stretch mode: no padding offset, the entire target_dim is used
+                self.letterbox_params = (0.0, 0.0, target_dim, target_dim)
 
         for i, frame_np in enumerate(valid_frames):
 
@@ -848,9 +878,23 @@ class VideoProcessor:
 
         model_h, model_w = self.model_input_size_config, self.model_input_size_config
         draw_w, draw_h = self.frame_shape
-        scale_x, scale_y = draw_w / model_w, draw_h / model_h
+
+        # Use letterbox parameters to correctly undo padding before scaling.
+        # For stretch mode (or patchwise where letterbox_params is None),
+        # dw/dh are 0 and unpad dims equal model dims, so this reduces to the
+        # original simple scale.
+        if self.letterbox_params is not None:
+            dw, dh, unpad_w, unpad_h = self.letterbox_params
+        else:
+            dw, dh = 0.0, 0.0
+            unpad_w, unpad_h = model_w, model_h
+        scale_x = draw_w / unpad_w
+        scale_y = draw_h / unpad_h
         
-        bboxes_scaled = np.vstack([tx1 * scale_x, ty1 * scale_y, tx2 * scale_x, ty2 * scale_y]).T.astype(np.int32)
+        bboxes_scaled = np.vstack([
+            (tx1 - dw) * scale_x, (ty1 - dh) * scale_y,
+            (tx2 - dw) * scale_x, (ty2 - dh) * scale_y
+        ]).T.astype(np.int32)
         bottom_centers = np.vstack([(bboxes_scaled[:, 0] + bboxes_scaled[:, 2]) // 2, bboxes_scaled[:, 3]]).T
 
         temp_drawing_info_list = [{} for _ in range(len(yolo_results_batch))]
@@ -1041,6 +1085,105 @@ class VideoProcessor:
         }
         self.finalized_paths_store.append(path_report_entry)
 
+    @staticmethod
+    def _sort_points_by_angle(pts):
+        """Sort polygon points in consistent angular order around their centroid."""
+        pts = np.array(pts, dtype=np.float32)
+        centroid = pts.mean(axis=0)
+        angles = np.arctan2(pts[:, 1] - centroid[1], pts[:, 0] - centroid[0])
+        order = np.argsort(angles)
+        return pts[order]
+
+    @staticmethod
+    def _build_homography_correspondences(src_poly, rect_w, rect_h):
+        """Build matched src↔dst point pairs for an N-point road polygon.
+
+        Strategy:
+        1. Sort source vertices by angle around centroid (consistent winding).
+        2. Compute the turning angle at each vertex; the 4 vertices with the
+           sharpest turns are the structural "corners" of the road polygon.
+        3. Match these 4 corners to the 4 rectangle corners (both in angular
+           order) to establish the base correspondence.
+        4. For vertices between two adjacent corners (i.e. along one "side" of
+           the road), interpolate linearly along the corresponding rectangle edge.
+
+        This handles any N >= 4 and is robust to different draw orders, road
+        orientations, and aspect ratio mismatches between source and destination.
+        """
+        src_poly = np.array(src_poly, dtype=np.float32)
+        centroid_src = src_poly.mean(axis=0)
+        angles = np.arctan2(src_poly[:, 1] - centroid_src[1],
+                            src_poly[:, 0] - centroid_src[0])
+        order = np.argsort(angles)
+        src_sorted = src_poly[order]
+        n = len(src_sorted)
+
+        # --- Step 2: Find the 4 corners via turning angle ---
+        turn_angles = np.zeros(n)
+        for i in range(n):
+            v_in  = src_sorted[i] - src_sorted[(i - 1) % n]
+            v_out = src_sorted[(i + 1) % n] - src_sorted[i]
+            dot = np.dot(v_in, v_out)
+            cross = v_in[0] * v_out[1] - v_in[1] * v_out[0]
+            turn_angles[i] = abs(np.arctan2(cross, dot))
+
+        # Pick the 4 indices with the largest turn, keep them in sorted order
+        corner_indices = sorted(np.argsort(turn_angles)[-4:])
+
+        # --- Step 3: Match the 4 corners to rectangle corners by angle ---
+        rect_corners = np.array([
+            [0, 0], [rect_w, 0], [rect_w, rect_h], [0, rect_h]
+        ], dtype=np.float32)
+        rc = rect_corners.mean(axis=0)
+        rc_angles = np.arctan2(rect_corners[:, 1] - rc[1],
+                               rect_corners[:, 0] - rc[0])
+        rect_sorted = rect_corners[np.argsort(rc_angles)]
+
+        # The 4 source corners (in angular order) map 1:1 to rect_sorted
+        src_corners = src_sorted[corner_indices]
+        sc_centroid = src_corners.mean(axis=0)
+        sc_angles = np.arctan2(src_corners[:, 1] - sc_centroid[1],
+                               src_corners[:, 0] - sc_centroid[0])
+        sc_order = np.argsort(sc_angles)
+        # sc_order[k] tells which src corner matches rect_sorted[k]
+        # Build a mapping: corner_indices[sc_order[k]] -> rect_sorted[k]
+        corner_to_rect = {}
+        for k in range(4):
+            corner_to_rect[corner_indices[sc_order[k]]] = rect_sorted[k]
+
+        # --- Step 4: Interpolate intermediate points along rectangle edges ---
+        # Walk the polygon in sorted order.  Between two adjacent corners,
+        # all points lie on the same "side" and map to the same rect edge.
+        dst_pts = np.zeros_like(src_sorted)
+
+        # Ordered list of corner indices as they appear in the polygon walk
+        ci = corner_indices  # already sorted in polygon order
+        for seg_idx in range(4):
+            c_start = ci[seg_idx]
+            c_end   = ci[(seg_idx + 1) % 4]
+            rect_start = corner_to_rect[c_start]
+            rect_end   = corner_to_rect[c_end]
+
+            # Collect indices from c_start to c_end (wrapping around)
+            if c_end > c_start:
+                seg_indices = list(range(c_start, c_end + 1))
+            else:
+                seg_indices = list(range(c_start, n)) + list(range(0, c_end + 1))
+
+            # Compute cumulative distance along this source segment
+            seg_pts = src_sorted[seg_indices]
+            cum_dist = [0.0]
+            for j in range(1, len(seg_pts)):
+                cum_dist.append(cum_dist[-1] + np.linalg.norm(seg_pts[j] - seg_pts[j - 1]))
+            total_dist = cum_dist[-1] if cum_dist[-1] > 1e-9 else 1.0
+
+            # Place each point along the corresponding rectangle edge
+            for j, idx in enumerate(seg_indices):
+                t = cum_dist[j] / total_dist
+                dst_pts[idx] = rect_start + t * (rect_end - rect_start)
+
+        return src_sorted, dst_pts
+
     def _pixel_to_world(self, point):
         pt = np.array([[[float(point[0]), float(point[1])]]], dtype=np.float32)
         world = cv2.perspectiveTransform(pt, self.homography_matrix)
@@ -1049,39 +1192,63 @@ class VideoProcessor:
     def _compute_average_speed_kmh(self, positions_with_times):
         if self.homography_matrix is None or len(positions_with_times) < MIN_SPEED_POSITIONS:
             return None
-        dt = positions_with_times[-1][1] - positions_with_times[0][1]
-        if dt < MIN_SPEED_DURATION_SEC:
-            return None
 
-        world_points = []
-        for pos, _ in positions_with_times:
+        # 1. Transform all pixel positions to world-space, keeping timestamps paired.
+        #    Filter out positions that project outside the plausible road area.
+        world_entries = []  # list of (world_point, time_sec)
+        for pos, t in positions_with_times:
             try:
                 wp = self._pixel_to_world(pos)
                 if wp[0] < -self.road_width_meters or wp[1] < -self.road_length_meters:
                     continue
                 if wp[0] > self.road_width_meters * 2 or wp[1] > self.road_length_meters * 2:
                     continue
-                world_points.append(wp)
+                world_entries.append((wp, t))
             except Exception:
                 continue
 
-        if len(world_points) < 2:
+        if len(world_entries) < 2:
             return None
 
-        segments = [np.linalg.norm(np.array(world_points[i + 1]) - np.array(world_points[i]))
-                    for i in range(len(world_points) - 1)]
+        # 2. Compute dt from the first and last VALID world points (not raw positions).
+        #    This fixes the mismatch where dt spanned filtered-out points.
+        overall_dt = world_entries[-1][1] - world_entries[0][1]
+        if overall_dt < MIN_SPEED_DURATION_SEC:
+            return None
+
+        # 3. Compute per-segment distances AND times between consecutive valid points.
+        #    Because out-of-bounds points were already removed, consecutive entries here
+        #    are genuinely adjacent valid observations — no phantom gaps.
+        segments = []
+        segment_times = []
+        for i in range(len(world_entries) - 1):
+            d = np.linalg.norm(np.array(world_entries[i + 1][0]) - np.array(world_entries[i][0]))
+            seg_dt = world_entries[i + 1][1] - world_entries[i][1]
+            segments.append(d)
+            segment_times.append(seg_dt)
+
         if not segments:
             return None
 
+        # 4. Filter outlier jumps (tracking glitches) and subtract BOTH their distance
+        #    and their time from the totals.  This avoids the systematic underestimation
+        #    that occurred when jump distance was removed but its time was kept.
         median_seg = np.median(segments)
         threshold = median_seg * JUMP_THRESHOLD_MULTIPLIER
-        clean_segments = [s for s in segments if s <= max(threshold, 0.5)]
 
-        total_meters = sum(clean_segments)
-        if total_meters < 1.0:
+        clean_total_distance = 0.0
+        clean_total_time = 0.0
+        for d, seg_dt in zip(segments, segment_times):
+            if d <= max(threshold, 0.5):
+                clean_total_distance += d
+                clean_total_time += seg_dt
+
+        if clean_total_time < MIN_SPEED_DURATION_SEC:
+            return None
+        if clean_total_distance < 1.0:
             return 0.0
 
-        speed = (total_meters / dt) * 3.6
+        speed = (clean_total_distance / clean_total_time) * 3.6
         if speed > MAX_PLAUSIBLE_SPEED_KMH:
             return None
 
