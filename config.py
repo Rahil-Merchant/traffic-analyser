@@ -58,6 +58,7 @@ MIN_SPEED_POSITIONS = max(5, TARGET_FPS)
 MIN_SPEED_DURATION_SEC = 2.0
 MAX_PLAUSIBLE_SPEED_KMH = 200.0
 JUMP_THRESHOLD_MULTIPLIER = 3.0
+DEBUG_SPEED = False 
 
 # #*############## Video 1 #################
 # # --- Input Settings (primarily for hardcoded mode) ---
