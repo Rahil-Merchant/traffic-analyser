@@ -107,6 +107,10 @@ class VideoProcessor:
         self.final_output_path = None
         self.temp_converted_files = []
 
+        # Letterbox inverse-mapping parameters (dw, dh, unpad_w, unpad_h)
+        # Computed once in _preprocess_batch from the first frame's dimensions.
+        self.letterbox_params = None
+
         # Speed estimation
         self.homography_matrix = None
         self.road_polygon_raw = None
@@ -676,6 +680,7 @@ class VideoProcessor:
         self.reader_thread = self.preprocessor_thread = self.postprocessor_thread = self.writer_thread = None
         self.raw_frame_queue = self.preprocessed_tensor_queue = self.results_queue = self.video_write_queue = self.streams = None
         self.final_output_path = None
+        self.letterbox_params = None
         
         cleanup_memory()
         if self.processing_lock.locked():
@@ -753,6 +758,25 @@ class VideoProcessor:
         # Pre-allocate the batch array. Using uint8 is memory efficient.
         # The gray color (114) is a standard padding value for YOLO models.
         batch_np = np.full((count, 3, target_dim, target_dim), 114, dtype=np.uint8)
+
+        # Compute letterbox inverse-mapping parameters once from the first frame.
+        # These are used by _process_inference_results to correctly map model-space
+        # coordinates back to processing coordinates, accounting for padding offsets.
+        if self.letterbox_params is None:
+            frame_h, frame_w = valid_frames[0].shape[:2]
+            if CROP_MODE == 'letterbox':
+                ratio = min(target_dim / frame_h, target_dim / frame_w)
+                new_unpad_w = int(round(frame_w * ratio))
+                new_unpad_h = int(round(frame_h * ratio))
+                dw = (target_dim - new_unpad_w) / 2.0
+                dh = (target_dim - new_unpad_h) / 2.0
+                self.letterbox_params = (dw, dh, new_unpad_w, new_unpad_h)
+                if dw > 0.5 or dh > 0.5:
+                    logger.info(f"Letterbox padding detected: dw={dw:.1f}, dh={dh:.1f}, "
+                                f"unpad=({new_unpad_w}x{new_unpad_h}) from frame ({frame_w}x{frame_h})")
+            else:
+                # Stretch mode: no padding offset, the entire target_dim is used
+                self.letterbox_params = (0.0, 0.0, target_dim, target_dim)
 
         for i, frame_np in enumerate(valid_frames):
 
@@ -851,9 +875,23 @@ class VideoProcessor:
 
         model_h, model_w = self.model_input_size_config, self.model_input_size_config
         draw_w, draw_h = self.frame_shape
-        scale_x, scale_y = draw_w / model_w, draw_h / model_h
+
+        # Use letterbox parameters to correctly undo padding before scaling.
+        # For stretch mode (or patchwise where letterbox_params is None),
+        # dw/dh are 0 and unpad dims equal model dims, so this reduces to the
+        # original simple scale.
+        if self.letterbox_params is not None:
+            dw, dh, unpad_w, unpad_h = self.letterbox_params
+        else:
+            dw, dh = 0.0, 0.0
+            unpad_w, unpad_h = model_w, model_h
+        scale_x = draw_w / unpad_w
+        scale_y = draw_h / unpad_h
         
-        bboxes_scaled = np.vstack([tx1 * scale_x, ty1 * scale_y, tx2 * scale_x, ty2 * scale_y]).T.astype(np.int32)
+        bboxes_scaled = np.vstack([
+            (tx1 - dw) * scale_x, (ty1 - dh) * scale_y,
+            (tx2 - dw) * scale_x, (ty2 - dh) * scale_y
+        ]).T.astype(np.int32)
         bottom_centers = np.vstack([(bboxes_scaled[:, 0] + bboxes_scaled[:, 2]) // 2, bboxes_scaled[:, 3]]).T
 
         temp_drawing_info_list = [{} for _ in range(len(yolo_results_batch))]
