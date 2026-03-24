@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface ControlsPanelProps {
   activeDirection: string | null;
@@ -23,6 +23,8 @@ interface ControlsPanelProps {
   onLaunch: () => void;
   hasPreviousResults?: boolean;
   onReopenResults?: () => void;
+  canRecalibrate?: boolean;
+  onRecalibrate?: (width: number, length: number) => Promise<void>;
 }
 
 const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
@@ -48,8 +50,12 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     onNightHoursEndChange,
     onLaunch,
     hasPreviousResults,
-    onReopenResults
+    onReopenResults,
+    canRecalibrate,
+    onRecalibrate
   } = props;
+
+  const [isRecalibrating, setIsRecalibrating] = useState(false);
 
   const directions = [
     { key: 'north', label: 'North', icon: '↑', color: 'emerald' },
@@ -259,6 +265,35 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                   className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
                 />
               </div>
+
+              {/* Recalibrate Speed Button */}
+              {hasPreviousResults && canRecalibrate && onRecalibrate && (
+                <button
+                  onClick={async () => {
+                    if (typeof roadWidthMeters === 'number' && typeof roadLengthMeters === 'number') {
+                      setIsRecalibrating(true);
+                      await onRecalibrate(roadWidthMeters, roadLengthMeters);
+                      setIsRecalibrating(false);
+                    }
+                  }}
+                  disabled={isRecalibrating || typeof roadWidthMeters !== 'number' || typeof roadLengthMeters !== 'number'}
+                  className="col-span-2 p-2 bg-gradient-to-r from-orange-600 to-orange-700 text-white rounded-lg hover:from-orange-500 hover:to-orange-600 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-orange-500/25 font-semibold flex items-center justify-center space-x-2 text-xs"
+                >
+                  {isRecalibrating ? (
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                    </svg>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      <span>Recalibrate Speed</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
 

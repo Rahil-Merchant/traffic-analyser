@@ -205,6 +205,19 @@ class VideoProcessor:
                     self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
                     logger.info(f"Homography computed from road polygon ({n_pts} pts), "
                                 f"road={W}m x {L}m")
+                    # Save homography debug visualization using first video frame
+                    try:
+                        cap = cv2.VideoCapture(str(actual_video_paths[0]))
+                        ret, first_frame = cap.read()
+                        cap.release()
+                        if ret and first_frame is not None:
+                            # Resize to processing coordinates
+                            first_frame = cv2.resize(first_frame, self.frame_shape)
+                            self._save_homography_debug(first_frame, src, dst, W, L)
+                        else:
+                            logger.warning("Could not read first frame for homography debug.")
+                    except Exception as e:
+                        logger.warning(f"Failed to create homography debug image: {e}")
                 else:
                     self.homography_matrix = None
                     self.zone_axis = None
@@ -1102,32 +1115,6 @@ class VideoProcessor:
         }
         self.finalized_paths_store.append(path_report_entry)
 
-        # Save warped bird's-eye view for homography verification
-        if current_frame is not None and self.homography_matrix is not None and self.road_width_meters and self.road_length_meters:
-            try:
-                warped_dir = os.path.join(BASE_OUTPUT_DIR, "warped_road")
-                os.makedirs(warped_dir, exist_ok=True)
-                # Output size: scale meters to pixels (100 px/m for readable images)
-                px_per_m = 100
-                out_w = int(self.road_width_meters * px_per_m)
-                out_h = int(self.road_length_meters * px_per_m)
-                warped = cv2.warpPerspective(current_frame, self.homography_matrix, (out_w, out_h))
-                # Draw trajectory on warped image
-                for pos, _ in trajectory_data[-20:]:
-                    try:
-                        wp = self._pixel_to_world(pos)
-                        px = int(wp[0] * px_per_m)
-                        py = int(wp[1] * px_per_m)
-                        cv2.circle(warped, (px, py), 4, (0, 255, 0), -1)
-                    except Exception:
-                        pass
-                vtype = app_data.get('current_type', 'unknown')
-                speed_str = f"{average_speed_kmh}kmh" if average_speed_kmh is not None else "nospeed"
-                filename = f"{track_id_str}_{vtype}_{speed_str}.jpg"
-                cv2.imwrite(os.path.join(warped_dir, filename), warped)
-            except Exception as e:
-                logger.warning(f"Failed to save warped road image: {e}")
-
     @staticmethod
     def _build_homography_points(polygon_points, road_width, road_length):
         """
@@ -1214,6 +1201,114 @@ class VideoProcessor:
             dst_list.append(world)
 
         return np.array(src_list, dtype=np.float32), np.array(dst_list, dtype=np.float32)
+
+    def _save_homography_debug(self, frame, src_pts, dst_pts, road_w_m, road_l_m):
+        """
+        Save a single composite debug image showing the homography transform quality.
+        Left panel: original frame with road polygon, numbered correspondence points,
+                    and a world-space grid projected back via inverse homography.
+        Right panel: warped bird's-eye view with metric grid overlay.
+        """
+        try:
+            H = self.homography_matrix
+            H_inv = np.linalg.inv(H)
+
+            # --- Right panel: warped bird's-eye view ---
+            px_per_m = 100
+            bev_w = int(road_w_m * px_per_m)
+            bev_h = int(road_l_m * px_per_m)
+            warped = cv2.warpPerspective(frame, H, (bev_w, bev_h))
+
+            # Draw metric grid on BEV
+            grid_step = max(1.0, min(road_w_m, road_l_m) / 5.0)  # ~5 grid lines per shorter dim
+            grid_color_bev = (100, 100, 100)
+            # Vertical grid lines (along width)
+            x_m = 0.0
+            while x_m <= road_w_m:
+                px_x = int(x_m * px_per_m)
+                cv2.line(warped, (px_x, 0), (px_x, bev_h), grid_color_bev, 1)
+                cv2.putText(warped, f"{x_m:.0f}m", (px_x + 3, 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+                x_m += grid_step
+            # Horizontal grid lines (along length)
+            y_m = 0.0
+            while y_m <= road_l_m:
+                px_y = int(y_m * px_per_m)
+                cv2.line(warped, (0, px_y), (bev_w, px_y), grid_color_bev, 1)
+                cv2.putText(warped, f"{y_m:.0f}m", (3, px_y - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+                y_m += grid_step
+            # Road boundary rectangle
+            cv2.rectangle(warped, (0, 0), (bev_w - 1, bev_h - 1), (0, 255, 255), 2)
+
+            # --- Left panel: original frame with overlays ---
+            left = frame.copy()
+            frame_h, frame_w = left.shape[:2]
+
+            # Draw road polygon
+            poly_pts = src_pts.astype(np.int32).reshape((-1, 1, 2))
+            cv2.polylines(left, [poly_pts], isClosed=True, color=(0, 255, 255), thickness=2)
+
+            # Draw numbered correspondence points (src in image)
+            for idx, (sp, dp) in enumerate(zip(src_pts, dst_pts)):
+                pt = (int(sp[0]), int(sp[1]))
+                cv2.circle(left, pt, 6, (0, 0, 255), -1)
+                cv2.putText(left, str(idx), (pt[0] + 8, pt[1] - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+
+            # Project world-space grid back to original frame via inverse homography
+            grid_color_orig = (0, 200, 0)
+            # Vertical grid lines in world space → project back
+            x_m = 0.0
+            while x_m <= road_w_m:
+                world_line = np.array([[[x_m, y_m * grid_step]]
+                                       for y_m in range(int(road_l_m / grid_step) + 2)
+                                       if y_m * grid_step <= road_l_m + grid_step * 0.5],
+                                      dtype=np.float32)
+                if len(world_line) >= 2:
+                    img_line = cv2.perspectiveTransform(world_line, H_inv)
+                    pts_draw = img_line.reshape(-1, 2).astype(np.int32)
+                    # Clip to frame bounds for drawing
+                    for j in range(len(pts_draw) - 1):
+                        p1 = tuple(pts_draw[j])
+                        p2 = tuple(pts_draw[j + 1])
+                        cv2.line(left, p1, p2, grid_color_orig, 1, cv2.LINE_AA)
+                x_m += grid_step
+            # Horizontal grid lines in world space → project back
+            y_m = 0.0
+            while y_m <= road_l_m:
+                world_line = np.array([[[x_m * grid_step, y_m]]
+                                       for x_m in range(int(road_w_m / grid_step) + 2)
+                                       if x_m * grid_step <= road_w_m + grid_step * 0.5],
+                                      dtype=np.float32)
+                if len(world_line) >= 2:
+                    img_line = cv2.perspectiveTransform(world_line, H_inv)
+                    pts_draw = img_line.reshape(-1, 2).astype(np.int32)
+                    for j in range(len(pts_draw) - 1):
+                        p1 = tuple(pts_draw[j])
+                        p2 = tuple(pts_draw[j + 1])
+                        cv2.line(left, p1, p2, grid_color_orig, 1, cv2.LINE_AA)
+                y_m += grid_step
+
+            # Label the panels
+            cv2.putText(left, "Original + Inverse Grid", (10, frame_h - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(warped, "Bird's-Eye View (Warped)", (10, bev_h - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            # --- Composite: resize right panel to match left panel height ---
+            scale_factor = frame_h / bev_h if bev_h > 0 else 1.0
+            bev_resized = cv2.resize(warped, (int(bev_w * scale_factor), frame_h))
+            composite = np.hstack([left, bev_resized])
+
+            # Save
+            os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
+            out_path = os.path.join(BASE_OUTPUT_DIR, "homography_debug.jpg")
+            cv2.imwrite(out_path, composite)
+            logger.info(f"Homography debug image saved to: {out_path}")
+
+        except Exception as e:
+            logger.warning(f"Failed to save homography debug image: {e}")
 
     def _pixel_to_world(self, point):
         pt = np.array([[[float(point[0]), float(point[1])]]], dtype=np.float32)

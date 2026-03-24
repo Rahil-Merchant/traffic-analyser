@@ -26,10 +26,12 @@ interface InteractiveCanvasProps {
   activeDirection: string | null;
   onCanvasClick: (x: number, y: number) => void;
   onEmptyCanvasClick: () => void;
+  hasPreviousResults?: boolean;
+  onReopenResults?: () => void;
 }
 
 const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
-  const { imageUrl, isLoading, polygons, currentPoints, activeDirection, onCanvasClick, onEmptyCanvasClick } = props;
+  const { imageUrl, isLoading, polygons, currentPoints, activeDirection, onCanvasClick, onEmptyCanvasClick, hasPreviousResults, onReopenResults } = props;
   const [image] = useImage(imageUrl || '', 'anonymous');
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
@@ -253,6 +255,19 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
         <div className="absolute top-4 right-4 bg-yellow-500/90 backdrop-blur-sm text-black px-4 py-2 rounded-full font-bold text-sm border border-yellow-400 shadow-lg">
           Drawing: {activeDirection.toUpperCase()}
         </div>
+      )}
+
+      {/* View Results Floating Button */}
+      {hasPreviousResults && onReopenResults && !activeDirection && (
+        <button
+          onClick={onReopenResults}
+          className="absolute bottom-4 right-4 bg-gradient-to-r from-green-600/90 to-emerald-600/90 backdrop-blur-sm text-white px-4 py-2.5 rounded-xl font-semibold text-sm border border-green-400/40 shadow-lg shadow-green-500/20 hover:shadow-green-500/40 hover:from-green-500/90 hover:to-emerald-500/90 transition-all duration-300 transform hover:scale-105 flex items-center space-x-2"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          <span>View Results</span>
+        </button>
       )}
     </div>
   );
