@@ -289,7 +289,29 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
     except Exception as e:
         print(f"Recalibration Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/abort", tags=["Processing"])
+async def abort_analysis():
+    """Abort the currently running analysis by signaling the stop event."""
+    print("[ABORT] Abort request received.")
+    try:
+        if hasattr(processor, 'stop_event') and processor.stop_event:
+            processor.stop_event.set()
+            # Send abort status through all active job queues
+            for job_id, queue in list(job_queues.items()):
+                try:
+                    await queue.put({"status": "error", "message": "Analysis aborted by user.", "progress": 0})
+                except Exception:
+                    pass
+            print("[ABORT] Stop event set. Processing will halt shortly.")
+            return {"status": "aborted", "message": "Analysis abort signal sent."}
+        else:
+            return {"status": "no_active_job", "message": "No active analysis to abort."}
+    except Exception as e:
+        print(f"[ABORT ERROR] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
         
+
 @app.websocket("/ws/progress/{job_id}")
 async def websocket_progress_endpoint(websocket: WebSocket, job_id: str):
     await websocket.accept()

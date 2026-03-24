@@ -143,6 +143,24 @@ function App() {
     webSocketRef.current.onclose = () => { console.log("Analysis connection closed."); };
   };
 
+  const handleAbort = async () => {
+    try {
+      await axios.post(`${API_BASE_URL}/api/v1/abort`);
+    } catch (error) {
+      console.error('Error sending abort signal:', error);
+    }
+    // Close the WebSocket connection
+    if (webSocketRef.current) {
+      webSocketRef.current.close();
+      webSocketRef.current = null;
+    }
+    setIsProcessing(false);
+    setProgress(0);
+    setProcessingStatus('');
+    setProcessingEta('...');
+    setStatusText('[ABORTED] Analysis was cancelled by user');
+  };
+
   const handleLaunch = async () => {
     if (!isLaunchable) return;
     // Clear previous results
@@ -389,7 +407,7 @@ function App() {
 
       {/* Premium Main Layout */}
       <main className="h-[calc(100vh-100px)] flex p-6 gap-6 relative">
-        {isProcessing && <ProcessingOverlay progress={progress} status={processingStatus} eta={processingEta} />}
+        {isProcessing && <ProcessingOverlay progress={progress} status={processingStatus} eta={processingEta} onAbort={handleAbort} />}
 
         {/* Left Panel - Enhanced */}
         <div className={`w-80 transition-all duration-300 ${isProcessing ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -417,6 +435,8 @@ function App() {
               currentPoints={currentPoints}
               activeDirection={activeDirection}
               onCanvasClick={handleCanvasClick}
+              hasPreviousResults={!!analysisResults}
+              onReopenResults={() => setShowResults(true)}
             />
           </div>
 
@@ -465,6 +485,8 @@ function App() {
             onLaunch={handleLaunch}
             hasPreviousResults={!!analysisResults}
             onReopenResults={() => setShowResults(true)}
+            canRecalibrate={!!polygons['road']}
+            onRecalibrate={handleRecalibrate}
           />
         </div>
       </main>

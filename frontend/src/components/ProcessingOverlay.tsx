@@ -4,9 +4,10 @@ interface ProcessingOverlayProps {
   progress: number;
   status: string;
   eta: string;
+  onAbort?: () => void;
 }
 
-const ProcessingOverlay: React.FC<ProcessingOverlayProps> = ({ progress, status, eta }) => {
+const ProcessingOverlay: React.FC<ProcessingOverlayProps> = ({ progress, status, eta, onAbort }) => {
   return (
     <div className="fixed inset-0 bg-gray-950/95 backdrop-blur-lg flex items-center justify-center z-50">
       <div className="bg-gradient-to-br from-gray-900/95 via-gray-800/95 to-gray-900/95 backdrop-blur-sm border border-gray-700/50 rounded-3xl shadow-2xl p-8 max-w-lg w-full mx-4">
@@ -100,6 +101,25 @@ const ProcessingOverlay: React.FC<ProcessingOverlayProps> = ({ progress, status,
             </div>
           </div>
         </div>
+
+        {/* Abort Button */}
+        {onAbort && (
+          <div className="mt-4 flex justify-center">
+            <button
+              onClick={() => {
+                if (window.confirm('Are you sure you want to abort the analysis? This will stop all processing.')) {
+                  onAbort();
+                }
+              }}
+              className="px-6 py-2.5 bg-gradient-to-r from-red-700 to-red-800 text-white font-semibold rounded-xl hover:from-red-600 hover:to-red-700 transition-all duration-200 shadow-lg shadow-red-500/20 hover:shadow-red-500/40 border border-red-600/30 flex items-center space-x-2 text-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              <span>Abort Analysis</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
