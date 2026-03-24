@@ -289,6 +289,8 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
     except Exception as e:
         print(f"Recalibration Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+        
+@app.websocket("/ws/progress/{job_id}")
 async def websocket_progress_endpoint(websocket: WebSocket, job_id: str):
     await websocket.accept()
     queue = job_queues.get(job_id)
