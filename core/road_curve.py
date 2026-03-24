@@ -51,12 +51,18 @@ class RoadCurve:
         pts_ordered = self._order_polygon(pts)
 
         # ---- 2. Determine orientation to identify length-sides -----------
-        pts_ordered = self._orient_for_length_axis(
+        #         Also returns the MABR box [TL, TR, BR, BL] for splitting.
+        pts_ordered, box = self._orient_for_length_axis(
             pts_ordered, road_length_meters, road_width_meters
         )
 
-        # ---- 3. Split into two boundaries --------------------------------
-        left_boundary, right_boundary = self._split_boundaries(pts_ordered)
+        # ---- 3. Split into two boundaries using MABR corners -------------
+        left_boundary, right_boundary = self._split_boundaries(pts_ordered, box)
+
+        logger.debug(
+            f"Road boundaries: left={len(left_boundary)} pts, "
+            f"right={len(right_boundary)} pts"
+        )
 
         # ---- 4. Pair boundaries → raw centerline -------------------------
         raw_center = self._pair_boundaries(left_boundary, right_boundary)
@@ -130,7 +136,12 @@ class RoadCurve:
         along the right and left sides of the CW walk (i.e. the polygon
         starts at TL of the MABR with the top side being the width).
 
-        This mirrors Steps 2-5 of the old ``_build_homography_points``.
+        Returns
+        -------
+        pts_ordered : ndarray
+            The reoriented polygon points.
+        box : ndarray of shape (4, 2)
+            MABR corners ordered [TL, TR, BR, BL].
         """
         n = len(pts_ordered)
 
@@ -175,36 +186,77 @@ class RoadCurve:
                     [pts_ordered[:1], pts_ordered[1:][::-1]]
                 )
 
-        return pts_ordered
+        return pts_ordered, box
 
     @staticmethod
-    def _split_boundaries(pts_ordered):
-        """Split the CW-ordered polygon into two opposing boundary chains.
+    def _split_boundaries(pts_ordered, box):
+        """Split the CW-ordered polygon into left and right road boundaries
+        using MABR corner matching.
 
-        Walk convention (CW from TL):
-            TL → TR → BR → BL → TL
+        The polygon walks CW from TL: TL → TR → BR → BL → TL.
+        We identify the polygon points nearest to each MABR corner and
+        extract:
+          - Right boundary: polygon segment from near-TR to near-BR
+            (runs along the right edge of the road, start → end)
+          - Left boundary: polygon segment from near-BL wrapping to near-TL
+            (runs along the left edge, end → start), then reversed so both
+            boundaries run start → end.
 
-        * Side 1 (right boundary): the first half of the polygon walk –
-          goes from one "width-end" of the road, down the right edge,
-          to the other "width-end".
-        * Side 2 (left boundary): the second half – walks back along the
-          left edge (reversed to match direction).
+        Parameters
+        ----------
+        pts_ordered : ndarray of shape (N, 2)
+            CW-ordered polygon starting near MABR TL.
+        box : ndarray of shape (4, 2)
+            MABR corners [TL, TR, BR, BL].
 
-        For the centerline we need both chains to run in the *same*
-        direction (start-of-road → end-of-road).
+        Returns
+        -------
+        (left_boundary, right_boundary) : tuple of ndarrays
+            Both run from the near-end to the far-end of the road.
         """
         n = len(pts_ordered)
-        half = n // 2
 
-        # First half: TL → top → TR → right → BR  (indices 0 .. half)
-        # Second half: BR → bottom → BL → left → TL (indices half .. n-1)
-        #   reversed so it also runs start→end
+        # Find polygon indices nearest to each MABR corner
+        # Index 0 is already near TL by construction
+        idx_tr = int(np.argmin(np.linalg.norm(pts_ordered - box[1], axis=1)))
+        idx_br = int(np.argmin(np.linalg.norm(pts_ordered - box[2], axis=1)))
+        idx_bl = int(np.argmin(np.linalg.norm(pts_ordered - box[3], axis=1)))
 
-        right_boundary = pts_ordered[: half + 1]            # inclusive of midpoint
-        left_boundary = pts_ordered[half:][::-1]             # reversed
+        # Right boundary: CW walk from near-TR to near-BR
+        # These indices should increase (TR comes before BR in CW walk)
+        if idx_tr <= idx_br:
+            right_boundary = pts_ordered[idx_tr:idx_br + 1]
+        else:
+            # Wrapping case (shouldn't normally happen)
+            right_boundary = np.concatenate([
+                pts_ordered[idx_tr:], pts_ordered[:idx_br + 1]
+            ])
 
-        # If polygon has odd points, one boundary has an extra point.
-        # We'll handle this in _pair_boundaries via interpolation.
+        # Left boundary: CW walk from near-BL, wrapping around to near-TL
+        # In CW order: BL → left-side points → TL (index 0)
+        # We include index 0 (TL) in the chain
+        if idx_bl < n:
+            left_cw = np.concatenate([
+                pts_ordered[idx_bl:], pts_ordered[:1]
+            ])
+        else:
+            left_cw = pts_ordered[:1]
+
+        # Reverse so left boundary also runs start→end (TL→BL direction)
+        left_boundary = left_cw[::-1]
+
+        # Sanity: each boundary must have >= 2 points
+        if len(right_boundary) < 2 or len(left_boundary) < 2:
+            # Fallback: use the polygon endpoints as a simple 2-point boundary
+            logger.warning(
+                f"Boundary split produced degenerate chains "
+                f"(right={len(right_boundary)}, left={len(left_boundary)}). "
+                f"Falling back to MABR corners."
+            )
+            # Right: TR → BR, Left: TL → BL
+            right_boundary = np.array([box[1], box[2]], dtype=np.float32)
+            left_boundary = np.array([box[0], box[3]], dtype=np.float32)
+
         return left_boundary, right_boundary
 
     @staticmethod
