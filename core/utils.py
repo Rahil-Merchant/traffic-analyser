@@ -103,48 +103,47 @@ def cleanup_memory():
         torch.cuda.empty_cache()
     logger.debug("Performed memory cleanup (GC + CUDA Cache)")
 
-def compute_speed_from_trajectory(trajectory_data, homography_matrix, road_width_meters, road_length_meters):
-    if homography_matrix is None or not trajectory_data or len(trajectory_data) < MIN_SPEED_POSITIONS:
+def compute_speed_from_trajectory(trajectory_data, road_curve):
+    """Compute average speed from stored trajectory using arc-length road curve.
+
+    Parameters
+    ----------
+    trajectory_data : list of ([x, y], time_sec) tuples
+    road_curve : RoadCurve instance (from core.road_curve)
+    """
+    if road_curve is None or not trajectory_data or len(trajectory_data) < MIN_SPEED_POSITIONS:
         return None
-    if road_width_meters is None or road_length_meters is None:
-        return None
-    
+
     total_dt = trajectory_data[-1][1] - trajectory_data[0][1]
     if total_dt < MIN_SPEED_DURATION_SEC:
         return None
 
-    # Build world points WITH their timestamps so filtering doesn't corrupt dt
-    margin_w = road_width_meters * 0.5
-    margin_l = road_length_meters * 0.5
-    world_points_with_time = []
+    # Project each position onto the road curve → (s_meters, time)
+    projected = []
     for pos, t in trajectory_data:
         try:
-            pt = np.array([[[float(pos[0]), float(pos[1])]]], dtype=np.float32)
-            world = cv2.perspectiveTransform(pt, homography_matrix)[0][0]
-            if (world[0] < -margin_w or world[1] < -margin_l or
-                    world[0] > road_width_meters + margin_w or world[1] > road_length_meters + margin_l):
-                continue
-            world_points_with_time.append((world, t))
+            s = road_curve.project(float(pos[0]), float(pos[1]))
+            projected.append((s, t))
         except Exception:
             continue
 
-    if len(world_points_with_time) < 2:
+    if len(projected) < 2:
         return None
 
-    # Compute per-segment distances and durations
+    # Compute per-segment arc-length differences and durations
     seg_distances = []
     seg_durations = []
-    for i in range(len(world_points_with_time) - 1):
-        dist = float(np.linalg.norm(world_points_with_time[i + 1][0] - world_points_with_time[i][0]))
-        dur = world_points_with_time[i + 1][1] - world_points_with_time[i][1]
+    for i in range(len(projected) - 1):
+        ds = abs(projected[i + 1][0] - projected[i][0])
+        dur = projected[i + 1][1] - projected[i][1]
         if dur > 0:
-            seg_distances.append(dist)
+            seg_distances.append(ds)
             seg_durations.append(dur)
 
     if not seg_distances:
         return None
 
-    # Jump filtering: remove outlier segments (both distance and corresponding time)
+    # Jump filtering: remove outlier segments
     median_seg = np.median(seg_distances)
     threshold = max(median_seg * JUMP_THRESHOLD_MULTIPLIER, 0.5)
     clean_total_meters = 0.0

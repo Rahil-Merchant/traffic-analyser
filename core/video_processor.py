@@ -37,6 +37,7 @@ from config import (
 )
 from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory
+from core.road_curve import RoadCurve
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
 from tracking.zone_tracker import ZoneTracker
@@ -112,7 +113,7 @@ class VideoProcessor:
         self.letterbox_params = None
 
         # Speed estimation
-        self.homography_matrix = None
+        self.road_curve = None
         self.road_polygon_raw = None
         self.road_width_meters = None
         self.road_length_meters = None
@@ -181,48 +182,40 @@ class VideoProcessor:
             z1, z2 = zone_names[0], zone_names[1]
             self.zone_pair = (z1, z2)
 
-            # Homography from user-defined road polygon
+            # Arc-length road curve from user-defined road polygon.
             # User draws N >= 4 points tracing the road boundary.
-            # Points are mapped to corresponding positions on a world-space rectangle
-            # via perimeter parameterization, then findHomography with RANSAC.
+            # A centerline is built, resampled densely, and parameterized
+            # by arc-length in meters for perspective-free speed estimation.
             if (self.road_polygon_raw and len(self.road_polygon_raw) >= 4
-                    and self.road_width_meters and self.road_length_meters):
+                    and self.road_length_meters):
                 scaled_road_poly = self._scale_polygons_to_processing_coordinates(
                     {'road': self.road_polygon_raw}, preview_image_width, preview_image_height
                 ).get('road', [])
                 if len(scaled_road_poly) >= 4:
-                    W, L = self.road_width_meters, self.road_length_meters
-                    src, dst = self._build_homography_points(scaled_road_poly, W, L)
-                    n_pts = len(src)
-                    self.homography_matrix, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
-                    inliers = int(mask.sum()) if mask is not None else n_pts
-                    logger.info(f"Homography RANSAC: {inliers}/{n_pts} inliers")
-                    # Zone axis from the ordered polygon's first-half → second-half centroids
-                    half_n = n_pts // 2
-                    centroid_near = np.mean(src[:half_n], axis=0)
-                    centroid_far = np.mean(src[half_n:], axis=0)
-                    axis = centroid_far - centroid_near
-                    self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
-                    logger.info(f"Homography computed from road polygon ({n_pts} pts), "
-                                f"road={W}m x {L}m")
-                    # Save homography debug visualization using first video frame
                     try:
-                        cap = cv2.VideoCapture(str(actual_video_paths[0]))
-                        ret, first_frame = cap.read()
-                        cap.release()
-                        if ret and first_frame is not None:
-                            # Resize to processing coordinates
-                            first_frame = cv2.resize(first_frame, self.frame_shape)
-                            self._save_homography_debug(first_frame, src, dst, W, L)
-                        else:
-                            logger.warning("Could not read first frame for homography debug.")
+                        self.road_curve = RoadCurve(
+                            scaled_road_poly,
+                            self.road_length_meters,
+                            road_width_meters=self.road_width_meters
+                        )
+                        # Zone axis from the road polygon's near/far centroids
+                        pts = np.array(scaled_road_poly, dtype=np.float32)
+                        half_n = len(pts) // 2
+                        centroid_near = np.mean(pts[:half_n], axis=0)
+                        centroid_far = np.mean(pts[half_n:], axis=0)
+                        axis = centroid_far - centroid_near
+                        self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
+                        logger.info(f"RoadCurve built from {len(scaled_road_poly)} pts, "
+                                    f"road_length={self.road_length_meters}m")
                     except Exception as e:
-                        logger.warning(f"Failed to create homography debug image: {e}")
+                        logger.warning(f"Failed to build RoadCurve: {e}")
+                        self.road_curve = None
+                        self.zone_axis = None
                 else:
-                    self.homography_matrix = None
+                    self.road_curve = None
                     self.zone_axis = None
             else:
-                self.homography_matrix = None
+                self.road_curve = None
                 # Fallback: centroid-based zone axis
                 c1 = np.mean(self.zone_tracker.zones[z1], axis=0)
                 c2 = np.mean(self.zone_tracker.zones[z2], axis=0)
@@ -231,7 +224,7 @@ class VideoProcessor:
         else:
             self.zone_axis = None
             self.zone_pair = None
-            self.homography_matrix = None
+            self.road_curve = None
 
         # --- MODEL LOADING LOGIC ---
         if self.use_patchwise_inference:
@@ -1115,210 +1108,11 @@ class VideoProcessor:
         }
         self.finalized_paths_store.append(path_report_entry)
 
-    @staticmethod
-    def _build_homography_points(polygon_points, road_width, road_length):
-        """
-        Build src/dst point pairs for homography from arbitrarily ordered
-        road boundary points.
 
-        Steps:
-        1. Orders points into a coherent polygon via angular sort around centroid
-        2. Uses minimum area bounding rectangle to determine road orientation
-        3. Aligns polygon start and walk direction to match TL→TR→BR→BL
-        4. Maps each polygon point to world coords via perimeter parameterization
-
-        Returns:
-            (src, dst) numpy arrays of N corresponding point pairs.
-        """
-        pts = np.array(polygon_points, dtype=np.float32)
-        n = len(pts)
-
-        # --- Step 1: Order points into a coherent polygon ---
-        # Angular sort around centroid gives clockwise order in screen coords (y-down)
-        centroid = pts.mean(axis=0)
-        angles = np.arctan2(pts[:, 1] - centroid[1], pts[:, 0] - centroid[0])
-        pts_ordered = pts[np.argsort(angles)]
-
-        # --- Step 2: Find oriented minimum area bounding rectangle ---
-        rect = cv2.minAreaRect(pts_ordered)
-        box = cv2.boxPoints(rect).astype(np.float32)
-
-        # --- Step 3: Order box corners as [TL, TR, BR, BL] clockwise ---
-        # Sort box corners by angle from their centroid
-        bc = box.mean(axis=0)
-        box = box[np.argsort(np.arctan2(box[:, 1] - bc[1], box[:, 0] - bc[0]))]
-        # Roll so TL (smallest x+y sum) is first
-        tl_idx = int(np.argmin(box[:, 0] + box[:, 1]))
-        box = np.roll(box, -tl_idx, axis=0)
-        # Ensure clockwise on screen (cross product > 0 with y-down)
-        v1, v2 = box[1] - box[0], box[2] - box[1]
-        if v1[0] * v2[1] - v1[1] * v2[0] < 0:
-            box = np.array([box[0], box[3], box[2], box[1]], dtype=np.float32)
-
-        # --- Step 4: Determine which MABR side is road width vs length ---
-        side_top = float(np.linalg.norm(box[1] - box[0]))    # TL → TR
-        side_right = float(np.linalg.norm(box[2] - box[1]))  # TR → BR
-        target_ratio = float(road_width) / (float(road_length) + 1e-8)
-        ratio_top_is_w = side_top / (side_right + 1e-8)
-        ratio_right_is_w = side_right / (side_top + 1e-8)
-        if abs(ratio_top_is_w - target_ratio) > abs(ratio_right_is_w - target_ratio):
-            # Top side is actually length → rotate box so width side becomes top
-            box = np.roll(box, -1, axis=0)
-
-        # --- Step 5: Align polygon start and direction to box ---
-        # Start polygon from the point nearest to box TL
-        dists_to_tl = np.linalg.norm(pts_ordered - box[0], axis=1)
-        start_idx = int(np.argmin(dists_to_tl))
-        pts_ordered = np.roll(pts_ordered, -start_idx, axis=0)
-        # Ensure polygon walks CW (toward TR, not BL)
-        if n >= 3:
-            if float(np.linalg.norm(pts_ordered[1] - box[3])) < float(np.linalg.norm(pts_ordered[1] - box[1])):
-                pts_ordered = np.concatenate([pts_ordered[:1], pts_ordered[1:][::-1]])
-
-        # --- Step 6: Perimeter parameterization ---
-        cum_dists = [0.0]
-        for i in range(1, n):
-            cum_dists.append(cum_dists[-1] + float(np.linalg.norm(pts_ordered[i] - pts_ordered[i - 1])))
-        total_perimeter = cum_dists[-1] + float(np.linalg.norm(pts_ordered[0] - pts_ordered[-1]))
-
-        W, L = float(road_width), float(road_length)
-        rect_perim = 2.0 * (W + L)
-
-        src_list = []
-        dst_list = []
-        for i in range(n):
-            t = cum_dists[i] / total_perimeter if total_perimeter > 0 else 0.0
-            d = t * rect_perim
-            if d <= W:
-                world = [d, 0.0]                      # Top: TL → TR
-            elif d <= W + L:
-                world = [W, d - W]                    # Right: TR → BR
-            elif d <= 2 * W + L:
-                world = [W - (d - W - L), L]          # Bottom: BR → BL
-            else:
-                world = [0.0, L - (d - 2 * W - L)]   # Left: BL → TL
-            src_list.append(pts_ordered[i])
-            dst_list.append(world)
-
-        return np.array(src_list, dtype=np.float32), np.array(dst_list, dtype=np.float32)
-
-    def _save_homography_debug(self, frame, src_pts, dst_pts, road_w_m, road_l_m):
-        """
-        Save a single composite debug image showing the homography transform quality.
-        Left panel: original frame with road polygon, numbered correspondence points,
-                    and a world-space grid projected back via inverse homography.
-        Right panel: warped bird's-eye view with metric grid overlay.
-        """
-        try:
-            H = self.homography_matrix
-            H_inv = np.linalg.inv(H)
-
-            # --- Right panel: warped bird's-eye view ---
-            px_per_m = 100
-            bev_w = int(road_w_m * px_per_m)
-            bev_h = int(road_l_m * px_per_m)
-            warped = cv2.warpPerspective(frame, H, (bev_w, bev_h))
-
-            # Draw metric grid on BEV
-            grid_step = max(1.0, min(road_w_m, road_l_m) / 5.0)  # ~5 grid lines per shorter dim
-            grid_color_bev = (100, 100, 100)
-            # Vertical grid lines (along width)
-            x_m = 0.0
-            while x_m <= road_w_m:
-                px_x = int(x_m * px_per_m)
-                cv2.line(warped, (px_x, 0), (px_x, bev_h), grid_color_bev, 1)
-                cv2.putText(warped, f"{x_m:.0f}m", (px_x + 3, 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
-                x_m += grid_step
-            # Horizontal grid lines (along length)
-            y_m = 0.0
-            while y_m <= road_l_m:
-                px_y = int(y_m * px_per_m)
-                cv2.line(warped, (0, px_y), (bev_w, px_y), grid_color_bev, 1)
-                cv2.putText(warped, f"{y_m:.0f}m", (3, px_y - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
-                y_m += grid_step
-            # Road boundary rectangle
-            cv2.rectangle(warped, (0, 0), (bev_w - 1, bev_h - 1), (0, 255, 255), 2)
-
-            # --- Left panel: original frame with overlays ---
-            left = frame.copy()
-            frame_h, frame_w = left.shape[:2]
-
-            # Draw road polygon
-            poly_pts = src_pts.astype(np.int32).reshape((-1, 1, 2))
-            cv2.polylines(left, [poly_pts], isClosed=True, color=(0, 255, 255), thickness=2)
-
-            # Draw numbered correspondence points (src in image)
-            for idx, (sp, dp) in enumerate(zip(src_pts, dst_pts)):
-                pt = (int(sp[0]), int(sp[1]))
-                cv2.circle(left, pt, 6, (0, 0, 255), -1)
-                cv2.putText(left, str(idx), (pt[0] + 8, pt[1] - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
-
-            # Project world-space grid back to original frame via inverse homography
-            grid_color_orig = (0, 200, 0)
-            # Vertical grid lines in world space → project back
-            x_m = 0.0
-            while x_m <= road_w_m:
-                world_line = np.array([[[x_m, y_m * grid_step]]
-                                       for y_m in range(int(road_l_m / grid_step) + 2)
-                                       if y_m * grid_step <= road_l_m + grid_step * 0.5],
-                                      dtype=np.float32)
-                if len(world_line) >= 2:
-                    img_line = cv2.perspectiveTransform(world_line, H_inv)
-                    pts_draw = img_line.reshape(-1, 2).astype(np.int32)
-                    # Clip to frame bounds for drawing
-                    for j in range(len(pts_draw) - 1):
-                        p1 = tuple(pts_draw[j])
-                        p2 = tuple(pts_draw[j + 1])
-                        cv2.line(left, p1, p2, grid_color_orig, 1, cv2.LINE_AA)
-                x_m += grid_step
-            # Horizontal grid lines in world space → project back
-            y_m = 0.0
-            while y_m <= road_l_m:
-                world_line = np.array([[[x_m * grid_step, y_m]]
-                                       for x_m in range(int(road_w_m / grid_step) + 2)
-                                       if x_m * grid_step <= road_w_m + grid_step * 0.5],
-                                      dtype=np.float32)
-                if len(world_line) >= 2:
-                    img_line = cv2.perspectiveTransform(world_line, H_inv)
-                    pts_draw = img_line.reshape(-1, 2).astype(np.int32)
-                    for j in range(len(pts_draw) - 1):
-                        p1 = tuple(pts_draw[j])
-                        p2 = tuple(pts_draw[j + 1])
-                        cv2.line(left, p1, p2, grid_color_orig, 1, cv2.LINE_AA)
-                y_m += grid_step
-
-            # Label the panels
-            cv2.putText(left, "Original + Inverse Grid", (10, frame_h - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(warped, "Bird's-Eye View (Warped)", (10, bev_h - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-            # --- Composite: resize right panel to match left panel height ---
-            scale_factor = frame_h / bev_h if bev_h > 0 else 1.0
-            bev_resized = cv2.resize(warped, (int(bev_w * scale_factor), frame_h))
-            composite = np.hstack([left, bev_resized])
-
-            # Save
-            os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
-            out_path = os.path.join(BASE_OUTPUT_DIR, "homography_debug.jpg")
-            cv2.imwrite(out_path, composite)
-            logger.info(f"Homography debug image saved to: {out_path}")
-
-        except Exception as e:
-            logger.warning(f"Failed to save homography debug image: {e}")
-
-    def _pixel_to_world(self, point):
-        pt = np.array([[[float(point[0]), float(point[1])]]], dtype=np.float32)
-        world = cv2.perspectiveTransform(pt, self.homography_matrix)
-        return world[0][0]
 
     def _compute_average_speed_kmh(self, positions_with_times, current_frame=None):
-        if self.homography_matrix is None:
-            return None
-        if self.road_width_meters is None or self.road_length_meters is None:
+        """Compute average speed using arc-length projection onto road curve."""
+        if self.road_curve is None:
             return None
         if len(positions_with_times) < MIN_SPEED_POSITIONS:
             logger.info(f"[Speed Calculation] Position thresh not met: {len(positions_with_times)} < {MIN_SPEED_POSITIONS}")
@@ -1328,92 +1122,39 @@ class VideoProcessor:
             logger.info(f"[Speed Calculation] Time thresh not met: {total_dt} < {MIN_SPEED_DURATION_SEC}")
             return None
 
-        margin_w = self.road_width_meters * 0.5
-        margin_l = self.road_length_meters * 0.5
-
-        world_points_with_time = []
-        
-        # --- Dynamic Visualization Debugger ---
-        if DEBUG_SPEED:
-            min_x_m = -margin_w
-            max_x_m = self.road_width_meters + margin_w
-            min_y_m = -margin_l
-            max_y_m = self.road_length_meters + margin_l
-            
-            span_x_m = (max_x_m - min_x_m) * 1.2
-            span_y_m = (max_y_m - min_y_m) * 1.2
-            
-            scale = min(800 / span_x_m if span_x_m > 0 else 1, 800 / span_y_m if span_y_m > 0 else 1)
-            canvas_w, canvas_h = int(span_x_m * scale), int(span_y_m * scale)
-            
-            center_x_m, center_y_m = (min_x_m + max_x_m) / 2, (min_y_m + max_y_m) / 2
-            off_x = int((canvas_w / 2) - (center_x_m * scale))
-            off_y = int((canvas_h / 2) + (center_y_m * scale))
-            
-            def m2p(x_m, y_m):
-                return int((x_m * scale) + off_x), int((-y_m * scale) + off_y)
-                
-            canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-            cv2.rectangle(canvas, m2p(min_x_m, min_y_m), m2p(max_x_m, max_y_m), (255, 0, 0), 2)
-            
-            if current_frame is not None:
-                dbg_frame = current_frame.copy()
-            else:
-                dbg_frame = None
-                
+        # Project each position onto the road curve → (s_meters, time)
+        projected = []
         for pos, t in positions_with_times:
             try:
-                wp = self._pixel_to_world(pos)
-                
-                out_of_bounds = (wp[0] < -margin_w or wp[1] < -margin_l or 
-                                 wp[0] > self.road_width_meters + margin_w or 
-                                 wp[1] > self.road_length_meters + margin_l)
-                
-                if DEBUG_SPEED:
-                    cx, cy = m2p(wp[0], wp[1])
-                    if out_of_bounds:
-                        cv2.circle(canvas, (cx, cy), 3, (0, 0, 255), -1)
-                    else:
-                        cv2.circle(canvas, (cx, cy), 3, (0, 255, 0), -1)
-                        
-                    if dbg_frame is not None:
-                        cv2.circle(dbg_frame, (int(pos[0]), int(pos[1])), 4, (0, 0, 255) if out_of_bounds else (0, 255, 0), -1)
-                        cv2.imshow("Real Frame Debug", dbg_frame)
-                    
-                    cv2.imshow("Dynamic Bounding Box Debug", canvas)
-                    cv2.waitKey(1)
-                    
-                if out_of_bounds:
-                    continue
-                    
-                world_points_with_time.append((wp, t))
+                s = self.road_curve.project(float(pos[0]), float(pos[1]))
+                projected.append((s, t))
             except Exception:
                 continue
 
-        if len(world_points_with_time) < 2:
-            logger.info(f"[Speed Calculation] World points not found: {len(world_points_with_time)} < 2")
+        if len(projected) < 2:
+            logger.info(f"[Speed Calculation] Projected points insufficient: {len(projected)} < 2")
             return None
 
-        # Compute per-segment distances and durations
+        # Compute per-segment arc-length differences and durations
         seg_distances = []
         seg_durations = []
-        for i in range(len(world_points_with_time) - 1):
-            dist = float(np.linalg.norm(world_points_with_time[i + 1][0] - world_points_with_time[i][0]))
-            dur = world_points_with_time[i + 1][1] - world_points_with_time[i][1]
+        for i in range(len(projected) - 1):
+            ds = abs(projected[i + 1][0] - projected[i][0])
+            dur = projected[i + 1][1] - projected[i][1]
             if dur > 0:
-                seg_distances.append(dist)
+                seg_distances.append(ds)
                 seg_durations.append(dur)
 
         if not seg_distances:
             logger.info(f"[Speed Calculation] Segments not found")
             return None
 
-        # Jump filtering: remove outlier segments (both distance and corresponding time)
+        # Jump filtering: remove outlier segments
         median_seg = np.median(seg_distances)
         threshold = max(median_seg * JUMP_THRESHOLD_MULTIPLIER, 0.5)
+        per_segment_speeds = []
         clean_total_meters = 0.0
         clean_total_time = 0.0
-        per_segment_speeds = []
         for dist, dur in zip(seg_distances, seg_durations):
             if dist <= threshold:
                 clean_total_meters += dist
@@ -1434,7 +1175,7 @@ class VideoProcessor:
 
     def _compute_live_speed_kmh(self, positions_with_times, window_sec=2.0):
         """Compute a sliding-window speed for debug annotation on frames."""
-        if self.homography_matrix is None or self.road_width_meters is None or self.road_length_meters is None:
+        if self.road_curve is None:
             return None
         if len(positions_with_times) < 3:
             return None
@@ -1446,29 +1187,24 @@ class VideoProcessor:
         if len(windowed) < 2:
             return None
 
-        margin_w = self.road_width_meters * 0.5
-        margin_l = self.road_length_meters * 0.5
-        world_pts_with_time = []
+        # Project onto road curve
+        projected = []
         for pos, t in windowed:
             try:
-                wp = self._pixel_to_world(pos)
-                if (wp[0] < -margin_w or wp[1] < -margin_l or
-                        wp[0] > self.road_width_meters + margin_w or
-                        wp[1] > self.road_length_meters + margin_l):
-                    continue
-                world_pts_with_time.append((wp, t))
+                s = self.road_curve.project(float(pos[0]), float(pos[1]))
+                projected.append((s, t))
             except Exception:
                 continue
 
-        if len(world_pts_with_time) < 2:
+        if len(projected) < 2:
             return None
 
         per_seg_speeds = []
-        for i in range(len(world_pts_with_time) - 1):
-            dist = float(np.linalg.norm(world_pts_with_time[i + 1][0] - world_pts_with_time[i][0]))
-            dur = world_pts_with_time[i + 1][1] - world_pts_with_time[i][1]
+        for i in range(len(projected) - 1):
+            ds = abs(projected[i + 1][0] - projected[i][0])
+            dur = projected[i + 1][1] - projected[i][1]
             if dur > 0:
-                per_seg_speeds.append((dist / dur) * 3.6)
+                per_seg_speeds.append((ds / dur) * 3.6)
 
         if not per_seg_speeds:
             return None
