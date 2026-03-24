@@ -214,24 +214,26 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
 async def recalibrate_speed(config: RecalibrateConfigPayload):
     print("Recalibrating speeds with new parameters...")
     try:
-        # Create homography
-        homography_matrix = None
+        # Build road curve for arc-length speed computation
+        from core.road_curve import RoadCurve
+        road_curve = None
         if (config.road_polygon is not None and len(config.road_polygon) >= 4
-                and config.road_width_meters and config.road_length_meters):
+                and config.road_length_meters):
             scaled_road_poly = processor._scale_polygons_to_processing_coordinates(
                 {'road': config.road_polygon}, config.preview_image_width, config.preview_image_height
             ).get('road', [])
             if len(scaled_road_poly) >= 4:
-                import numpy as np
-                W, L = config.road_width_meters, config.road_length_meters
-                src, dst = VideoProcessor._build_homography_points(scaled_road_poly, W, L)
-                homography_matrix, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+                road_curve = RoadCurve(
+                    scaled_road_poly,
+                    config.road_length_meters,
+                    road_width_meters=config.road_width_meters
+                )
         
         all_paths = processor.finalized_paths_store.get_all()
         for path in all_paths:
             traj = path.get('trajectory_data')
             if traj:
-                new_speed = compute_speed_from_trajectory(traj, homography_matrix, config.road_width_meters, config.road_length_meters)
+                new_speed = compute_speed_from_trajectory(traj, road_curve)
                 processor.finalized_paths_store.update_speed(path['id'], new_speed)
 
         time_str = str(config.start_time)
