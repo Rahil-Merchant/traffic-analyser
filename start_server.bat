@@ -10,7 +10,7 @@ set PROJECT_DIR=%~dp0
 
 echo.
 echo =========================================
-echo    EMAAN Urban Reconnaissance v1.0
+echo    EMAAN Urban Reconnaissance
 echo    Advanced Traffic Analysis Platform
 echo =========================================
 echo.
