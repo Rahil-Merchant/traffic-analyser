@@ -5,8 +5,7 @@ interface ControlsPanelProps {
   drawnZones: string[];
   primaryDirection: string | null;
   isLaunchable: boolean;
-  roadWidthMeters: number | '';
-  roadLengthMeters: number | '';
+  axisLengthMeters: number | '';
   speedLimitKmh: number | '';
   nightHoursStart: string;
   nightHoursEnd: string;
@@ -15,8 +14,7 @@ interface ControlsPanelProps {
   onUndoPoint: () => void;
   onClearAllZones: () => void;
   onPrimaryDirectionChange: (direction: string) => void;
-  onRoadWidthChange: (val: number | '') => void;
-  onRoadLengthChange: (val: number | '') => void;
+  onAxisLengthChange: (val: number | '') => void;
   onSpeedLimitChange: (val: number | '') => void;
   onNightHoursStartChange: (val: string) => void;
   onNightHoursEndChange: (val: string) => void;
@@ -24,7 +22,7 @@ interface ControlsPanelProps {
   hasPreviousResults?: boolean;
   onReopenResults?: () => void;
   canRecalibrate?: boolean;
-  onRecalibrate?: (width: number, length: number) => Promise<void>;
+  onRecalibrate?: (length: number) => Promise<void>;
 }
 
 const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
@@ -33,8 +31,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     drawnZones,
     primaryDirection,
     isLaunchable,
-    roadWidthMeters,
-    roadLengthMeters,
+    axisLengthMeters,
     speedLimitKmh,
     nightHoursStart,
     nightHoursEnd,
@@ -43,8 +40,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     onUndoPoint,
     onClearAllZones,
     onPrimaryDirectionChange,
-    onRoadWidthChange,
-    onRoadLengthChange,
+    onAxisLengthChange,
     onSpeedLimitChange,
     onNightHoursStartChange,
     onNightHoursEndChange,
@@ -207,28 +203,16 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8v8M20 8v8M4 16l16-8M4 8l16 8" />
                 </svg>
-                <span className="text-xs font-semibold">{drawnZones.includes('road') ? 'Road Polygon Drawn' : 'Draw Road Area'}</span>
+                <span className="text-xs font-semibold">{drawnZones.includes('road') ? 'Road Axis Drawn' : 'Draw Road Axis'}</span>
               </button>
 
-              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
-                <label className="block text-xs font-medium text-gray-400 mb-1">Road Width (m)</label>
+              <div className="col-span-2 bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Axis Length (m)</label>
                 <input
                   type="number"
                   min="0" step="0.1"
-                  value={roadWidthMeters}
-                  onChange={e => onRoadWidthChange(e.target.value ? parseFloat(e.target.value) : '')}
-                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
-                  placeholder="e.g. 7.5"
-                />
-              </div>
-
-              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
-                <label className="block text-xs font-medium text-gray-400 mb-1">Road Length (m)</label>
-                <input
-                  type="number"
-                  min="0" step="0.1"
-                  value={roadLengthMeters}
-                  onChange={e => onRoadLengthChange(e.target.value ? parseFloat(e.target.value) : '')}
+                  value={axisLengthMeters}
+                  onChange={e => onAxisLengthChange(e.target.value ? parseFloat(e.target.value) : '')}
                   className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
                   placeholder="e.g. 30.0"
                 />
@@ -270,13 +254,13 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
               {hasPreviousResults && canRecalibrate && onRecalibrate && (
                 <button
                   onClick={async () => {
-                    if (typeof roadWidthMeters === 'number' && typeof roadLengthMeters === 'number') {
+                    if (typeof axisLengthMeters === 'number') {
                       setIsRecalibrating(true);
-                      await onRecalibrate(roadWidthMeters, roadLengthMeters);
+                      await onRecalibrate(axisLengthMeters);
                       setIsRecalibrating(false);
                     }
                   }}
-                  disabled={isRecalibrating || typeof roadWidthMeters !== 'number' || typeof roadLengthMeters !== 'number'}
+                  disabled={isRecalibrating || typeof axisLengthMeters !== 'number'}
                   className="col-span-2 p-2 bg-gradient-to-r from-orange-600 to-orange-700 text-white rounded-lg hover:from-orange-500 hover:to-orange-600 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-orange-500/25 font-semibold flex items-center justify-center space-x-2 text-xs"
                 >
                   {isRecalibrating ? (
