@@ -185,11 +185,15 @@ class VideoProcessor:
             # User plots N >= 2 points along the road centre-line.
             # A dense curve is built from those points, parameterised
             # by arc-length in meters for perspective-free speed estimation.
+            print(f"[DEBUG SPEED] road_axis_points_raw={self.road_axis_points_raw}")
+            print(f"[DEBUG SPEED] axis_length_meters={self.axis_length_meters}")
+            print(f"[DEBUG SPEED] preview dims=({preview_image_width}x{preview_image_height})")
             if (self.road_axis_points_raw and len(self.road_axis_points_raw) >= 2
                     and self.axis_length_meters):
                 scaled_axis = self._scale_polygons_to_processing_coordinates(
                     {'axis': self.road_axis_points_raw}, preview_image_width, preview_image_height
                 ).get('axis', [])
+                print(f"[DEBUG SPEED] scaled_axis={scaled_axis}")
                 if len(scaled_axis) >= 2:
                     try:
                         # Try to capture first frame for debug visualisation
@@ -214,14 +218,18 @@ class VideoProcessor:
                         self.zone_axis = axis_vec / (np.linalg.norm(axis_vec) + 1e-6)
                         logger.info(f"RoadCurve built from {len(scaled_axis)} axis pts, "
                                     f"axis_length={self.axis_length_meters}m")
+                        print(f"[DEBUG SPEED] ✅ RoadCurve built successfully. road_curve={self.road_curve}")
                     except Exception as e:
                         logger.warning(f"Failed to build RoadCurve: {e}")
+                        print(f"[DEBUG SPEED] ❌ RoadCurve construction FAILED: {e}")
                         self.road_curve = None
                         self.zone_axis = None
                 else:
+                    print(f"[DEBUG SPEED] ❌ scaled_axis has <2 points: {len(scaled_axis)}")
                     self.road_curve = None
                     self.zone_axis = None
             else:
+                print(f"[DEBUG SPEED] ❌ Road axis inputs missing. raw_pts={self.road_axis_points_raw is not None}, len={len(self.road_axis_points_raw) if self.road_axis_points_raw else 0}, axis_len={self.axis_length_meters}")
                 self.road_curve = None
                 # Fallback: centroid-based zone axis
                 c1 = np.mean(self.zone_tracker.zones[z1], axis=0)
@@ -229,6 +237,7 @@ class VideoProcessor:
                 axis = c2 - c1
                 self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
         else:
+            print(f"[DEBUG SPEED] ❌ zone_tracker.zones != 2 (got {len(self.zone_tracker.zones)}). No RoadCurve.")
             self.zone_axis = None
             self.zone_pair = None
             self.road_curve = None
@@ -1148,13 +1157,14 @@ class VideoProcessor:
     def _compute_average_speed_kmh(self, positions_with_times, current_frame=None):
         """Compute average speed using arc-length projection onto road curve."""
         if self.road_curve is None:
+            print(f"[DEBUG SPEED] _compute_average_speed_kmh → None (road_curve is None)")
             return None
         if len(positions_with_times) < MIN_SPEED_POSITIONS:
-            logger.info(f"[Speed Calculation] Position thresh not met: {len(positions_with_times)} < {MIN_SPEED_POSITIONS}")
+            print(f"[DEBUG SPEED] _compute_average_speed_kmh → None (positions {len(positions_with_times)} < {MIN_SPEED_POSITIONS})")
             return None
         total_dt = positions_with_times[-1][1] - positions_with_times[0][1]
         if total_dt < MIN_SPEED_DURATION_SEC:
-            logger.info(f"[Speed Calculation] Time thresh not met: {total_dt} < {MIN_SPEED_DURATION_SEC}")
+            print(f"[DEBUG SPEED] _compute_average_speed_kmh → None (duration {total_dt:.2f}s < {MIN_SPEED_DURATION_SEC}s)")
             return None
 
         # Project each position onto the road curve → (s_meters, time)
@@ -1167,7 +1177,7 @@ class VideoProcessor:
                 continue
 
         if len(projected) < 2:
-            logger.info(f"[Speed Calculation] Projected points insufficient: {len(projected)} < 2")
+            print(f"[DEBUG SPEED] _compute_average_speed_kmh → None (projected {len(projected)} < 2)")
             return None
 
         # Log sample projections for debugging
@@ -1192,7 +1202,7 @@ class VideoProcessor:
                 seg_durations.append(dur)
 
         if not seg_distances:
-            logger.info(f"[Speed Calculation] Segments not found")
+            print(f"[DEBUG SPEED] _compute_average_speed_kmh → None (no valid segments)")
             return None
 
         # Jump filtering: remove outlier segments
@@ -1208,19 +1218,19 @@ class VideoProcessor:
                 per_segment_speeds.append((dist / dur) * 3.6)  # km/h
 
         if clean_total_meters < 1.0 or clean_total_time < 0.1:
-            logger.info(
-                f"[Speed Calculation] Distance thresh not met: "
-                f"clean_total_meters={clean_total_meters:.3f}, "
-                f"median_seg={median_seg:.4f}, threshold={threshold:.4f}"
+            print(
+                f"[DEBUG SPEED] _compute_average_speed_kmh → 0.0 (clean_total_meters={clean_total_meters:.3f}m < 1.0, "
+                f"clean_total_time={clean_total_time:.3f}s, median_seg={median_seg:.4f}, threshold={threshold:.4f})"
             )
             return 0.0
 
         # Use median of per-segment speeds for robustness
         speed = float(np.median(per_segment_speeds))
         if speed > MAX_PLAUSIBLE_SPEED_KMH:
-            logger.info(f"[Speed Calculation] Speed thresh not met: {speed} > {MAX_PLAUSIBLE_SPEED_KMH}")
+            print(f"[DEBUG SPEED] _compute_average_speed_kmh → None (speed {speed:.1f} > {MAX_PLAUSIBLE_SPEED_KMH})")
             return None
 
+        print(f"[DEBUG SPEED] _compute_average_speed_kmh → {round(speed, 1)} km/h ✅")
         return round(speed, 1)
 
     def _compute_live_speed_kmh(self, positions_with_times, window_sec=2.0):
