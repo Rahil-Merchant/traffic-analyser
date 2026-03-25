@@ -990,10 +990,9 @@ class VideoProcessor:
                     track_data['last_pos_zone'] = bottom_center
                     temp_drawing_info_list[batch_idx][track_id_str]['type'] = track_data['current_type']
 
-                    # Compute live speed for debug annotations
-                    if DEBUG_MODE and track_data['frames_seen'] >= 3:
-                        live_speed = self._compute_live_speed_kmh(list(track_data['positions']))
-                        temp_drawing_info_list[batch_idx][track_id_str]['speed'] = live_speed
+                    # Only show speed IF the vehicle has finished crossing the distance
+                    if 'final_speed' in track_data and track_data['final_speed'] is not None:
+                        temp_drawing_info_list[batch_idx][track_id_str]['speed'] = track_data['final_speed']
 
                     if prev_pos is not None and track_data['status'] == 'active':
                         event_type, event_dir = self.zone_tracker.check_zone_transition(tuple(prev_pos), tuple(bbox_scaled), track_id_str, current_frame_time_sec)
@@ -1003,6 +1002,7 @@ class VideoProcessor:
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
                                 current_frame_img = frames_batch_with_metadata[batch_idx][0] if frames_batch_with_metadata else None
                                 speed = self._compute_average_speed_kmh(list(track_data['positions']), current_frame=current_frame_img)
+                                track_data['final_speed'] = speed
                                 self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed, current_frame=current_frame_img)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['confirmed'] = True
@@ -1017,6 +1017,7 @@ class VideoProcessor:
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
                                 current_frame_img = frames_batch_with_metadata[batch_idx][0] if frames_batch_with_metadata else None
                                 speed = self._compute_average_speed_kmh(list(track_data['positions']), current_frame=current_frame_img)
+                                track_data['final_speed'] = speed
                                 self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed, current_frame=current_frame_img)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['status'] = 'exited'
@@ -1148,132 +1149,47 @@ class VideoProcessor:
         }
         self.finalized_paths_store.append(path_report_entry)
 
-
-
     def _compute_average_speed_kmh(self, positions_with_times, current_frame=None):
-        """Compute average speed using perspective transform to metric 2D plane."""
+        """Compute average speed using total metric distance over total time."""
         if self.perspective_transformer is None:
             return None
         if len(positions_with_times) < MIN_SPEED_POSITIONS:
             logger.info(f"[Speed Calculation] Position thresh not met: {len(positions_with_times)} < {MIN_SPEED_POSITIONS}")
             return None
-        total_dt = positions_with_times[-1][1] - positions_with_times[0][1]
-        if total_dt < MIN_SPEED_DURATION_SEC:
-            logger.info(f"[Speed Calculation] Time thresh not met: {total_dt} < {MIN_SPEED_DURATION_SEC}")
+            
+        # Get the first and last recorded positions and times
+        first_pos, first_time = positions_with_times[0]
+        last_pos, last_time = positions_with_times[-1]
+        
+        total_time_sec = last_time - first_time
+        if total_time_sec < MIN_SPEED_DURATION_SEC:
+            logger.info(f"[Speed Calculation] Time thresh not met: {total_time_sec} < {MIN_SPEED_DURATION_SEC}")
             return None
 
-        # Transform each position to metric coordinates via perspective transform
-        transformed = []
-        for pos, t in positions_with_times:
-            try:
-                mx, my = self.perspective_transformer.transform_point(float(pos[0]), float(pos[1]))
-                transformed.append((mx, my, t))
-            except Exception:
-                continue
-
-        if len(transformed) < 2:
-            logger.info(f"[Speed Calculation] Transformed points insufficient: {len(transformed)} < 2")
+        try:
+            # Transform the start and end pixel coordinates into metric (meters) coordinates
+            x1, y1 = self.perspective_transformer.transform_point(float(first_pos[0]), float(first_pos[1]))
+            x2, y2 = self.perspective_transformer.transform_point(float(last_pos[0]), float(last_pos[1]))
+        except Exception as e:
+            logger.warning(f"[Speed Calculation] Perspective transform failed: {e}")
             return None
 
-        # Log sample projections for debugging
-        if len(transformed) >= 2:
-            first_pos = positions_with_times[0][0]
-            last_pos = positions_with_times[-1][0]
-            dx = transformed[-1][0] - transformed[0][0]
-            dy = transformed[-1][1] - transformed[0][1]
-            total_dist = np.sqrt(dx**2 + dy**2)
-            logger.debug(
-                f"[Speed Calculation] {len(transformed)} transformed pts | "
-                f"first=({first_pos[0]:.0f},{first_pos[1]:.0f})→({transformed[0][0]:.2f},{transformed[0][1]:.2f})m | "
-                f"last=({last_pos[0]:.0f},{last_pos[1]:.0f})→({transformed[-1][0]:.2f},{transformed[-1][1]:.2f})m | "
-                f"total_dist={total_dist:.2f}m over {total_dt:.2f}s"
-            )
+        # Calculate the straight-line Euclidean distance covered in meters
+        total_distance_meters = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
 
-        # Compute per-segment Euclidean distances in metric space
-        seg_distances = []
-        seg_durations = []
-        for i in range(len(transformed) - 1):
-            dx = transformed[i + 1][0] - transformed[i][0]
-            dy = transformed[i + 1][1] - transformed[i][1]
-            ds = np.sqrt(dx**2 + dy**2)
-            dur = transformed[i + 1][2] - transformed[i][2]
-            if dur > 0:
-                seg_distances.append(ds)
-                seg_durations.append(dur)
-
-        if not seg_distances:
-            logger.info(f"[Speed Calculation] Segments not found")
-            return None
-
-        # Jump filtering: remove outlier segments
-        median_seg = np.median(seg_distances)
-        threshold = max(median_seg * JUMP_THRESHOLD_MULTIPLIER, 0.5)
-        per_segment_speeds = []
-        clean_total_meters = 0.0
-        clean_total_time = 0.0
-        for dist, dur in zip(seg_distances, seg_durations):
-            if dist <= threshold:
-                clean_total_meters += dist
-                clean_total_time += dur
-                per_segment_speeds.append((dist / dur) * 3.6)  # km/h
-
-        if clean_total_meters < 1.0 or clean_total_time < 0.1:
-            logger.info(
-                f"[Speed Calculation] Distance thresh not met: "
-                f"clean_total_meters={clean_total_meters:.3f}, "
-                f"median_seg={median_seg:.4f}, threshold={threshold:.4f}"
-            )
+        if total_distance_meters < 1.0:
+            logger.info(f"[Speed Calculation] Distance too short: {total_distance_meters:.2f}m")
             return 0.0
 
-        # Use median of per-segment speeds for robustness
-        speed = float(np.median(per_segment_speeds))
-        if speed > MAX_PLAUSIBLE_SPEED_KMH:
-            logger.info(f"[Speed Calculation] Speed thresh not met: {speed} > {MAX_PLAUSIBLE_SPEED_KMH}")
+        # Calculate final speed: v = d / t
+        speed_ms = total_distance_meters / total_time_sec
+        speed_kmh = speed_ms * 3.6
+
+        if speed_kmh > MAX_PLAUSIBLE_SPEED_KMH:
+            logger.info(f"[Speed Calculation] Speed thresh not met: {speed_kmh} > {MAX_PLAUSIBLE_SPEED_KMH}")
             return None
 
-        return round(speed, 1)
-
-    def _compute_live_speed_kmh(self, positions_with_times, window_sec=2.0):
-        """Compute a sliding-window speed for debug annotation on frames."""
-        if self.perspective_transformer is None:
-            return None
-        if len(positions_with_times) < 3:
-            return None
-
-        # Use only the last `window_sec` seconds of positions
-        latest_time = positions_with_times[-1][1]
-        window_start = latest_time - window_sec
-        windowed = [(p, t) for p, t in positions_with_times if t >= window_start]
-        if len(windowed) < 2:
-            return None
-
-        # Transform to metric coordinates
-        transformed = []
-        for pos, t in windowed:
-            try:
-                mx, my = self.perspective_transformer.transform_point(float(pos[0]), float(pos[1]))
-                transformed.append((mx, my, t))
-            except Exception:
-                continue
-
-        if len(transformed) < 2:
-            return None
-
-        per_seg_speeds = []
-        for i in range(len(transformed) - 1):
-            dx = transformed[i + 1][0] - transformed[i][0]
-            dy = transformed[i + 1][1] - transformed[i][1]
-            ds = np.sqrt(dx**2 + dy**2)
-            dur = transformed[i + 1][2] - transformed[i][2]
-            if dur > 0:
-                per_seg_speeds.append((ds / dur) * 3.6)
-
-        if not per_seg_speeds:
-            return None
-        speed = float(np.median(per_seg_speeds))
-        if speed > MAX_PLAUSIBLE_SPEED_KMH:
-            return None
-        return round(speed, 1)
+        return round(speed_kmh, 1)
 
     @profile
     def _execute_single_model_inference(self, model_instance, input_tensor_chunk, stream_to_use=None):
