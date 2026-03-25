@@ -85,7 +85,7 @@ def _build_rsa_direction_map(primary_direction, active_directions, valid_movemen
     return rsa_movement_map
 
 # --- Main Report Function ---
-def create_excel_report(completed_paths_data, start_datetime, primary_direction, video_path, ignore_timestamp_date=True, report_type='standard'):
+def create_excel_report(completed_paths_data, start_datetime, primary_direction, video_path, ignore_timestamp_date=True, report_type='standard', calibration_factors=None):
     """
     Creates a multi-sheet Excel report: Vehicle Logs (1 row/path), Intervals (24hr),
     Directional Counts (multi-header), RSA Output.
@@ -204,6 +204,17 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                 df_intervals[['Date', 'Time Intervals', 'Start Time', 'End Time']].to_excel(writer, sheet_name='Intervals', index=False)
                 logger.debug(f"Writing 'Intervals' sheet ({len(df_intervals)} rows).")
             else: logger.debug("No data for 'Intervals' sheet.")
+
+            # --- Sheet: Calibration Settings ---
+            if calibration_factors:
+                try:
+                    df_calib = pd.DataFrame(list(calibration_factors.items()), columns=['Setting', 'Value'])
+                    df_calib.to_excel(writer, sheet_name='Calibration Settings', index=False)
+                    calib_sheet = writer.sheets['Calibration Settings']
+                    calib_sheet.set_column(0, 0, 25)
+                    calib_sheet.set_column(1, 1, 15)
+                except Exception as e:
+                    logger.debug(f"Failed to generate 'Calibration Settings' sheet: {e}")
 
             # --- Sheets: Directional Counts ---
             if not df_moves.empty and not df_intervals.empty and active_directions:

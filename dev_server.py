@@ -107,6 +107,8 @@ class AnalysisConfigPayload(BaseModel):
     perspective_corners: Optional[list] = None
     road_width_meters: Optional[float] = None
     road_length_meters: Optional[float] = None
+    length_skew_factor: Optional[float] = 1.0
+    width_skew_factor: Optional[float] = 1.0
     speed_limit_kmh: Optional[float] = None
     night_hours_start: Optional[str] = None
     night_hours_end: Optional[str] = None
@@ -123,6 +125,8 @@ class RecalibrateConfigPayload(BaseModel):
     perspective_corners: Optional[list] = None
     road_width_meters: Optional[float] = None
     road_length_meters: Optional[float] = None
+    length_skew_factor: Optional[float] = 1.0
+    width_skew_factor: Optional[float] = 1.0
     speed_limit_kmh: Optional[float] = None
     night_hours_start: Optional[str] = None
     night_hours_end: Optional[str] = None
@@ -189,6 +193,8 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
     processor.perspective_corners_raw = config.perspective_corners
     processor.road_width_meters = config.road_width_meters
     processor.road_length_meters = config.road_length_meters
+    processor.length_skew_factor = config.length_skew_factor
+    processor.width_skew_factor = config.width_skew_factor
     processor.speed_limit_kmh = config.speed_limit_kmh
     processor.night_hours_start = config.night_hours_start
     processor.night_hours_end = config.night_hours_end
@@ -214,39 +220,41 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
 async def recalibrate_speed(config: RecalibrateConfigPayload):
     print("Recalibrating speeds with new parameters...")
     try:
-        # Build perspective transformer for speed computation
-        from core.perspective_transform import PerspectiveTransformer
-        transformer = None
-        if (config.perspective_corners is not None and len(config.perspective_corners) == 4
-                and config.road_width_meters and config.road_length_meters):
-            scaled_corners = processor._scale_polygons_to_processing_coordinates(
-                {'corners': config.perspective_corners}, config.preview_image_width, config.preview_image_height
-            ).get('corners', [])
-            if len(scaled_corners) == 4:
-                transformer = PerspectiveTransformer(
-                    scaled_corners,
-                    config.road_width_meters,
-                    config.road_length_meters
-                )
-        
+        old_length = processor.road_length_meters
+        new_length = config.road_length_meters
+        scale_factor = (new_length / old_length) if (old_length and old_length > 0 and new_length) else 1.0
+
         all_paths = processor.finalized_paths_store.get_all()
         for path in all_paths:
-            traj = path.get('trajectory_data')
-            if traj:
-                new_speed = compute_speed_from_trajectory(traj, transformer)
+            old_speed = path.get('average_speed_kmh')
+            if old_speed is not None:
+                new_speed = round(old_speed * scale_factor, 1)
                 processor.finalized_paths_store.update_speed(path['id'], new_speed)
+        
+        processor.road_length_meters = config.road_length_meters
+        processor.road_width_meters = config.road_width_meters
+        processor.length_skew_factor = config.length_skew_factor
+        processor.width_skew_factor = config.width_skew_factor
 
         time_str = str(config.start_time)
         time_part, ms_part = (time_str[:6], time_str[6:]) if len(time_str) > 6 else (time_str, "0")
         start_dt = datetime.strptime(f"{config.start_date}{time_part}", "%y%m%d%H%M%S")
         start_dt = start_dt.replace(microsecond=int(ms_part.ljust(3, '0')) * 1000)
 
+        calib_factors = {
+            'Base Road Length (m)': processor.road_length_meters,
+            'Base Road Width (m)': processor.road_width_meters,
+            'Length Skew Factor': processor.length_skew_factor,
+            'Width Skew Factor': processor.width_skew_factor
+        }
+
         excel_path = create_excel_report(
             completed_paths_data=processor.finalized_paths_store.get_all(),
             start_datetime=start_dt,
             primary_direction=config.primary_direction.lower(),
             video_path=config.video_paths[0],
-            report_type='standard'
+            report_type='standard',
+            calibration_factors=calib_factors
         )
         
         excel_tia_path = create_excel_report(
@@ -254,7 +262,8 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
             start_datetime=start_dt,
             primary_direction=config.primary_direction.lower(),
             video_path=config.video_paths[0],
-            report_type='tia'
+            report_type='tia',
+            calibration_factors=calib_factors
         )
 
         excel_link_count_path = None

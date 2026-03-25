@@ -117,6 +117,8 @@ class VideoProcessor:
         self.perspective_corners_raw = None
         self.road_width_meters = None
         self.road_length_meters = None
+        self.length_skew_factor = 1.0
+        self.width_skew_factor = 1.0
         self.speed_limit_kmh = None
         self.night_hours_start = None
         self.night_hours_end = None
@@ -617,12 +619,20 @@ class VideoProcessor:
         final_fps = frames_processed_count / total_time if total_time > 0 else 0.0
         completed_paths = self.finalized_paths_store.count_by_status('exited')
 
+        calib_factors = {
+            'Base Road Length (m)': getattr(self, 'road_length_meters', 'N/A'),
+            'Base Road Width (m)': getattr(self, 'road_width_meters', 'N/A'),
+            'Length Skew Factor': getattr(self, 'length_skew_factor', 1.0),
+            'Width Skew Factor': getattr(self, 'width_skew_factor', 1.0)
+        }
+
         excel_path = create_excel_report(
             completed_paths_data=self.finalized_paths_store.get_all(),
             start_datetime=init_data["start_datetime"],
             primary_direction=init_data["primary_direction"],
             video_path=init_data["video_paths"][0],
-            report_type='standard'
+            report_type='standard',
+            calibration_factors=calib_factors
         )
 
         excel_tia_path = create_excel_report(
@@ -630,7 +640,8 @@ class VideoProcessor:
             start_datetime=init_data["start_datetime"],
             primary_direction=init_data["primary_direction"],
             video_path=init_data["video_paths"][0],
-            report_type='tia'
+            report_type='tia',
+            calibration_factors=calib_factors
         )
         
         excel_link_count_path = None
