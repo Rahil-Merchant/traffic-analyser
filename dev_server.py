@@ -37,7 +37,7 @@ def cleanup_on_exit():
     
     # Stop any active video processing
     if hasattr(processor, 'stop_event') and processor.stop_event:
-        processor.stop_event.set()
+        processor.abort()
     
     # Clean up any active threads
     if hasattr(processor, 'reader_thread') and processor.reader_thread:
@@ -298,7 +298,7 @@ async def abort_analysis():
     print("[ABORT] Abort request received.")
     try:
         if hasattr(processor, 'stop_event') and processor.stop_event:
-            processor.stop_event.set()
+            processor.abort()
             # Send abort status through all active job queues
             for job_id, queue in list(job_queues.items()):
                 try:
