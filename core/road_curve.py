@@ -55,6 +55,25 @@ class RoadCurve:
         if axis_length_meters <= 0:
             raise ValueError(f"axis_length_meters must be > 0, got {axis_length_meters}")
 
+        # ---- 0. Calculate axis origin and direction from furthest points ----
+        max_dist = -1
+        idx1, idx2 = 0, len(pts)-1
+        for i in range(len(pts)):
+            for j in range(i+1, len(pts)):
+                d = np.linalg.norm(pts[i] - pts[j])
+                if d > max_dist:
+                    max_dist = d
+                    idx1, idx2 = i, j
+                    
+        # Preserve original order
+        if idx1 > idx2:
+            idx1, idx2 = idx2, idx1
+            
+        self.axis_origin = pts[idx1]
+        axis_vec = pts[idx2] - pts[idx1]
+        self.axis_length_px = max(float(np.linalg.norm(axis_vec)), 1e-6)
+        self.axis_dir = axis_vec / self.axis_length_px
+
         # ---- 1. Dense resample -------------------------------------------
         self.centerline = self._resample(pts, _CENTERLINE_DENSITY)
 
@@ -99,6 +118,40 @@ class RoadCurve:
         """
         _, idx = self.tree.query([px, py])
         return float(self.s_meters[idx])
+
+    def project_metric(self, px, py):
+        """
+        Projects a point onto the road axis and applies a non-linear 
+        depth-weighting correction to account for perspective, returning 
+        the distance in meters.
+        """
+        v = np.array([px, py], dtype=np.float64) - self.axis_origin
+        s_px = float(np.dot(v, self.axis_dir))
+        
+        # z is the relative position along the axis length
+        z = s_px / self.axis_length_px
+        
+        # Integrate weight piecewise for depth-correction
+        k = 2.0
+        c1, c2 = 0.05, 0.95
+        
+        def W_int(u):
+            if u < c1:
+                return u * (1 + k*(1 - c1))
+            elif u <= c2:
+                int_c1 = c1 * (1 + k*(1 - c1))
+                return int_c1 + (1+k)*(u - c1) - (k/2)*(u**2 - c1**2)
+            else:
+                int_c1 = c1 * (1 + k*(1 - c1))
+                int_c2 = int_c1 + (1+k)*(c2 - c1) - (k/2)*(c2**2 - c1**2)
+                return int_c2 + (u - c2) * (1 + k*(1 - c2))
+        
+        # We allow z to extrapolate beyond [0, 1] by evaluating the integral directly
+        mapped_z = W_int(z)
+        
+        # Scale to match total axis_length_meters exactly
+        total_mapped = W_int(1.0)
+        return float(mapped_z * (self._axis_length_meters / total_mapped))
 
     def project_batch(self, points):
         """Project multiple pixel points at once.

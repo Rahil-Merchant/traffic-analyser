@@ -1158,11 +1158,11 @@ class VideoProcessor:
             logger.info(f"[Speed Calculation] Time thresh not met: {total_dt} < {MIN_SPEED_DURATION_SEC}")
             return None
 
-        # Project each position onto the road curve → (s_meters, time)
+        # Project each position onto the road curve → (s_metric_meters, time)
         projected = []
         for pos, t in positions_with_times:
             try:
-                s = self.road_curve.project(float(pos[0]), float(pos[1]))
+                s = self.road_curve.project_metric(float(pos[0]), float(pos[1]))
                 projected.append((s, t))
             except Exception:
                 continue
