@@ -187,6 +187,7 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
             {Object.entries(polygons).map(([direction, points]) => {
               const center = calculatePolygonCenter(points);
               const color = directionColors[direction.toLowerCase() as keyof typeof directionColors] || '#3b82f6';
+              const cornerLabels = ['TL', 'TR', 'BR', 'BL'];
               return (
                 <React.Fragment key={direction}>
                   <Line
@@ -214,6 +215,34 @@ const InteractiveCanvas: React.FC<InteractiveCanvasProps> = (props) => {
                     offsetY={8}
                     listening={false}
                   />
+                  {/* Numbered corner labels for road zone */}
+                  {direction.toLowerCase() === 'road' && points.map((point, idx) => (
+                    <React.Fragment key={`road-label-${idx}`}>
+                      <Circle
+                        x={point[0] * scale + offsetX}
+                        y={point[1] * scale + offsetY}
+                        radius={10}
+                        fill={color}
+                        stroke="white"
+                        strokeWidth={2}
+                        shadowColor={color}
+                        shadowBlur={6}
+                        listening={false}
+                      />
+                      <Text
+                        text={idx < cornerLabels.length ? cornerLabels[idx] : `${idx + 1}`}
+                        x={point[0] * scale + offsetX}
+                        y={point[1] * scale + offsetY}
+                        fontSize={10}
+                        fontFamily="Inter, system-ui, sans-serif"
+                        fill="white"
+                        fontStyle="bold"
+                        offsetX={6}
+                        offsetY={5}
+                        listening={false}
+                      />
+                    </React.Fragment>
+                  ))}
                 </React.Fragment>
               );
             })}

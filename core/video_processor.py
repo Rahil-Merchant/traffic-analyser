@@ -37,7 +37,7 @@ from config import (
 )
 from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory
-from core.road_curve import RoadCurve
+from core.perspective_transform import PerspectiveTransformer
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
 from tracking.zone_tracker import ZoneTracker
@@ -112,10 +112,11 @@ class VideoProcessor:
         # Computed once in _preprocess_batch from the first frame's dimensions.
         self.letterbox_params = None
 
-        # Speed estimation
-        self.road_curve = None
-        self.road_axis_points_raw = None
-        self.axis_length_meters = None
+        # Speed estimation (perspective transform)
+        self.perspective_transformer = None
+        self.perspective_corners_raw = None
+        self.road_width_meters = None
+        self.road_length_meters = None
         self.speed_limit_kmh = None
         self.night_hours_start = None
         self.night_hours_end = None
@@ -181,16 +182,15 @@ class VideoProcessor:
             z1, z2 = zone_names[0], zone_names[1]
             self.zone_pair = (z1, z2)
 
-            # Arc-length road curve from user-drawn road axis.
-            # User plots N >= 2 points along the road centre-line.
-            # A dense curve is built from those points, parameterised
-            # by arc-length in meters for perspective-free speed estimation.
-            if (self.road_axis_points_raw and len(self.road_axis_points_raw) >= 2
-                    and self.axis_length_meters):
-                scaled_axis = self._scale_polygons_to_processing_coordinates(
-                    {'axis': self.road_axis_points_raw}, preview_image_width, preview_image_height
-                ).get('axis', [])
-                if len(scaled_axis) >= 2:
+            # Perspective transform from user-drawn 4-corner road rectangle.
+            # User marks TL, TR, BR, BL corners on the road surface and
+            # provides real-world width & length in meters.
+            if (self.perspective_corners_raw and len(self.perspective_corners_raw) == 4
+                    and self.road_width_meters and self.road_length_meters):
+                scaled_corners = self._scale_polygons_to_processing_coordinates(
+                    {'corners': self.perspective_corners_raw}, preview_image_width, preview_image_height
+                ).get('corners', [])
+                if len(scaled_corners) == 4:
                     try:
                         # Try to capture first frame for debug visualisation
                         debug_frame = None
@@ -201,29 +201,33 @@ class VideoProcessor:
                             if ret and first_frame is not None:
                                 debug_frame = cv2.resize(first_frame, self.frame_shape)
                         except Exception as e:
-                            logger.warning(f"Could not read first frame for RoadCurve debug: {e}")
+                            logger.warning(f"Could not read first frame for PerspectiveTransformer debug: {e}")
 
-                        self.road_curve = RoadCurve(
-                            scaled_axis,
-                            self.axis_length_meters,
+                        self.perspective_transformer = PerspectiveTransformer(
+                            scaled_corners,
+                            self.road_width_meters,
+                            self.road_length_meters,
                             debug_frame=debug_frame
                         )
-                        # Zone axis from first and last axis points
-                        axis_arr = np.array(scaled_axis, dtype=np.float32)
-                        axis_vec = axis_arr[-1] - axis_arr[0]
+                        # Zone axis from TL/BL midpoint to TR/BR midpoint
+                        corners_arr = np.array(scaled_corners, dtype=np.float32)
+                        near_mid = (corners_arr[3] + corners_arr[0]) / 2  # BL-TL midpoint
+                        far_mid = (corners_arr[2] + corners_arr[1]) / 2   # BR-TR midpoint
+                        axis_vec = far_mid - near_mid
                         self.zone_axis = axis_vec / (np.linalg.norm(axis_vec) + 1e-6)
-                        logger.info(f"RoadCurve built from {len(scaled_axis)} axis pts, "
-                                    f"axis_length={self.axis_length_meters}m")
+                        logger.info(f"PerspectiveTransformer built: "
+                                    f"width={self.road_width_meters}m, length={self.road_length_meters}m")
                     except Exception as e:
-                        logger.warning(f"Failed to build RoadCurve: {e}")
-                        self.road_curve = None
+                        logger.warning(f"Failed to build PerspectiveTransformer: {e}")
+                        self.perspective_transformer = None
                         self.zone_axis = None
                 else:
-                    self.road_curve = None
+                    self.perspective_transformer = None
                     self.zone_axis = None
             else:
-                logger.warning(f"Road axis inputs missing: road_axis_points={'set' if self.road_axis_points_raw else 'None'}, axis_length={self.axis_length_meters}")
-                self.road_curve = None
+                logger.warning(f"Perspective transform inputs missing: corners={'set' if self.perspective_corners_raw else 'None'}, "
+                               f"width={self.road_width_meters}, length={self.road_length_meters}")
+                self.perspective_transformer = None
                 # Fallback: centroid-based zone axis
                 c1 = np.mean(self.zone_tracker.zones[z1], axis=0)
                 c2 = np.mean(self.zone_tracker.zones[z2], axis=0)
@@ -232,7 +236,7 @@ class VideoProcessor:
         else:
             self.zone_axis = None
             self.zone_pair = None
-            self.road_curve = None
+            self.perspective_transformer = None
 
         # --- MODEL LOADING LOGIC ---
         if self.use_patchwise_inference:
@@ -1147,8 +1151,8 @@ class VideoProcessor:
 
 
     def _compute_average_speed_kmh(self, positions_with_times, current_frame=None):
-        """Compute average speed using arc-length projection onto road curve."""
-        if self.road_curve is None:
+        """Compute average speed using perspective transform to metric 2D plane."""
+        if self.perspective_transformer is None:
             return None
         if len(positions_with_times) < MIN_SPEED_POSITIONS:
             logger.info(f"[Speed Calculation] Position thresh not met: {len(positions_with_times)} < {MIN_SPEED_POSITIONS}")
@@ -1158,36 +1162,41 @@ class VideoProcessor:
             logger.info(f"[Speed Calculation] Time thresh not met: {total_dt} < {MIN_SPEED_DURATION_SEC}")
             return None
 
-        # Project each position onto the road curve → (s_metric_meters, time)
-        projected = []
+        # Transform each position to metric coordinates via perspective transform
+        transformed = []
         for pos, t in positions_with_times:
             try:
-                s = self.road_curve.project_metric(float(pos[0]), float(pos[1]))
-                projected.append((s, t))
+                mx, my = self.perspective_transformer.transform_point(float(pos[0]), float(pos[1]))
+                transformed.append((mx, my, t))
             except Exception:
                 continue
 
-        if len(projected) < 2:
-            logger.info(f"[Speed Calculation] Projected points insufficient: {len(projected)} < 2")
+        if len(transformed) < 2:
+            logger.info(f"[Speed Calculation] Transformed points insufficient: {len(transformed)} < 2")
             return None
 
         # Log sample projections for debugging
-        if len(projected) >= 2:
+        if len(transformed) >= 2:
             first_pos = positions_with_times[0][0]
             last_pos = positions_with_times[-1][0]
+            dx = transformed[-1][0] - transformed[0][0]
+            dy = transformed[-1][1] - transformed[0][1]
+            total_dist = np.sqrt(dx**2 + dy**2)
             logger.debug(
-                f"[Speed Calculation] {len(projected)} projected pts | "
-                f"first=({first_pos[0]:.0f},{first_pos[1]:.0f})→{projected[0][0]:.2f}m | "
-                f"last=({last_pos[0]:.0f},{last_pos[1]:.0f})→{projected[-1][0]:.2f}m | "
-                f"total_ds={abs(projected[-1][0] - projected[0][0]):.2f}m over {total_dt:.2f}s"
+                f"[Speed Calculation] {len(transformed)} transformed pts | "
+                f"first=({first_pos[0]:.0f},{first_pos[1]:.0f})→({transformed[0][0]:.2f},{transformed[0][1]:.2f})m | "
+                f"last=({last_pos[0]:.0f},{last_pos[1]:.0f})→({transformed[-1][0]:.2f},{transformed[-1][1]:.2f})m | "
+                f"total_dist={total_dist:.2f}m over {total_dt:.2f}s"
             )
 
-        # Compute per-segment arc-length differences and durations
+        # Compute per-segment Euclidean distances in metric space
         seg_distances = []
         seg_durations = []
-        for i in range(len(projected) - 1):
-            ds = abs(projected[i + 1][0] - projected[i][0])
-            dur = projected[i + 1][1] - projected[i][1]
+        for i in range(len(transformed) - 1):
+            dx = transformed[i + 1][0] - transformed[i][0]
+            dy = transformed[i + 1][1] - transformed[i][1]
+            ds = np.sqrt(dx**2 + dy**2)
+            dur = transformed[i + 1][2] - transformed[i][2]
             if dur > 0:
                 seg_distances.append(ds)
                 seg_durations.append(dur)
@@ -1226,7 +1235,7 @@ class VideoProcessor:
 
     def _compute_live_speed_kmh(self, positions_with_times, window_sec=2.0):
         """Compute a sliding-window speed for debug annotation on frames."""
-        if self.road_curve is None:
+        if self.perspective_transformer is None:
             return None
         if len(positions_with_times) < 3:
             return None
@@ -1238,22 +1247,24 @@ class VideoProcessor:
         if len(windowed) < 2:
             return None
 
-        # Project onto road curve
-        projected = []
+        # Transform to metric coordinates
+        transformed = []
         for pos, t in windowed:
             try:
-                s = self.road_curve.project(float(pos[0]), float(pos[1]))
-                projected.append((s, t))
+                mx, my = self.perspective_transformer.transform_point(float(pos[0]), float(pos[1]))
+                transformed.append((mx, my, t))
             except Exception:
                 continue
 
-        if len(projected) < 2:
+        if len(transformed) < 2:
             return None
 
         per_seg_speeds = []
-        for i in range(len(projected) - 1):
-            ds = abs(projected[i + 1][0] - projected[i][0])
-            dur = projected[i + 1][1] - projected[i][1]
+        for i in range(len(transformed) - 1):
+            dx = transformed[i + 1][0] - transformed[i][0]
+            dy = transformed[i + 1][1] - transformed[i][1]
+            ds = np.sqrt(dx**2 + dy**2)
+            dur = transformed[i + 1][2] - transformed[i][2]
             if dur > 0:
                 per_seg_speeds.append((ds / dur) * 3.6)
 

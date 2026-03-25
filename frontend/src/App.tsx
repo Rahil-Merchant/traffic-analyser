@@ -50,7 +50,8 @@ function App() {
   const [stationNumber, setStationNumber] = useState<string>('');
 
   // Speed Calibration State
-  const [axisLengthMeters, setAxisLengthMeters] = useState<number | ''>('');
+  const [roadWidthMeters, setRoadWidthMeters] = useState<number | ''>('');
+  const [roadLengthMeters, setRoadLengthMeters] = useState<number | ''>('');
   const [speedLimitKmh, setSpeedLimitKmh] = useState<number | ''>(60);
   const [nightHoursStart, setNightHoursStart] = useState<string>('18:00');
   const [nightHoursEnd, setNightHoursEnd] = useState<string>('06:00');
@@ -178,8 +179,8 @@ function App() {
       currentPolygons[activeDirection] = [...currentPoints];
     }
 
-    // Capture road axis points BEFORE any object manipulation
-    const roadAxisPoints = currentPolygons['road'] ? [...currentPolygons['road']] : null;
+    // Capture perspective corners (road zone) BEFORE any object manipulation
+    const perspectiveCorners = currentPolygons['road'] ? [...currentPolygons['road']] : null;
 
     // Build zone-only polygons (exclude 'road' which is for speed calibration)
     const zonePolygons: Polygons = {};
@@ -198,9 +199,10 @@ function App() {
       primary_direction: primaryDirection || '',
       preview_image_width: imageDimensions.width,
       preview_image_height: imageDimensions.height,
-      // Speed Calibration optional inputs
-      road_axis_points: roadAxisPoints,
-      axis_length_meters: axisLengthMeters || null,
+      // Speed Calibration - Perspective Transform
+      perspective_corners: perspectiveCorners,
+      road_width_meters: roadWidthMeters || null,
+      road_length_meters: roadLengthMeters || null,
       speed_limit_kmh: speedLimitKmh || null,
       night_hours_start: nightHoursStart || null,
       night_hours_end: nightHoursEnd || null
@@ -209,7 +211,7 @@ function App() {
     console.log('Launching analysis:', {
       width: imageDimensions.width,
       height: imageDimensions.height,
-      road_axis_points: roadAxisPoints,
+      perspective_corners: perspectiveCorners,
       payload: configPayload
     });
 
@@ -230,19 +232,20 @@ function App() {
     }
   };
 
-  const handleRecalibrate = async (newLength: number) => {
-    setAxisLengthMeters(newLength);
+  const handleRecalibrate = async (newWidth: number, newLength: number) => {
+    setRoadWidthMeters(newWidth);
+    setRoadLengthMeters(newLength);
     
     const { date, time } = formatTimestampForBackend(selectedTimestamp);
 
     // Auto-finish any currently drawing zone
     const currentPolygons = { ...polygons };
-    if (activeDirection && currentPoints.length >= (activeDirection === 'road' ? 2 : 3)) {
+    if (activeDirection && currentPoints.length >= (activeDirection === 'road' ? 4 : 3)) {
       currentPolygons[activeDirection] = [...currentPoints];
     }
 
-    // Capture road axis points BEFORE any object manipulation
-    const roadAxisPoints = currentPolygons['road'] ? [...currentPolygons['road']] : null;
+    // Capture perspective corners BEFORE any object manipulation
+    const perspectiveCorners = currentPolygons['road'] ? [...currentPolygons['road']] : null;
 
     // Build zone-only polygons (exclude 'road')
     const zonePolygons: Polygons = {};
@@ -261,8 +264,9 @@ function App() {
       primary_direction: primaryDirection || '',
       preview_image_width: imageDimensions.width,
       preview_image_height: imageDimensions.height,
-      road_axis_points: roadAxisPoints,
-      axis_length_meters: newLength,
+      perspective_corners: perspectiveCorners,
+      road_width_meters: newWidth,
+      road_length_meters: newLength,
       speed_limit_kmh: speedLimitKmh || null,
       night_hours_start: nightHoursStart || null,
       night_hours_end: nightHoursEnd || null,
@@ -316,9 +320,13 @@ function App() {
   const handleCanvasClick = (x: number, y: number) => { if (activeDirection) { setCurrentPoints(prev => [...prev, [x, y]]); } };
   const handleFinishZone = () => {
     if (!activeDirection) return;
-    const minPoints = activeDirection === 'road' ? 2 : 3;
+    const minPoints = activeDirection === 'road' ? 4 : 3;
     if (currentPoints.length < minPoints) {
-      setStatusText(`[WARNING] Zone must have at least ${minPoints} points to be valid`);
+      setStatusText(`[WARNING] ${activeDirection === 'road' ? 'Road corners require exactly 4 points (TL, TR, BR, BL)' : `Zone must have at least ${minPoints} points to be valid`}`);
+      return;
+    }
+    if (activeDirection === 'road' && currentPoints.length !== 4) {
+      setStatusText(`[WARNING] Road corners require exactly 4 points (TL, TR, BR, BL), got ${currentPoints.length}`);
       return;
     }
     setPolygons(prev => ({ ...prev, [activeDirection]: currentPoints }));
@@ -332,7 +340,8 @@ function App() {
     setCurrentPoints([]);
     setActiveDirection(null);
     setPrimaryDirection(null);
-    setAxisLengthMeters('');
+    setRoadWidthMeters('');
+    setRoadLengthMeters('');
     setSpeedLimitKmh(60);
     setNightHoursStart('18:00');
     setNightHoursEnd('06:00');
@@ -484,7 +493,8 @@ function App() {
             drawnZones={Object.keys(polygons)}
             primaryDirection={primaryDirection}
             isLaunchable={isLaunchable}
-            axisLengthMeters={axisLengthMeters}
+            roadWidthMeters={roadWidthMeters}
+            roadLengthMeters={roadLengthMeters}
             speedLimitKmh={speedLimitKmh}
             nightHoursStart={nightHoursStart}
             nightHoursEnd={nightHoursEnd}
@@ -493,7 +503,8 @@ function App() {
             onUndoPoint={handleUndoPoint}
             onClearAllZones={handleClearAllZones}
             onPrimaryDirectionChange={setPrimaryDirection}
-            onAxisLengthChange={setAxisLengthMeters}
+            onRoadWidthChange={setRoadWidthMeters}
+            onRoadLengthChange={setRoadLengthMeters}
             onSpeedLimitChange={setSpeedLimitKmh}
             onNightHoursStartChange={setNightHoursStart}
             onNightHoursEndChange={setNightHoursEnd}
@@ -513,7 +524,8 @@ function App() {
         statistics={analysisStatistics}
         results={analysisResults}
         onRecalibrate={handleRecalibrate}
-        initialAxisLength={typeof axisLengthMeters === 'number' ? axisLengthMeters : undefined}
+        initialRoadWidth={typeof roadWidthMeters === 'number' ? roadWidthMeters : undefined}
+        initialRoadLength={typeof roadLengthMeters === 'number' ? roadLengthMeters : undefined}
         canRecalibrate={!!polygons['road']}
       />
     </div>
