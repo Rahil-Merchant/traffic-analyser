@@ -7,6 +7,8 @@ interface ControlsPanelProps {
   isLaunchable: boolean;
   roadWidthMeters: number | '';
   roadLengthMeters: number | '';
+  lengthSkewFactor: number | '';
+  widthSkewFactor: number | '';
   speedLimitKmh: number | '';
   nightHoursStart: string;
   nightHoursEnd: string;
@@ -17,6 +19,8 @@ interface ControlsPanelProps {
   onPrimaryDirectionChange: (direction: string) => void;
   onRoadWidthChange: (val: number | '') => void;
   onRoadLengthChange: (val: number | '') => void;
+  onLengthSkewFactorChange: (val: number | '') => void;
+  onWidthSkewFactorChange: (val: number | '') => void;
   onSpeedLimitChange: (val: number | '') => void;
   onNightHoursStartChange: (val: string) => void;
   onNightHoursEndChange: (val: string) => void;
@@ -35,6 +39,8 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     isLaunchable,
     roadWidthMeters,
     roadLengthMeters,
+    lengthSkewFactor,
+    widthSkewFactor,
     speedLimitKmh,
     nightHoursStart,
     nightHoursEnd,
@@ -45,6 +51,8 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     onPrimaryDirectionChange,
     onRoadWidthChange,
     onRoadLengthChange,
+    onLengthSkewFactorChange,
+    onWidthSkewFactorChange,
     onSpeedLimitChange,
     onNightHoursStartChange,
     onNightHoursEndChange,
@@ -226,6 +234,18 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
               </div>
 
               <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Width Skew Factor</label>
+                <input
+                  type="number"
+                  min="0" step="0.01"
+                  value={widthSkewFactor}
+                  onChange={e => onWidthSkewFactorChange(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder="e.g. 1.0"
+                />
+              </div>
+
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
                 <label className="block text-xs font-medium text-gray-400 mb-1">Road Length (m)</label>
                 <input
                   type="number"
@@ -234,6 +254,18 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                   onChange={e => onRoadLengthChange(e.target.value ? parseFloat(e.target.value) : '')}
                   className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
                   placeholder="e.g. 30.0"
+                />
+              </div>
+
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Length Skew Factor</label>
+                <input
+                  type="number"
+                  min="0" step="0.01"
+                  value={lengthSkewFactor}
+                  onChange={e => onLengthSkewFactorChange(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder="e.g. 1.0"
                 />
               </div>
 

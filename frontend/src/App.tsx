@@ -52,6 +52,8 @@ function App() {
   // Speed Calibration State
   const [roadWidthMeters, setRoadWidthMeters] = useState<number | ''>('');
   const [roadLengthMeters, setRoadLengthMeters] = useState<number | ''>('');
+  const [lengthSkewFactor, setLengthSkewFactor] = useState<number | ''>(1);
+  const [widthSkewFactor, setWidthSkewFactor] = useState<number | ''>(1);
   const [speedLimitKmh, setSpeedLimitKmh] = useState<number | ''>(60);
   const [nightHoursStart, setNightHoursStart] = useState<string>('18:00');
   const [nightHoursEnd, setNightHoursEnd] = useState<string>('06:00');
@@ -201,9 +203,11 @@ function App() {
       preview_image_height: imageDimensions.height,
       // Speed Calibration - Perspective Transform
       perspective_corners: perspectiveCorners,
-      road_width_meters: roadWidthMeters || null,
-      road_length_meters: roadLengthMeters || null,
-      speed_limit_kmh: speedLimitKmh || null,
+      road_width_meters: typeof roadWidthMeters === 'number' ? roadWidthMeters * (typeof widthSkewFactor === 'number' ? widthSkewFactor : 1) : null,
+      road_length_meters: typeof roadLengthMeters === 'number' ? roadLengthMeters * (typeof lengthSkewFactor === 'number' ? lengthSkewFactor : 1) : null,
+      length_skew_factor: lengthSkewFactor || 1,
+      width_skew_factor: widthSkewFactor || 1,
+      speedLimitKmh: speedLimitKmh || null,
       night_hours_start: nightHoursStart || null,
       night_hours_end: nightHoursEnd || null
     };
@@ -265,9 +269,11 @@ function App() {
       preview_image_width: imageDimensions.width,
       preview_image_height: imageDimensions.height,
       perspective_corners: perspectiveCorners,
-      road_width_meters: newWidth,
-      road_length_meters: newLength,
-      speed_limit_kmh: speedLimitKmh || null,
+      road_width_meters: newWidth * (typeof widthSkewFactor === 'number' ? widthSkewFactor : 1),
+      road_length_meters: newLength * (typeof lengthSkewFactor === 'number' ? lengthSkewFactor : 1),
+      length_skew_factor: lengthSkewFactor || 1,
+      width_skew_factor: widthSkewFactor || 1,
+      speedLimitKmh: speedLimitKmh || null,
       night_hours_start: nightHoursStart || null,
       night_hours_end: nightHoursEnd || null,
       video_duration_formatted: "NA"
@@ -495,6 +501,8 @@ function App() {
             isLaunchable={isLaunchable}
             roadWidthMeters={roadWidthMeters}
             roadLengthMeters={roadLengthMeters}
+            lengthSkewFactor={lengthSkewFactor}
+            widthSkewFactor={widthSkewFactor}
             speedLimitKmh={speedLimitKmh}
             nightHoursStart={nightHoursStart}
             nightHoursEnd={nightHoursEnd}
@@ -505,6 +513,8 @@ function App() {
             onPrimaryDirectionChange={setPrimaryDirection}
             onRoadWidthChange={setRoadWidthMeters}
             onRoadLengthChange={setRoadLengthMeters}
+            onLengthSkewFactorChange={setLengthSkewFactor}
+            onWidthSkewFactorChange={setWidthSkewFactor}
             onSpeedLimitChange={setSpeedLimitKmh}
             onNightHoursStartChange={setNightHoursStart}
             onNightHoursEndChange={setNightHoursEnd}
