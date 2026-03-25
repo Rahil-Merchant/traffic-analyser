@@ -99,3 +99,69 @@ def draw_speed_annotation(frame, box_coords, speed_kmh):
     # Draw background rectangle for readability
     cv2.rectangle(frame, (text_x - 2, text_y - text_h - 4), (text_x + text_w + 2, text_y + 2), (0, 0, 0), -1)
     cv2.putText(frame, label, (text_x, text_y - 2), font, font_scale, COLOR_CYAN, thickness, cv2.LINE_AA)
+
+def draw_last_vehicle_info(frame, info):
+    """Draw an overlay on the top right corner showing the last analyzed vehicle's info."""
+    if not info:
+        return
+        
+    track_id = info.get('track_id', 'N/A')
+    v_type = info.get('type', 'N/A')
+    time_taken = info.get('time_taken', 0.0)
+    speed = info.get('speed')
+    
+    # Show only the last 4 characters of the track id as in draw_detection_box
+    if isinstance(track_id, str):
+        track_id_display = track_id[-4:]
+    else:
+        track_id_display = str(track_id)[-4:]
+
+    lines = [
+        "LAST VEHICLE",
+        f"ID: {track_id_display}",
+        f"Type: {v_type}",
+        f"Time: {time_taken:.2f}s",
+        f"Speed: {speed} km/h" if speed is not None else "Speed: N/A"
+    ]
+    
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    thickness = 1
+    
+    # Calculate box dimensions
+    margin = 15
+    padding = 10
+    line_spacing = 6
+    max_text_w = 0
+    total_text_h = 0
+    
+    for line in lines:
+        (tw, th), _ = cv2.getTextSize(line, font, font_scale, thickness)
+        max_text_w = max(max_text_w, tw)
+        total_text_h += th + line_spacing
+        
+    box_w = max_text_w + 2 * padding
+    box_h = total_text_h + 2 * padding - line_spacing
+    
+    # Position: Top Right
+    frame_h, frame_w = frame.shape[:2]
+    x1 = frame_w - box_w - margin
+    y1 = margin
+    x2 = x1 + box_w
+    y2 = y1 + box_h
+    
+    # Draw background
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), COLOR_WHITE, 1)
+    
+    # Draw text
+    curr_y = y1 + padding
+    for i, line in enumerate(lines):
+        (tw, th), _ = cv2.getTextSize(line, font, font_scale, thickness)
+        curr_y += th
+        color = COLOR_CYAN if i == 0 else COLOR_WHITE
+        th_val = 2 if i == 0 else 1
+        cv2.putText(frame, line, (x1 + padding, curr_y), font, font_scale, color, th_val, cv2.LINE_AA)
+        curr_y += line_spacing

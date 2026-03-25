@@ -120,6 +120,7 @@ class VideoProcessor:
         self.speed_limit_kmh = None
         self.night_hours_start = None
         self.night_hours_end = None
+        self.last_vehicle_info = None
 
     @profile
     def _initialize_run(self, video_paths, start_date_str, start_time_str, primary_direction, station_number_str, generate_link_count_report_flag, preview_image_width, preview_image_height):
@@ -133,6 +134,7 @@ class VideoProcessor:
         self.active_track_data.clear()
         self.finalized_paths_store.clear()
         self.temp_converted_files.clear()
+        self.last_vehicle_info = None
         
         self.perf = PerformanceTracker(enabled=ENABLE_DETAILED_PERFORMANCE_METRICS)
         self.stop_event = threading.Event()
@@ -1001,8 +1003,9 @@ class VideoProcessor:
                             if is_valid_movement(track_data['entry_direction'], event_dir, zone_keys):
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
                                 current_frame_img = frames_batch_with_metadata[batch_idx][0] if frames_batch_with_metadata else None
-                                speed = self._compute_average_speed_kmh(list(track_data['positions']), current_frame=current_frame_img)
+                                speed = self._compute_average_speed_kmh(list(track_data['positions']), current_frame=current_frame_img, vehicle_type=track_data['current_type'])
                                 track_data['final_speed'] = speed
+                                self.last_vehicle_info = {'track_id': track_id_str, 'type': track_data['current_type'], 'time_taken': duration, 'speed': speed}
                                 self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed, current_frame=current_frame_img)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['confirmed'] = True
@@ -1016,8 +1019,9 @@ class VideoProcessor:
                             if is_valid_movement(track_data['entry_direction'], event_dir, zone_keys):
                                 duration = (current_global_timestamp - track_data['entry_time']).total_seconds()
                                 current_frame_img = frames_batch_with_metadata[batch_idx][0] if frames_batch_with_metadata else None
-                                speed = self._compute_average_speed_kmh(list(track_data['positions']), current_frame=current_frame_img)
+                                speed = self._compute_average_speed_kmh(list(track_data['positions']), current_frame=current_frame_img, vehicle_type=track_data['current_type'])
                                 track_data['final_speed'] = speed
+                                self.last_vehicle_info = {'track_id': track_id_str, 'type': track_data['current_type'], 'time_taken': duration, 'speed': speed}
                                 self._add_to_finalized_paths(track_id_str, track_data, 'exited', event_dir, current_global_timestamp, duration, average_speed_kmh=speed, current_frame=current_frame_img)
                                 if self.perf: self.perf.record_vehicle_exit('exited', duration)
                                 track_data['status'] = 'exited'
@@ -1076,6 +1080,10 @@ class VideoProcessor:
                     # Draw speed annotation when DEBUG_MODE is enabled
                     if DEBUG_MODE and draw_data.get('speed') is not None and 'box' in draw_data:
                         visual_overlay.draw_speed_annotation(output_frame_viz, draw_data['box'], draw_data['speed'])
+                
+                if getattr(self, 'last_vehicle_info', None) is not None:
+                    visual_overlay.draw_last_vehicle_info(output_frame_viz, self.last_vehicle_info)
+                    
                 processed_frames_list_viz[i] = output_frame_viz
         
         if self.perf: self.perf.end_timer('app_logic_batch')
@@ -1110,7 +1118,8 @@ class VideoProcessor:
         inferred_exit = to_zone if proj > 0 else from_zone
 
         duration = (now_ts - track_data['entry_time']).total_seconds()
-        speed = self._compute_average_speed_kmh(positions_with_times, current_frame=current_frame)
+        speed = self._compute_average_speed_kmh(positions_with_times, current_frame=current_frame, vehicle_type=track_data['current_type'])
+        self.last_vehicle_info = {'track_id': track_id, 'type': track_data['current_type'], 'time_taken': duration, 'speed': speed}
         logger.info(f"[Motion Inference] Track ID - {track_id} | Exit confirmed to: {inferred_exit} | Speed - {speed} km/h")
         self._add_to_finalized_paths(
             track_id,
@@ -1149,44 +1158,58 @@ class VideoProcessor:
         }
         self.finalized_paths_store.append(path_report_entry)
 
-    def _compute_average_speed_kmh(self, positions_with_times, current_frame=None):
-        """Compute average speed using total metric distance over total time."""
+    def _compute_average_speed_kmh(self, positions_with_times, current_frame=None, vehicle_type=None):
+        """Retroactively compute speed using only points inside the perspective polygon."""
+        if vehicle_type and str(vehicle_type).strip().lower() in ['pedestrian', 'person']:
+            return None
         if self.perspective_transformer is None:
             return None
-        if len(positions_with_times) < MIN_SPEED_POSITIONS:
-            logger.info(f"[Speed Calculation] Position thresh not met: {len(positions_with_times)} < {MIN_SPEED_POSITIONS}")
-            return None
             
-        # Get the first and last recorded positions and times
-        first_pos, first_time = positions_with_times[0]
-        last_pos, last_time = positions_with_times[-1]
-        
+        # 1. Get the perspective polygon (the reliable road zone) in pixel coordinates
+        poly = self.perspective_transformer._raw_corners.astype(np.int32)
+
+        # 2. Filter the vehicle's history: keep ONLY points inside the polygon
+        valid_positions = []
+        for pos, t in positions_with_times:
+            # cv2.pointPolygonTest returns >= 0 if the point is inside or on the edge of the polygon
+            if cv2.pointPolygonTest(poly, (float(pos[0]), float(pos[1])), False) >= 0:
+                valid_positions.append((pos, t))
+
+        # 3. Ensure we have enough valid points inside the zone to make a calculation
+        if len(valid_positions) < 2:
+            logger.info("[Speed Calculation] Not enough tracking points inside the reliable zone.")
+            return None
+
+        # 4. Get the first and last points INSIDE the zone
+        first_pos, first_time = valid_positions[0]
+        last_pos, last_time = valid_positions[-1]
+
         total_time_sec = last_time - first_time
         if total_time_sec < MIN_SPEED_DURATION_SEC:
-            logger.info(f"[Speed Calculation] Time thresh not met: {total_time_sec} < {MIN_SPEED_DURATION_SEC}")
+            logger.info(f"[Speed Calculation] Time in zone too short: {total_time_sec:.2f}s")
             return None
 
         try:
-            # Transform the start and end pixel coordinates into metric (meters) coordinates
+            # 5. Transform these specific pixel coordinates to metric (meters) coordinates
             x1, y1 = self.perspective_transformer.transform_point(float(first_pos[0]), float(first_pos[1]))
             x2, y2 = self.perspective_transformer.transform_point(float(last_pos[0]), float(last_pos[1]))
         except Exception as e:
             logger.warning(f"[Speed Calculation] Perspective transform failed: {e}")
             return None
 
-        # Calculate the straight-line Euclidean distance covered in meters
+        # 6. Calculate the straight-line distance covered in meters
         total_distance_meters = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
 
+        # Ignore tiny movements (e.g., vehicle clipped the corner of the zone)
         if total_distance_meters < 1.0:
-            logger.info(f"[Speed Calculation] Distance too short: {total_distance_meters:.2f}m")
-            return 0.0
+            return None
 
-        # Calculate final speed: v = d / t
+        # 7. Calculate final speed: v = d / t
         speed_ms = total_distance_meters / total_time_sec
         speed_kmh = speed_ms * 3.6
 
         if speed_kmh > MAX_PLAUSIBLE_SPEED_KMH:
-            logger.info(f"[Speed Calculation] Speed thresh not met: {speed_kmh} > {MAX_PLAUSIBLE_SPEED_KMH}")
+            logger.info(f"[Speed Calculation] Speed exceeded max plausible limit: {speed_kmh:.1f} km/h")
             return None
 
         return round(speed_kmh, 1)
