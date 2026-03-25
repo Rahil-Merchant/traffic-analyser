@@ -172,12 +172,18 @@ function App() {
 
     const { date, time } = formatTimestampForBackend(selectedTimestamp);
 
+    // Auto-finish any currently drawing zone
+    const currentPolygons = { ...polygons };
+    if (activeDirection && currentPoints.length >= (activeDirection === 'road' ? 2 : 3)) {
+      currentPolygons[activeDirection] = [...currentPoints];
+    }
+
     // Capture road axis points BEFORE any object manipulation
-    const roadAxisPoints = polygons['road'] ? [...polygons['road']] : null;
+    const roadAxisPoints = currentPolygons['road'] ? [...currentPolygons['road']] : null;
 
     // Build zone-only polygons (exclude 'road' which is for speed calibration)
     const zonePolygons: Polygons = {};
-    for (const [key, value] of Object.entries(polygons)) {
+    for (const [key, value] of Object.entries(currentPolygons)) {
       if (key !== 'road') {
         zonePolygons[key] = value;
       }
@@ -229,12 +235,18 @@ function App() {
     
     const { date, time } = formatTimestampForBackend(selectedTimestamp);
 
+    // Auto-finish any currently drawing zone
+    const currentPolygons = { ...polygons };
+    if (activeDirection && currentPoints.length >= (activeDirection === 'road' ? 2 : 3)) {
+      currentPolygons[activeDirection] = [...currentPoints];
+    }
+
     // Capture road axis points BEFORE any object manipulation
-    const roadAxisPoints = polygons['road'] ? [...polygons['road']] : null;
+    const roadAxisPoints = currentPolygons['road'] ? [...currentPolygons['road']] : null;
 
     // Build zone-only polygons (exclude 'road')
     const zonePolygons: Polygons = {};
-    for (const [key, value] of Object.entries(polygons)) {
+    for (const [key, value] of Object.entries(currentPolygons)) {
       if (key !== 'road') {
         zonePolygons[key] = value;
       }
