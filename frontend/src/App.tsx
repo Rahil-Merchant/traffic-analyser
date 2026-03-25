@@ -200,6 +200,10 @@ function App() {
       night_hours_end: nightHoursEnd || null
     };
 
+    console.log('[DEBUG SPEED] polygons keys:', Object.keys(polygons));
+    console.log('[DEBUG SPEED] polygons["road"]:', polygons['road']);
+    console.log('[DEBUG SPEED] road_axis_points in payload:', configPayload.road_axis_points);
+
     console.log('Sending exact image dimensions:', {
       width: imageDimensions.width,
       height: imageDimensions.height,
