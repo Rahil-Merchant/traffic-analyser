@@ -734,7 +734,6 @@ class VideoProcessor:
         
         self.models_list.clear()
         self.active_track_data.clear()
-        self.finalized_paths_store.clear()
         self.bytetracker = self.zone_tracker = self.perf = self.stop_event = None
         self.reader_thread = self.preprocessor_thread = self.postprocessor_thread = self.writer_thread = None
         self.raw_frame_queue = self.preprocessed_tensor_queue = self.results_queue = self.video_write_queue = self.streams = None
