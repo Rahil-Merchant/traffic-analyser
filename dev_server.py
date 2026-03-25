@@ -173,9 +173,6 @@ async def get_video_preview(payload: FilePathPayload):
 async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfigPayload):
     """Processes video files directly from disk using real filesystem paths."""
     print(f"Received new job. Processing videos: {config.video_paths}")
-    print(f"[DEBUG SPEED] config.road_axis_points = {config.road_axis_points}")
-    print(f"[DEBUG SPEED] config.axis_length_meters = {config.axis_length_meters}")
-    print(f"[DEBUG SPEED] config.polygons keys = {list(config.polygons.keys())}")
 
     # Validate all video files exist
     for video_path in config.video_paths:

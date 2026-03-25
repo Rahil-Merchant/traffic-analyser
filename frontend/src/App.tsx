@@ -172,41 +172,38 @@ function App() {
 
     const { date, time } = formatTimestampForBackend(selectedTimestamp);
 
-    const filteredPolygons = { ...polygons };
-    delete filteredPolygons['road'];
+    // Capture road axis points BEFORE any object manipulation
+    const roadAxisPoints = polygons['road'] ? [...polygons['road']] : null;
+
+    // Build zone-only polygons (exclude 'road' which is for speed calibration)
+    const zonePolygons: Polygons = {};
+    for (const [key, value] of Object.entries(polygons)) {
+      if (key !== 'road') {
+        zonePolygons[key] = value;
+      }
+    }
 
     const configPayload = {
       video_paths: files.map(f => f.path),
       start_date: date,
       start_time: time,
       station_number: stationNumber,
-      polygons: filteredPolygons,
+      polygons: zonePolygons,
       primary_direction: primaryDirection || '',
-      // Exact image dimensions used for polygon drawing
       preview_image_width: imageDimensions.width,
       preview_image_height: imageDimensions.height,
-      // Additional metadata about the image
-      image_metadata: {
-        exact_width: imageDimensions.width,
-        exact_height: imageDimensions.height,
-        aspect_ratio: imageDimensions.width / imageDimensions.height,
-        total_pixels: imageDimensions.width * imageDimensions.height
-      },
       // Speed Calibration optional inputs
-      road_axis_points: polygons['road'] || null,
+      road_axis_points: roadAxisPoints,
       axis_length_meters: axisLengthMeters || null,
       speed_limit_kmh: speedLimitKmh || null,
       night_hours_start: nightHoursStart || null,
       night_hours_end: nightHoursEnd || null
     };
 
-    console.log('[DEBUG SPEED] polygons keys:', Object.keys(polygons));
-    console.log('[DEBUG SPEED] polygons["road"]:', polygons['road']);
-    console.log('[DEBUG SPEED] road_axis_points in payload:', configPayload.road_axis_points);
-
-    console.log('Sending exact image dimensions:', {
+    console.log('Launching analysis:', {
       width: imageDimensions.width,
       height: imageDimensions.height,
+      road_axis_points: roadAxisPoints,
       payload: configPayload
     });
 
@@ -231,19 +228,28 @@ function App() {
     setAxisLengthMeters(newLength);
     
     const { date, time } = formatTimestampForBackend(selectedTimestamp);
-    const filteredPolygons = { ...polygons };
-    delete filteredPolygons['road'];
+
+    // Capture road axis points BEFORE any object manipulation
+    const roadAxisPoints = polygons['road'] ? [...polygons['road']] : null;
+
+    // Build zone-only polygons (exclude 'road')
+    const zonePolygons: Polygons = {};
+    for (const [key, value] of Object.entries(polygons)) {
+      if (key !== 'road') {
+        zonePolygons[key] = value;
+      }
+    }
 
     const configPayload = {
       video_paths: files.map(f => f.path),
       start_date: date,
       start_time: time,
       station_number: stationNumber,
-      polygons: filteredPolygons,
+      polygons: zonePolygons,
       primary_direction: primaryDirection || '',
       preview_image_width: imageDimensions.width,
       preview_image_height: imageDimensions.height,
-      road_axis_points: polygons['road'] || null,
+      road_axis_points: roadAxisPoints,
       axis_length_meters: newLength,
       speed_limit_kmh: speedLimitKmh || null,
       night_hours_start: nightHoursStart || null,
