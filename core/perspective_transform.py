@@ -119,18 +119,24 @@ class PerspectiveTransformer:
 
             # Determine output size in pixels for the warped image.
             # Use a scale factor so the output is reasonably sized.
+            # Determine output size in pixels for the warped image.
             scale_px_per_m = 20.0  # 20 pixels per meter
             out_w = int(self.width_meters * scale_px_per_m)
             out_h = int(self.length_meters * scale_px_per_m)
-            # Ensure minimum size
-            out_w = max(out_w, 200)
-            out_h = max(out_h, 200)
+            
+            # Create a scaling matrix for the visualization
+            # This converts the metric output of self.M back into pixels for the debug image
+            scale_matrix = np.array([
+                [scale_px_per_m, 0, 0],
+                [0, scale_px_per_m, 0],
+                [0, 0, 1]
+            ], dtype=np.float32)
+            
+            # Combine the original matrix with the scaling matrix
+            viz_M = scale_matrix @ self.M
 
-            warped = cv2.warpPerspective(frame, self.M_inv, (frame.shape[1], frame.shape[0]),
-                                         flags=cv2.WARP_INVERSE_MAP)
-
-            # Also create a proper birds-eye view sized to metric dimensions
-            birds_eye = cv2.warpPerspective(frame, self.M, (out_w, out_h))
+            # Create the birds-eye view using the scaled matrix
+            birds_eye = cv2.warpPerspective(frame, viz_M, (out_w, out_h))
 
             # Draw the quadrilateral on original frame for visual reference
             vis = frame.copy()
