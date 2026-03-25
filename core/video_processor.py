@@ -673,6 +673,34 @@ class VideoProcessor:
         }
         return result_msg, results_dict, stats_dict
 
+    def abort(self):
+        """Separate logic to gracefully abort processing and unblock threads."""
+        logger.info("Abort requested. Setting stop event and flushing queues...")
+        if self.stop_event:
+            self.stop_event.set()
+
+        def _flush_queues():
+            # Send sentinels to unblock `get()` operations waiting on empty queues
+            for q in [self.raw_frame_queue, self.preprocessed_tensor_queue, self.results_queue, self.video_write_queue]:
+                if q is not None:
+                    try: q.put_nowait(None)
+                    except queue.Full: pass
+            
+            threads = [self.reader_thread, self.preprocessor_thread, self.postprocessor_thread, self.writer_thread]
+            
+            # Continuously empty queues to unblock `put()` operations waiting on full queues
+            while any(t and t.is_alive() for t in threads):
+                for q in [self.raw_frame_queue, self.preprocessed_tensor_queue, self.results_queue, self.video_write_queue]:
+                    if q is not None:
+                        while not q.empty():
+                            try: q.get_nowait()
+                            except queue.Empty: break
+                time.sleep(0.05)
+            logger.info("All threads exited. Queues flushed.")
+
+        # Start the flushing in a separate daemon thread so abort() returns immediately
+        threading.Thread(target=_flush_queues, daemon=True).start()
+
     @profile
     def _cleanup_run(self):
         logger.info("Cleaning up resources...")
