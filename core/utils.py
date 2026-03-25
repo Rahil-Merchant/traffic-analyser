@@ -103,39 +103,41 @@ def cleanup_memory():
         torch.cuda.empty_cache()
     logger.debug("Performed memory cleanup (GC + CUDA Cache)")
 
-def compute_speed_from_trajectory(trajectory_data, road_curve):
-    """Compute average speed from stored trajectory using arc-length road curve.
+def compute_speed_from_trajectory(trajectory_data, perspective_transformer):
+    """Compute average speed from stored trajectory using perspective transform.
 
     Parameters
     ----------
     trajectory_data : list of ([x, y], time_sec) tuples
-    road_curve : RoadCurve instance (from core.road_curve)
+    perspective_transformer : PerspectiveTransformer instance
     """
-    if road_curve is None or not trajectory_data or len(trajectory_data) < MIN_SPEED_POSITIONS:
+    if perspective_transformer is None or not trajectory_data or len(trajectory_data) < MIN_SPEED_POSITIONS:
         return None
 
     total_dt = trajectory_data[-1][1] - trajectory_data[0][1]
     if total_dt < MIN_SPEED_DURATION_SEC:
         return None
 
-    # Project each position onto the road curve → (s_meters, time)
-    projected = []
+    # Transform each position to metric coordinates via perspective transform
+    transformed = []
     for pos, t in trajectory_data:
         try:
-            s = road_curve.project(float(pos[0]), float(pos[1]))
-            projected.append((s, t))
+            mx, my = perspective_transformer.transform_point(float(pos[0]), float(pos[1]))
+            transformed.append((mx, my, t))
         except Exception:
             continue
 
-    if len(projected) < 2:
+    if len(transformed) < 2:
         return None
 
-    # Compute per-segment arc-length differences and durations
+    # Compute per-segment Euclidean distances in metric space
     seg_distances = []
     seg_durations = []
-    for i in range(len(projected) - 1):
-        ds = abs(projected[i + 1][0] - projected[i][0])
-        dur = projected[i + 1][1] - projected[i][1]
+    for i in range(len(transformed) - 1):
+        dx = transformed[i + 1][0] - transformed[i][0]
+        dy = transformed[i + 1][1] - transformed[i][1]
+        ds = np.sqrt(dx**2 + dy**2)
+        dur = transformed[i + 1][2] - transformed[i][2]
         if dur > 0:
             seg_distances.append(ds)
             seg_durations.append(dur)

@@ -104,8 +104,9 @@ class AnalysisConfigPayload(BaseModel):
     polygons: dict
     preview_image_width: int
     preview_image_height: int
-    road_axis_points: Optional[list] = None
-    axis_length_meters: Optional[float] = None
+    perspective_corners: Optional[list] = None
+    road_width_meters: Optional[float] = None
+    road_length_meters: Optional[float] = None
     speed_limit_kmh: Optional[float] = None
     night_hours_start: Optional[str] = None
     night_hours_end: Optional[str] = None
@@ -119,8 +120,9 @@ class RecalibrateConfigPayload(BaseModel):
     polygons: dict
     preview_image_width: int
     preview_image_height: int
-    road_axis_points: Optional[list] = None
-    axis_length_meters: Optional[float] = None
+    perspective_corners: Optional[list] = None
+    road_width_meters: Optional[float] = None
+    road_length_meters: Optional[float] = None
     speed_limit_kmh: Optional[float] = None
     night_hours_start: Optional[str] = None
     night_hours_end: Optional[str] = None
@@ -184,8 +186,9 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
     job_queues[job_id] = progress_queue
 
     processor.zone_polygons = config.polygons
-    processor.road_axis_points_raw = config.road_axis_points
-    processor.axis_length_meters = config.axis_length_meters
+    processor.perspective_corners_raw = config.perspective_corners
+    processor.road_width_meters = config.road_width_meters
+    processor.road_length_meters = config.road_length_meters
     processor.speed_limit_kmh = config.speed_limit_kmh
     processor.night_hours_start = config.night_hours_start
     processor.night_hours_end = config.night_hours_end
@@ -211,25 +214,26 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
 async def recalibrate_speed(config: RecalibrateConfigPayload):
     print("Recalibrating speeds with new parameters...")
     try:
-        # Build road curve for arc-length speed computation
-        from core.road_curve import RoadCurve
-        road_curve = None
-        if (config.road_axis_points is not None and len(config.road_axis_points) >= 2
-                and config.axis_length_meters):
-            scaled_axis = processor._scale_polygons_to_processing_coordinates(
-                {'axis': config.road_axis_points}, config.preview_image_width, config.preview_image_height
-            ).get('axis', [])
-            if len(scaled_axis) >= 2:
-                road_curve = RoadCurve(
-                    scaled_axis,
-                    config.axis_length_meters
+        # Build perspective transformer for speed computation
+        from core.perspective_transform import PerspectiveTransformer
+        transformer = None
+        if (config.perspective_corners is not None and len(config.perspective_corners) == 4
+                and config.road_width_meters and config.road_length_meters):
+            scaled_corners = processor._scale_polygons_to_processing_coordinates(
+                {'corners': config.perspective_corners}, config.preview_image_width, config.preview_image_height
+            ).get('corners', [])
+            if len(scaled_corners) == 4:
+                transformer = PerspectiveTransformer(
+                    scaled_corners,
+                    config.road_width_meters,
+                    config.road_length_meters
                 )
         
         all_paths = processor.finalized_paths_store.get_all()
         for path in all_paths:
             traj = path.get('trajectory_data')
             if traj:
-                new_speed = compute_speed_from_trajectory(traj, road_curve)
+                new_speed = compute_speed_from_trajectory(traj, transformer)
                 processor.finalized_paths_store.update_speed(path['id'], new_speed)
 
         time_str = str(config.start_time)

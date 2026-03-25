@@ -5,7 +5,8 @@ interface ControlsPanelProps {
   drawnZones: string[];
   primaryDirection: string | null;
   isLaunchable: boolean;
-  axisLengthMeters: number | '';
+  roadWidthMeters: number | '';
+  roadLengthMeters: number | '';
   speedLimitKmh: number | '';
   nightHoursStart: string;
   nightHoursEnd: string;
@@ -14,7 +15,8 @@ interface ControlsPanelProps {
   onUndoPoint: () => void;
   onClearAllZones: () => void;
   onPrimaryDirectionChange: (direction: string) => void;
-  onAxisLengthChange: (val: number | '') => void;
+  onRoadWidthChange: (val: number | '') => void;
+  onRoadLengthChange: (val: number | '') => void;
   onSpeedLimitChange: (val: number | '') => void;
   onNightHoursStartChange: (val: string) => void;
   onNightHoursEndChange: (val: string) => void;
@@ -22,7 +24,7 @@ interface ControlsPanelProps {
   hasPreviousResults?: boolean;
   onReopenResults?: () => void;
   canRecalibrate?: boolean;
-  onRecalibrate?: (length: number) => Promise<void>;
+  onRecalibrate?: (width: number, length: number) => Promise<void>;
 }
 
 const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
@@ -31,7 +33,8 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     drawnZones,
     primaryDirection,
     isLaunchable,
-    axisLengthMeters,
+    roadWidthMeters,
+    roadLengthMeters,
     speedLimitKmh,
     nightHoursStart,
     nightHoursEnd,
@@ -40,7 +43,8 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
     onUndoPoint,
     onClearAllZones,
     onPrimaryDirectionChange,
-    onAxisLengthChange,
+    onRoadWidthChange,
+    onRoadLengthChange,
     onSpeedLimitChange,
     onNightHoursStartChange,
     onNightHoursEndChange,
@@ -191,7 +195,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
               <button
                 onClick={() => onSetDirection('road')}
                 className={`
-                  col-span-2 relative p-2 rounded-lg border-2 transition-all duration-300 transform hover:scale-105 flex items-center justify-center space-x-2
+                  col-span-2 relative p-2 rounded-lg border-2 transition-all duration-300 transform hover:scale-105 flex flex-col items-center justify-center space-y-1
                   ${activeDirection === 'road'
                     ? 'bg-gradient-to-br from-orange-500 to-orange-600 shadow-lg ring-2 ring-white/20 border-orange-400/50 text-white'
                     : drawnZones.includes('road')
@@ -200,19 +204,34 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                   }
                 `}
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8v8M20 8v8M4 16l16-8M4 8l16 8" />
-                </svg>
-                <span className="text-xs font-semibold">{drawnZones.includes('road') ? 'Road Axis Drawn' : 'Draw Road Axis'}</span>
+                <div className="flex items-center space-x-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8v8M20 8v8M4 16l16-8M4 8l16 8" />
+                  </svg>
+                  <span className="text-xs font-semibold">{drawnZones.includes('road') ? 'Road Corners Marked' : 'Mark Road Corners'}</span>
+                </div>
+                <span className="text-[10px] opacity-70">TL → TR → BR → BL (4 points)</span>
               </button>
 
-              <div className="col-span-2 bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
-                <label className="block text-xs font-medium text-gray-400 mb-1">Axis Length (m)</label>
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Road Width (m)</label>
                 <input
                   type="number"
                   min="0" step="0.1"
-                  value={axisLengthMeters}
-                  onChange={e => onAxisLengthChange(e.target.value ? parseFloat(e.target.value) : '')}
+                  value={roadWidthMeters}
+                  onChange={e => onRoadWidthChange(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder="e.g. 7.0"
+                />
+              </div>
+
+              <div className="bg-gray-900/50 rounded-lg border border-gray-700/30 p-2">
+                <label className="block text-xs font-medium text-gray-400 mb-1">Road Length (m)</label>
+                <input
+                  type="number"
+                  min="0" step="0.1"
+                  value={roadLengthMeters}
+                  onChange={e => onRoadLengthChange(e.target.value ? parseFloat(e.target.value) : '')}
                   className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
                   placeholder="e.g. 30.0"
                 />
@@ -254,13 +273,13 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
               {hasPreviousResults && canRecalibrate && onRecalibrate && (
                 <button
                   onClick={async () => {
-                    if (typeof axisLengthMeters === 'number') {
+                    if (typeof roadWidthMeters === 'number' && typeof roadLengthMeters === 'number') {
                       setIsRecalibrating(true);
-                      await onRecalibrate(axisLengthMeters);
+                      await onRecalibrate(roadWidthMeters, roadLengthMeters);
                       setIsRecalibrating(false);
                     }
                   }}
-                  disabled={isRecalibrating || typeof axisLengthMeters !== 'number'}
+                  disabled={isRecalibrating || typeof roadWidthMeters !== 'number' || typeof roadLengthMeters !== 'number'}
                   className="col-span-2 p-2 bg-gradient-to-r from-orange-600 to-orange-700 text-white rounded-lg hover:from-orange-500 hover:to-orange-600 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-orange-500/25 font-semibold flex items-center justify-center space-x-2 text-xs"
                 >
                   {isRecalibrating ? (
