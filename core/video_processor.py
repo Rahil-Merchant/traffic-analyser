@@ -193,10 +193,22 @@ class VideoProcessor:
                 ).get('road', [])
                 if len(scaled_road_poly) >= 4:
                     try:
+                        # Try to capture first frame for debug visualization
+                        debug_frame = None
+                        try:
+                            cap = cv2.VideoCapture(str(actual_video_paths[0]))
+                            ret, first_frame = cap.read()
+                            cap.release()
+                            if ret and first_frame is not None:
+                                debug_frame = cv2.resize(first_frame, self.frame_shape)
+                        except Exception as e:
+                            logger.warning(f"Could not read first frame for RoadCurve debug: {e}")
+
                         self.road_curve = RoadCurve(
                             scaled_road_poly,
                             self.road_length_meters,
-                            road_width_meters=self.road_width_meters
+                            road_width_meters=self.road_width_meters,
+                            debug_frame=debug_frame
                         )
                         # Zone axis from the road polygon's near/far centroids
                         pts = np.array(scaled_road_poly, dtype=np.float32)
@@ -1135,6 +1147,17 @@ class VideoProcessor:
             logger.info(f"[Speed Calculation] Projected points insufficient: {len(projected)} < 2")
             return None
 
+        # Log sample projections for debugging
+        if len(projected) >= 2:
+            first_pos = positions_with_times[0][0]
+            last_pos = positions_with_times[-1][0]
+            logger.debug(
+                f"[Speed Calculation] {len(projected)} projected pts | "
+                f"first=({first_pos[0]:.0f},{first_pos[1]:.0f})→{projected[0][0]:.2f}m | "
+                f"last=({last_pos[0]:.0f},{last_pos[1]:.0f})→{projected[-1][0]:.2f}m | "
+                f"total_ds={abs(projected[-1][0] - projected[0][0]):.2f}m over {total_dt:.2f}s"
+            )
+
         # Compute per-segment arc-length differences and durations
         seg_distances = []
         seg_durations = []
@@ -1162,7 +1185,11 @@ class VideoProcessor:
                 per_segment_speeds.append((dist / dur) * 3.6)  # km/h
 
         if clean_total_meters < 1.0 or clean_total_time < 0.1:
-            logger.info(f"[Speed Calculation] Distance thresh not met: {clean_total_meters} < 1.0")
+            logger.info(
+                f"[Speed Calculation] Distance thresh not met: "
+                f"clean_total_meters={clean_total_meters:.3f}, "
+                f"median_seg={median_seg:.4f}, threshold={threshold:.4f}"
+            )
             return 0.0
 
         # Use median of per-segment speeds for robustness
