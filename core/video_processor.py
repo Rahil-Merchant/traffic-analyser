@@ -114,9 +114,8 @@ class VideoProcessor:
 
         # Speed estimation
         self.road_curve = None
-        self.road_polygon_raw = None
-        self.road_width_meters = None
-        self.road_length_meters = None
+        self.road_axis_points_raw = None
+        self.axis_length_meters = None
         self.speed_limit_kmh = None
         self.night_hours_start = None
         self.night_hours_end = None
@@ -182,18 +181,18 @@ class VideoProcessor:
             z1, z2 = zone_names[0], zone_names[1]
             self.zone_pair = (z1, z2)
 
-            # Arc-length road curve from user-defined road polygon.
-            # User draws N >= 4 points tracing the road boundary.
-            # A centerline is built, resampled densely, and parameterized
+            # Arc-length road curve from user-drawn road axis.
+            # User plots N >= 2 points along the road centre-line.
+            # A dense curve is built from those points, parameterised
             # by arc-length in meters for perspective-free speed estimation.
-            if (self.road_polygon_raw and len(self.road_polygon_raw) >= 4
-                    and self.road_length_meters):
-                scaled_road_poly = self._scale_polygons_to_processing_coordinates(
-                    {'road': self.road_polygon_raw}, preview_image_width, preview_image_height
-                ).get('road', [])
-                if len(scaled_road_poly) >= 4:
+            if (self.road_axis_points_raw and len(self.road_axis_points_raw) >= 2
+                    and self.axis_length_meters):
+                scaled_axis = self._scale_polygons_to_processing_coordinates(
+                    {'axis': self.road_axis_points_raw}, preview_image_width, preview_image_height
+                ).get('axis', [])
+                if len(scaled_axis) >= 2:
                     try:
-                        # Try to capture first frame for debug visualization
+                        # Try to capture first frame for debug visualisation
                         debug_frame = None
                         try:
                             cap = cv2.VideoCapture(str(actual_video_paths[0]))
@@ -205,20 +204,16 @@ class VideoProcessor:
                             logger.warning(f"Could not read first frame for RoadCurve debug: {e}")
 
                         self.road_curve = RoadCurve(
-                            scaled_road_poly,
-                            self.road_length_meters,
-                            road_width_meters=self.road_width_meters,
+                            scaled_axis,
+                            self.axis_length_meters,
                             debug_frame=debug_frame
                         )
-                        # Zone axis from the road polygon's near/far centroids
-                        pts = np.array(scaled_road_poly, dtype=np.float32)
-                        half_n = len(pts) // 2
-                        centroid_near = np.mean(pts[:half_n], axis=0)
-                        centroid_far = np.mean(pts[half_n:], axis=0)
-                        axis = centroid_far - centroid_near
-                        self.zone_axis = axis / (np.linalg.norm(axis) + 1e-6)
-                        logger.info(f"RoadCurve built from {len(scaled_road_poly)} pts, "
-                                    f"road_length={self.road_length_meters}m")
+                        # Zone axis from first and last axis points
+                        axis_arr = np.array(scaled_axis, dtype=np.float32)
+                        axis_vec = axis_arr[-1] - axis_arr[0]
+                        self.zone_axis = axis_vec / (np.linalg.norm(axis_vec) + 1e-6)
+                        logger.info(f"RoadCurve built from {len(scaled_axis)} axis pts, "
+                                    f"axis_length={self.axis_length_meters}m")
                     except Exception as e:
                         logger.warning(f"Failed to build RoadCurve: {e}")
                         self.road_curve = None
