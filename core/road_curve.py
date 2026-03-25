@@ -64,15 +64,23 @@ class RoadCurve:
                 if d > max_dist:
                     max_dist = d
                     idx1, idx2 = i, j
-                    
-        # Preserve original order
-        if idx1 > idx2:
+
+        # axis_origin must be the NEAR-CAMERA end (larger y in image space).
+        # This ensures z=0 → near camera, z=1 → far camera for correct
+        # perspective weighting regardless of user drawing order.
+        if pts[idx1][1] < pts[idx2][1]:
+            # idx1 is higher in image (far), idx2 is lower (near) → swap
             idx1, idx2 = idx2, idx1
-            
-        self.axis_origin = pts[idx1]
-        axis_vec = pts[idx2] - pts[idx1]
+
+        self.axis_origin = pts[idx1].copy()   # near-camera end
+        axis_vec = pts[idx2] - pts[idx1]      # points towards far end
         self.axis_length_px = max(float(np.linalg.norm(axis_vec)), 1e-6)
         self.axis_dir = axis_vec / self.axis_length_px
+
+        logger.debug(
+            f"[RoadCurve] Axis corners: origin(near)={self.axis_origin} "
+            f"→ far={pts[idx2]}, length_px={self.axis_length_px:.1f}"
+        )
 
         # ---- 1. Dense resample -------------------------------------------
         self.centerline = self._resample(pts, _CENTERLINE_DENSITY)
@@ -121,35 +129,50 @@ class RoadCurve:
 
     def project_metric(self, px, py):
         """
-        Projects a point onto the road axis and applies a non-linear 
-        depth-weighting correction to account for perspective, returning 
+        Projects a point onto the road axis and applies a non-linear
+        depth-weighting correction to account for perspective, returning
         the distance in meters.
+
+        Convention (enforced by __init__):
+            axis_origin = near-camera end  (large y in image)
+            axis_dir    = points towards far end (small y in image)
+            z = 0 → near camera,  z = 1 → far camera
+
+        Perspective correction:
+            Near camera: pixels are inflated  → COMPRESS (low weight)
+            Far  camera: pixels are compressed → EXPAND   (high weight)
+            W(z) = 1 + k·z   (weight increases with depth)
         """
         v = np.array([px, py], dtype=np.float64) - self.axis_origin
         s_px = float(np.dot(v, self.axis_dir))
-        
-        # z is the relative position along the axis length
+
+        # z is the relative position along the axis (0=near, 1=far)
         z = s_px / self.axis_length_px
-        
-        # Integrate weight piecewise for depth-correction
+
+        # Depth-correction weight: W(z) = 1 + k·z
+        #   near (z≈0): weight ≈ 1.0  (compress inflated pixel distances)
+        #   far  (z≈1): weight ≈ 1+k  (expand compressed pixel distances)
         k = 2.0
         c1, c2 = 0.05, 0.95
-        
+
         def W_int(u):
+            """Integral of clamped W(t) = 1 + k·t from 0 to u."""
             if u < c1:
-                return u * (1 + k*(1 - c1))
+                # Below clamp: use W(c1) = 1 + k*c1 as constant
+                return u * (1.0 + k * c1)
             elif u <= c2:
-                int_c1 = c1 * (1 + k*(1 - c1))
-                return int_c1 + (1+k)*(u - c1) - (k/2)*(u**2 - c1**2)
+                # Main region: ∫(1 + k·t)dt = t + k·t²/2
+                int_c1 = c1 * (1.0 + k * c1)
+                return int_c1 + (u - c1) + (k / 2.0) * (u**2 - c1**2)
             else:
-                int_c1 = c1 * (1 + k*(1 - c1))
-                int_c2 = int_c1 + (1+k)*(c2 - c1) - (k/2)*(c2**2 - c1**2)
-                return int_c2 + (u - c2) * (1 + k*(1 - c2))
-        
-        # We allow z to extrapolate beyond [0, 1] by evaluating the integral directly
+                # Above clamp: use W(c2) = 1 + k*c2 as constant
+                int_c1 = c1 * (1.0 + k * c1)
+                int_c2 = int_c1 + (c2 - c1) + (k / 2.0) * (c2**2 - c1**2)
+                return int_c2 + (u - c2) * (1.0 + k * c2)
+
         mapped_z = W_int(z)
-        
-        # Scale to match total axis_length_meters exactly
+
+        # Scale so W_int(1.0) maps exactly to axis_length_meters
         total_mapped = W_int(1.0)
         return float(mapped_z * (self._axis_length_meters / total_mapped))
 
