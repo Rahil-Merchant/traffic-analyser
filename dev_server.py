@@ -104,9 +104,8 @@ class AnalysisConfigPayload(BaseModel):
     polygons: dict
     preview_image_width: int
     preview_image_height: int
-    road_polygon: Optional[list] = None
-    road_width_meters: Optional[float] = None
-    road_length_meters: Optional[float] = None
+    road_axis_points: Optional[list] = None
+    axis_length_meters: Optional[float] = None
     speed_limit_kmh: Optional[float] = None
     night_hours_start: Optional[str] = None
     night_hours_end: Optional[str] = None
@@ -120,9 +119,8 @@ class RecalibrateConfigPayload(BaseModel):
     polygons: dict
     preview_image_width: int
     preview_image_height: int
-    road_polygon: Optional[list] = None
-    road_width_meters: Optional[float] = None
-    road_length_meters: Optional[float] = None
+    road_axis_points: Optional[list] = None
+    axis_length_meters: Optional[float] = None
     speed_limit_kmh: Optional[float] = None
     night_hours_start: Optional[str] = None
     night_hours_end: Optional[str] = None
@@ -186,9 +184,8 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
     job_queues[job_id] = progress_queue
 
     processor.zone_polygons = config.polygons
-    processor.road_polygon_raw = config.road_polygon
-    processor.road_width_meters = config.road_width_meters
-    processor.road_length_meters = config.road_length_meters
+    processor.road_axis_points_raw = config.road_axis_points
+    processor.axis_length_meters = config.axis_length_meters
     processor.speed_limit_kmh = config.speed_limit_kmh
     processor.night_hours_start = config.night_hours_start
     processor.night_hours_end = config.night_hours_end
@@ -217,16 +214,15 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
         # Build road curve for arc-length speed computation
         from core.road_curve import RoadCurve
         road_curve = None
-        if (config.road_polygon is not None and len(config.road_polygon) >= 4
-                and config.road_length_meters):
-            scaled_road_poly = processor._scale_polygons_to_processing_coordinates(
-                {'road': config.road_polygon}, config.preview_image_width, config.preview_image_height
-            ).get('road', [])
-            if len(scaled_road_poly) >= 4:
+        if (config.road_axis_points is not None and len(config.road_axis_points) >= 2
+                and config.axis_length_meters):
+            scaled_axis = processor._scale_polygons_to_processing_coordinates(
+                {'axis': config.road_axis_points}, config.preview_image_width, config.preview_image_height
+            ).get('axis', [])
+            if len(scaled_axis) >= 2:
                 road_curve = RoadCurve(
-                    scaled_road_poly,
-                    config.road_length_meters,
-                    road_width_meters=config.road_width_meters
+                    scaled_axis,
+                    config.axis_length_meters
                 )
         
         all_paths = processor.finalized_paths_store.get_all()
