@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-ENABLE_VISUALIZATION = True
+ENABLE_VISUALIZATION = False
 
 _now = datetime.now()
 START_DATE = _now.strftime("%y%m%d")
@@ -54,9 +54,9 @@ MOTION_INFERENCE_MIN_DIST = 15
 MOTION_INFERENCE_MAX_PROJECTION = 0.5
 
 # --- Speed Estimation ---
-MIN_SPEED_POSITIONS = 5
-MIN_SPEED_DURATION_SEC = 2.0
-MAX_PLAUSIBLE_SPEED_KMH = 200.0
+MIN_SPEED_POSITIONS = 3
+MIN_SPEED_DURATION_SEC = 0.4
+MAX_PLAUSIBLE_SPEED_KMH = 150.0
 JUMP_THRESHOLD_MULTIPLIER = 3.0
 DEBUG_SPEED = False
 
@@ -194,7 +194,7 @@ REPORTING_DIRECTIONS = { 'From South': ['To North', 'To West', 'To East'], 'From
 
 # --- Performance & Debugging ---
 ENABLE_DETAILED_PERFORMANCE_METRICS = True
-DEBUG_MODE = True # Keep False for performance runs
+DEBUG_MODE = False # Keep False for performance runs
 PERFORMANCE_SAMPLE_INTERVAL = 15.0   # In seconds
 MEMORY_CLEANUP_INTERVAL = 300   # In seconds
 
