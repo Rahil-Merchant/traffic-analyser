@@ -109,7 +109,7 @@ class AnalysisConfigPayload(BaseModel):
     road_length_meters: Optional[float] = None
     length_skew_factor: Optional[float] = 1.0
     width_skew_factor: Optional[float] = 1.0
-    speed_limit_kmh: Optional[float] = None
+    speedLimitKmh: Optional[float] = None
     night_hours_start: Optional[str] = None
     night_hours_end: Optional[str] = None
 
@@ -127,7 +127,7 @@ class RecalibrateConfigPayload(BaseModel):
     road_length_meters: Optional[float] = None
     length_skew_factor: Optional[float] = 1.0
     width_skew_factor: Optional[float] = 1.0
-    speed_limit_kmh: Optional[float] = None
+    speedLimitKmh: Optional[float] = None
     night_hours_start: Optional[str] = None
     night_hours_end: Optional[str] = None
     video_duration_formatted: str
@@ -195,7 +195,7 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
     processor.road_length_meters = config.road_length_meters
     processor.length_skew_factor = config.length_skew_factor
     processor.width_skew_factor = config.width_skew_factor
-    processor.speed_limit_kmh = config.speed_limit_kmh
+    processor.speed_limit_kmh = config.speedLimitKmh
     processor.night_hours_start = config.night_hours_start
     processor.night_hours_end = config.night_hours_end
     
@@ -241,7 +241,7 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
         processor.road_width_meters = config.road_width_meters
         processor.length_skew_factor = config.length_skew_factor
         processor.width_skew_factor = config.width_skew_factor
-        processor.speed_limit_kmh = config.speed_limit_kmh
+        processor.speed_limit_kmh = config.speedLimitKmh
         processor.night_hours_start = config.night_hours_start
         processor.night_hours_end = config.night_hours_end
 
@@ -287,7 +287,7 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
                     secondary_direction=secondary_dirs[0],
                     video_duration_formatted=config.video_duration_formatted,
                     station_number_str=config.station_number,
-                    speed_limit_kmh=config.speed_limit_kmh,
+                    speed_limit_kmh=config.speedLimitKmh,
                     night_hours_start=config.night_hours_start,
                     night_hours_end=config.night_hours_end
                 )
