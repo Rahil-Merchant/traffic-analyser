@@ -209,8 +209,8 @@ class VideoProcessor:
 
                         self.perspective_transformer = PerspectiveTransformer(
                             scaled_corners,
-                            self.road_width_meters,
-                            self.road_length_meters,
+                            self.road_width_meters * (self.width_skew_factor if self.width_skew_factor else 1.0),
+                            self.road_length_meters * (self.length_skew_factor if self.length_skew_factor else 1.0),
                             debug_frame=debug_frame
                         )
                         # Zone axis from TL/BL midpoint to TR/BR midpoint

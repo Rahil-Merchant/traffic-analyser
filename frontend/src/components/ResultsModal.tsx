@@ -15,17 +15,21 @@ interface ResultsModalProps {
     excel_path: string;
     bidirectional_excel_path: string;
   } | null;
-  onRecalibrate?: (width: number, length: number) => Promise<void>;
+  onRecalibrate?: (width: number, length: number, lengthSkew?: number, widthSkew?: number) => Promise<void>;
   initialRoadWidth?: number;
   initialRoadLength?: number;
+  initialLengthSkew?: number;
+  initialWidthSkew?: number;
   canRecalibrate?: boolean;
 }
 
 const ResultsModal: React.FC<ResultsModalProps> = ({ 
-  isOpen, onClose, statistics, results, onRecalibrate, initialRoadWidth, initialRoadLength, canRecalibrate 
+  isOpen, onClose, statistics, results, onRecalibrate, initialRoadWidth, initialRoadLength, initialLengthSkew, initialWidthSkew, canRecalibrate 
 }) => {
   const [roadWidth, setRoadWidth] = useState<number | ''>(initialRoadWidth ?? '');
   const [roadLength, setRoadLength] = useState<number | ''>(initialRoadLength ?? '');
+  const [lengthSkew, setLengthSkew] = useState<number | ''>(initialLengthSkew ?? '');
+  const [widthSkew, setWidthSkew] = useState<number | ''>(initialWidthSkew ?? '');
   const [isRecalibrating, setIsRecalibrating] = useState(false);
 
   if (!isOpen) return null;
@@ -233,36 +237,62 @@ const ResultsModal: React.FC<ResultsModalProps> = ({
               <span>Speed Recalibration</span>
             </h3>
             
-            <div className="flex items-end space-x-4">
-              <div className="flex-1">
-                <label className="block text-xs font-medium text-gray-400 mb-1">Road Width (m)</label>
-                <input
-                  type="number" min="0" step="0.1"
-                  value={roadWidth}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoadWidth(e.target.value ? parseFloat(e.target.value) : '')}
-                  className="w-full bg-gray-900 border border-gray-600/50 rounded-lg p-2 text-white focus:ring-1 focus:ring-orange-500"
-                />
+            <div className="flex flex-col space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Road Width (m)</label>
+                  <input
+                    type="number" min="0" step="0.1"
+                    value={roadWidth}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoadWidth(e.target.value ? parseFloat(e.target.value) : '')}
+                    className="w-full bg-gray-900 border border-gray-600/50 rounded-lg p-2 text-white focus:ring-1 focus:ring-orange-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Road Length (m)</label>
+                  <input
+                    type="number" min="0" step="0.1"
+                    value={roadLength}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoadLength(e.target.value ? parseFloat(e.target.value) : '')}
+                    className="w-full bg-gray-900 border border-gray-600/50 rounded-lg p-2 text-white focus:ring-1 focus:ring-orange-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Width Skew Factor</label>
+                  <input
+                    type="number" min="0" step="0.01"
+                    value={widthSkew}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWidthSkew(e.target.value ? parseFloat(e.target.value) : '')}
+                    className="w-full bg-gray-900 border border-gray-600/50 rounded-lg p-2 text-white focus:ring-1 focus:ring-orange-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Length Skew Factor</label>
+                  <input
+                    type="number" min="0" step="0.01"
+                    value={lengthSkew}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLengthSkew(e.target.value ? parseFloat(e.target.value) : '')}
+                    className="w-full bg-gray-900 border border-gray-600/50 rounded-lg p-2 text-white focus:ring-1 focus:ring-orange-500"
+                  />
+                </div>
               </div>
-              <div className="flex-1">
-                <label className="block text-xs font-medium text-gray-400 mb-1">Road Length (m)</label>
-                <input
-                  type="number" min="0" step="0.1"
-                  value={roadLength}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoadLength(e.target.value ? parseFloat(e.target.value) : '')}
-                  className="w-full bg-gray-900 border border-gray-600/50 rounded-lg p-2 text-white focus:ring-1 focus:ring-orange-500"
-                />
-              </div>
-              <button
-                onClick={async () => {
-                  if (typeof roadWidth === 'number' && typeof roadLength === 'number') {
-                    setIsRecalibrating(true);
-                    await onRecalibrate(roadWidth, roadLength);
-                    setIsRecalibrating(false);
-                  }
-                }}
-                disabled={isRecalibrating || typeof roadWidth !== 'number' || typeof roadLength !== 'number'}
-                className="px-6 py-2 bg-gradient-to-r from-orange-600 to-orange-700 text-white font-semibold rounded-lg hover:from-orange-500 hover:to-orange-600 transition-all duration-200 shadow-lg disabled:opacity-50 flex items-center h-[42px]"
-              >
+              <div className="flex justify-end">
+                <button
+                  onClick={async () => {
+                    if (typeof roadWidth === 'number' && typeof roadLength === 'number') {
+                      setIsRecalibrating(true);
+                      await onRecalibrate(
+                        roadWidth, 
+                        roadLength,
+                        typeof lengthSkew === 'number' ? lengthSkew : undefined,
+                        typeof widthSkew === 'number' ? widthSkew : undefined
+                      );
+                      setIsRecalibrating(false);
+                    }
+                  }}
+                  disabled={isRecalibrating || typeof roadWidth !== 'number' || typeof roadLength !== 'number'}
+                  className="px-6 py-2 bg-gradient-to-r from-orange-600 to-orange-700 text-white font-semibold rounded-lg hover:from-orange-500 hover:to-orange-600 transition-all duration-200 shadow-lg disabled:opacity-50 flex items-center h-[42px]"
+                >
                 {isRecalibrating ? (
                   <svg className="w-5 h-5 animate-spin mx-auto text-white" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -272,6 +302,7 @@ const ResultsModal: React.FC<ResultsModalProps> = ({
                   "Recalibrate"
                 )}
               </button>
+            </div>
             </div>
             <p className="text-xs text-gray-500 mt-2">Update road dimensions to instantly recalculate speed metrics and reports.</p>
           </div>

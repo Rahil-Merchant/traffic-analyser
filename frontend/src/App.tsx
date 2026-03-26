@@ -54,7 +54,7 @@ function App() {
   const [roadLengthMeters, setRoadLengthMeters] = useState<number | ''>('');
   const [lengthSkewFactor, setLengthSkewFactor] = useState<number | ''>(1);
   const [widthSkewFactor, setWidthSkewFactor] = useState<number | ''>(1);
-  const [speedLimitKmh, setSpeedLimitKmh] = useState<number | ''>(60);
+  const [speedLimitKmh, setSpeedLimitKmh] = useState<number | ''>(100);
   const [nightHoursStart, setNightHoursStart] = useState<string>('18:00');
   const [nightHoursEnd, setNightHoursEnd] = useState<string>('06:00');
 
@@ -203,8 +203,8 @@ function App() {
       preview_image_height: imageDimensions.height,
       // Speed Calibration - Perspective Transform
       perspective_corners: perspectiveCorners,
-      road_width_meters: typeof roadWidthMeters === 'number' ? roadWidthMeters * (typeof widthSkewFactor === 'number' ? widthSkewFactor : 1) : null,
-      road_length_meters: typeof roadLengthMeters === 'number' ? roadLengthMeters * (typeof lengthSkewFactor === 'number' ? lengthSkewFactor : 1) : null,
+      road_width_meters: typeof roadWidthMeters === 'number' ? roadWidthMeters : null,
+      road_length_meters: typeof roadLengthMeters === 'number' ? roadLengthMeters : null,
       length_skew_factor: lengthSkewFactor || 1,
       width_skew_factor: widthSkewFactor || 1,
       speedLimitKmh: speedLimitKmh || null,
@@ -236,9 +236,11 @@ function App() {
     }
   };
 
-  const handleRecalibrate = async (newWidth: number, newLength: number) => {
+  const handleRecalibrate = async (newWidth: number, newLength: number, newLengthSkew?: number, newWidthSkew?: number) => {
     setRoadWidthMeters(newWidth);
     setRoadLengthMeters(newLength);
+    if (typeof newLengthSkew === 'number') setLengthSkewFactor(newLengthSkew);
+    if (typeof newWidthSkew === 'number') setWidthSkewFactor(newWidthSkew);
     
     const { date, time } = formatTimestampForBackend(selectedTimestamp);
 
@@ -269,10 +271,10 @@ function App() {
       preview_image_width: imageDimensions.width,
       preview_image_height: imageDimensions.height,
       perspective_corners: perspectiveCorners,
-      road_width_meters: newWidth * (typeof widthSkewFactor === 'number' ? widthSkewFactor : 1),
-      road_length_meters: newLength * (typeof lengthSkewFactor === 'number' ? lengthSkewFactor : 1),
-      length_skew_factor: lengthSkewFactor || 1,
-      width_skew_factor: widthSkewFactor || 1,
+      road_width_meters: newWidth,
+      road_length_meters: newLength,
+      length_skew_factor: typeof newLengthSkew === 'number' ? newLengthSkew : (lengthSkewFactor || 1),
+      width_skew_factor: typeof newWidthSkew === 'number' ? newWidthSkew : (widthSkewFactor || 1),
       speedLimitKmh: speedLimitKmh || null,
       night_hours_start: nightHoursStart || null,
       night_hours_end: nightHoursEnd || null,
@@ -348,7 +350,7 @@ function App() {
     setPrimaryDirection(null);
     setRoadWidthMeters('');
     setRoadLengthMeters('');
-    setSpeedLimitKmh(60);
+    setSpeedLimitKmh(100);
     setNightHoursStart('18:00');
     setNightHoursEnd('06:00');
     setStatusText("[CLEARED] All zones and settings removed • Ready for new configuration");
@@ -536,6 +538,8 @@ function App() {
         onRecalibrate={handleRecalibrate}
         initialRoadWidth={typeof roadWidthMeters === 'number' ? roadWidthMeters : undefined}
         initialRoadLength={typeof roadLengthMeters === 'number' ? roadLengthMeters : undefined}
+        initialLengthSkew={typeof lengthSkewFactor === 'number' ? lengthSkewFactor : undefined}
+        initialWidthSkew={typeof widthSkewFactor === 'number' ? widthSkewFactor : undefined}
         canRecalibrate={!!polygons['road']}
       />
     </div>

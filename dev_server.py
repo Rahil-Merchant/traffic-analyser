@@ -222,7 +222,13 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
     try:
         old_length = processor.road_length_meters
         new_length = config.road_length_meters
-        scale_factor = (new_length / old_length) if (old_length and old_length > 0 and new_length) else 1.0
+        old_skew = processor.length_skew_factor if processor.length_skew_factor else 1.0
+        new_skew = config.length_skew_factor if config.length_skew_factor else 1.0
+        
+        old_eff_length = old_length * old_skew if old_length else None
+        new_eff_length = new_length * new_skew if new_length else None
+        
+        scale_factor = (new_eff_length / old_eff_length) if (old_eff_length and old_eff_length > 0 and new_eff_length) else 1.0
 
         all_paths = processor.finalized_paths_store.get_all()
         for path in all_paths:

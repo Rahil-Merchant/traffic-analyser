@@ -28,7 +28,7 @@ interface ControlsPanelProps {
   hasPreviousResults?: boolean;
   onReopenResults?: () => void;
   canRecalibrate?: boolean;
-  onRecalibrate?: (width: number, length: number) => Promise<void>;
+  onRecalibrate?: (width: number, length: number, lengthSkew?: number, widthSkew?: number) => Promise<void>;
 }
 
 const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
@@ -277,7 +277,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                   value={speedLimitKmh}
                   onChange={e => onSpeedLimitChange(e.target.value ? parseFloat(e.target.value) : '')}
                   className="w-full bg-gray-800/70 border border-gray-600/50 rounded-md p-1.5 text-white text-xs focus:ring-1 focus:ring-blue-500"
-                  placeholder="e.g. 60"
+                  placeholder="e.g. 100"
                 />
               </div>
 
@@ -307,7 +307,12 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                   onClick={async () => {
                     if (typeof roadWidthMeters === 'number' && typeof roadLengthMeters === 'number') {
                       setIsRecalibrating(true);
-                      await onRecalibrate(roadWidthMeters, roadLengthMeters);
+                      await onRecalibrate(
+                        roadWidthMeters, 
+                        roadLengthMeters, 
+                        typeof lengthSkewFactor === 'number' ? lengthSkewFactor : undefined, 
+                        typeof widthSkewFactor === 'number' ? widthSkewFactor : undefined
+                      );
                       setIsRecalibrating(false);
                     }
                   }}
