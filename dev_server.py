@@ -241,6 +241,9 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
         processor.road_width_meters = config.road_width_meters
         processor.length_skew_factor = config.length_skew_factor
         processor.width_skew_factor = config.width_skew_factor
+        processor.speed_limit_kmh = config.speed_limit_kmh
+        processor.night_hours_start = config.night_hours_start
+        processor.night_hours_end = config.night_hours_end
 
         time_str = str(config.start_time)
         time_part, ms_part = (time_str[:6], time_str[6:]) if len(time_str) > 6 else (time_str, "0")
