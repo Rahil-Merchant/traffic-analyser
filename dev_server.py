@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
 from config import SERVER_PORT
-from core.utils import setup_torch_global_settings, setup_thread_affinity, compute_speed_from_trajectory
+from core.utils import setup_torch_global_settings, setup_thread_affinity
+from core.perspective_transform import PerspectiveTransformer
 from core.video_processor import VideoProcessor
 import signal
 import atexit
@@ -220,23 +221,28 @@ async def run_analysis(background_tasks: BackgroundTasks, config: AnalysisConfig
 async def recalibrate_speed(config: RecalibrateConfigPayload):
     print("Recalibrating speeds with new parameters...")
     try:
-        old_length = processor.road_length_meters
-        new_length = config.road_length_meters
-        old_skew = processor.length_skew_factor if processor.length_skew_factor else 1.0
-        new_skew = config.length_skew_factor if config.length_skew_factor else 1.0
-        
-        old_eff_length = old_length * old_skew if old_length else None
-        new_eff_length = new_length * new_skew if new_length else None
-        
-        scale_factor = (new_eff_length / old_eff_length) if (old_eff_length and old_eff_length > 0 and new_eff_length) else 1.0
+        # Rebuild the transformer with the new calibration and recompute each
+        # stored trajectory exactly, instead of linearly rescaling old speeds.
+        corners = None
+        if config.perspective_corners and len(config.perspective_corners) == 4:
+            corners = processor._scale_polygons_to_processing_coordinates(
+                {'corners': config.perspective_corners},
+                config.preview_image_width, config.preview_image_height
+            ).get('corners')
+        elif processor.perspective_transformer is not None:
+            corners = processor.perspective_transformer._raw_corners.tolist()
 
-        all_paths = processor.finalized_paths_store.get_all()
-        for path in all_paths:
-            old_speed = path.get('average_speed_kmh')
-            if old_speed is not None:
-                new_speed = round(old_speed * scale_factor, 1)
-                processor.finalized_paths_store.update_speed(path['id'], new_speed)
-        
+        if corners and config.road_width_meters and config.road_length_meters:
+            processor.perspective_transformer = PerspectiveTransformer(
+                corners,
+                config.road_width_meters * (config.width_skew_factor or 1.0),
+                config.road_length_meters * (config.length_skew_factor or 1.0)
+            )
+            for path in processor.finalized_paths_store.get_all():
+                if path['trajectory_data']:
+                    new_speed = processor._compute_average_speed_kmh(path['trajectory_data'], vehicle_type=path['type'])
+                    processor.finalized_paths_store.update_speed(path['rowid'], new_speed)
+
         processor.road_length_meters = config.road_length_meters
         processor.road_width_meters = config.road_width_meters
         processor.length_skew_factor = config.length_skew_factor

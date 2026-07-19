@@ -78,7 +78,7 @@ class FinalizedPathsStore:
 
     def get_all(self):
         cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM finalized_paths')
+        cursor.execute('SELECT *, rowid FROM finalized_paths')
         rows = cursor.fetchall()
         results = []
         for row in rows:
@@ -105,13 +105,14 @@ class FinalizedPathsStore:
                 'time_in_intersection': row[6],
                 'status': row[7],
                 'average_speed_kmh': speed_val,
-                'trajectory_data': trajectory_data
+                'trajectory_data': trajectory_data,
+                'rowid': row[10]
             })
         return results
 
-    def update_speed(self, path_id, new_speed):
+    def update_speed(self, rowid, new_speed):
         cursor = self.conn.cursor()
-        cursor.execute('UPDATE finalized_paths SET average_speed_kmh = ? WHERE id = ?', (new_speed, path_id))
+        cursor.execute('UPDATE finalized_paths SET average_speed_kmh = ? WHERE rowid = ?', (new_speed, rowid))
         self.conn.commit()
 
     def count_by_status(self, status):

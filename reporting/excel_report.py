@@ -136,7 +136,7 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     'Entry Direction': entry_dir_disp, 'Exit Direction': exit_dir_disp,
                     'Entry Time': entry_time_str, 'Exit Time': exit_time_str,
                     'Time in Intersection (s)': round(t_in_int, 2) if t_in_int is not None else 'N/A',
-                    'Average Speed (km/h)': path.get('average_speed_kmh', 'N/A') if path.get('average_speed_kmh') is not None else 'N/A'
+                    'Speed (km/h)': path.get('average_speed_kmh') if path.get('average_speed_kmh') is not None else ''
                 })
                 # Data for other sheets (use raw keys for direction map lookup)
                 valid_paths_structured.append({
@@ -193,9 +193,15 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
 
             # --- Sheet: Vehicle Logs ---
             if not df_log_summary.empty:
-                 log_cols = ['Vehicle Tracker ID', 'Object ID', 'Object Name', 'Entry Direction', 'Exit Direction', 'Entry Time', 'Exit Time', 'Time in Intersection (s)']
+                 log_cols = ['Vehicle Tracker ID', 'Object ID', 'Object Name', 'Entry Direction', 'Exit Direction', 'Entry Time', 'Exit Time', 'Time in Intersection (s)', 'Speed (km/h)']
                  df_logs = df_log_summary[[col for col in log_cols if col in df_log_summary.columns]]
                  df_logs.to_excel(writer, sheet_name='Vehicle Logs', index=False)
+                 speeds = [s for s in df_logs['Speed (km/h)'] if isinstance(s, (int, float))]
+                 logs_ws = writer.sheets['Vehicle Logs']
+                 footer_row = len(df_logs) + 1
+                 logs_ws.write(footer_row, 7, "AVERAGE", workbook.add_format({'bold': True}))
+                 if speeds:
+                     logs_ws.write(footer_row, 8, round(float(np.mean(speeds)), 1))
                  logger.debug(f"Writing 'Vehicle Logs' sheet ({len(df_logs)} rows).")
             else: logger.debug("No data for 'Vehicle Logs' sheet.")
 
@@ -621,94 +627,67 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
                     return False
 
             dir1_speeds = []; dir2_speeds = []
-            dir1_light = []; dir1_heavy = []; dir1_night = []
-            dir2_light = []; dir2_heavy = []; dir2_night = []
-            
+            dir1_night = []; dir2_night = []
+            class_speeds = {v: ([], []) for v in VEHICLE_ID_MAP}  # per class: ([dir1], [dir2])
+
             for path in completed_paths_data:
                 if path.get('status') != 'exited' or not path.get('exit_time'): continue
                 spd = path.get('average_speed_kmh')
                 if spd is None: continue
-                
+
                 ex_dir = path.get('exit_direction', '').lower()
                 v_type = path.get('type')
-                ex_time = path['exit_time']
-                
-                is_l = v_type in BIDIRECTIONAL_REPORT_CATEGORIES.get('Light', [])
-                n_flag = is_night(ex_time)
-                
-                if ex_dir == primary_direction:
-                    dir1_speeds.append(spd)
-                    if is_l: dir1_light.append(spd)
-                    else: dir1_heavy.append(spd)
-                    if n_flag: dir1_night.append(spd)
-                elif ex_dir == secondary_direction:
-                    dir2_speeds.append(spd)
-                    if is_l: dir2_light.append(spd)
-                    else: dir2_heavy.append(spd)
-                    if n_flag: dir2_night.append(spd)
-                    
+                n_flag = is_night(path['exit_time'])
+
+                if ex_dir == primary_direction: dir_idx = 0
+                elif ex_dir == secondary_direction: dir_idx = 1
+                else: continue
+
+                (dir1_speeds, dir2_speeds)[dir_idx].append(spd)
+                if v_type in class_speeds: class_speeds[v_type][dir_idx].append(spd)
+                if n_flag: (dir1_night, dir2_night)[dir_idx].append(spd)
+
             tot_speeds = dir1_speeds + dir2_speeds
-            tot_light = dir1_light + dir2_light
-            tot_heavy = dir1_heavy + dir2_heavy
-            tot_night = dir1_night + dir2_night
-            
-            def calc_stats(s_list, l_list, h_list, n_list):
-                if not s_list: return ["", "", "", "", "", "", "", ""]
-                avg_spd = np.mean(s_list)
-                avg_l = np.mean(l_list) if l_list else ""
-                avg_h = np.mean(h_list) if h_list else ""
-                avg_n = np.mean(n_list) if n_list else ""
-                p15 = np.percentile(s_list, 15)
-                p85 = np.percentile(s_list, 85)
-                
-                pct_ex = ""
-                if speed_limit_kmh:
-                    try:
-                        lim = float(speed_limit_kmh)
-                        ex_count = sum(1 for s in s_list if s > lim)
-                        pct_ex = (ex_count / len(s_list)) * 100
-                    except: pass
-                
-                lim_out = speed_limit_kmh if speed_limit_kmh else ""
-                return [lim_out, avg_spd, avg_l, avg_h, avg_n, p15, p85, pct_ex]
-                
-            st1 = calc_stats(dir1_speeds, dir1_light, dir1_heavy, dir1_night)
-            st2 = calc_stats(dir2_speeds, dir2_light, dir2_heavy, dir2_night)
-            stTot = calc_stats(tot_speeds, tot_light, tot_heavy, tot_night)
-            
-            row_lbls = [
-                "Speed limit (km/hr)", "Average speed (km/hr)",
-                "Average speed - light vehicles (km/hr)", "Average speed - heavy vehicles (km/hr)",
-                "Average night speed (km/hr)", "15th percentile speed (km/hr)",
-                "85th percentile speed (km/hr)", "Percentage vehicles in excess of speed limit"
+            dir_cols = [dir1_speeds, dir2_speeds, tot_speeds]
+
+            def avg(lst): return np.mean(lst) if lst else ""
+            def pctile(lst, p): return np.percentile(lst, p) if lst else ""
+            def pct_excess(lst):
+                if not lst or not speed_limit_kmh: return ""
+                try: lim = float(speed_limit_kmh)
+                except: return ""
+                return sum(1 for s in lst if s > lim) / len(lst) * 100
+
+            lim_out = speed_limit_kmh if speed_limit_kmh else ""
+            stat_rows = [("Speed limit (km/hr)", lim_out, "", ""),
+                         ("Average speed (km/hr)", *[avg(c) for c in dir_cols])]
+            for v_type, (d1, d2) in class_speeds.items():
+                stat_rows.append((f"Average speed - {v_type} (km/hr)", avg(d1), avg(d2), avg(d1 + d2)))
+            stat_rows += [
+                ("Average night speed (km/hr)", avg(dir1_night), avg(dir2_night), avg(dir1_night + dir2_night)),
+                ("15th percentile speed (km/hr)", *[pctile(c, 15) for c in dir_cols]),
+                ("85th percentile speed (km/hr)", *[pctile(c, 85) for c in dir_cols]),
+                ("Percentage vehicles in excess of speed limit", *[pct_excess(c) for c in dir_cols]),
             ]
-            
+
             dir1_display_name = get_display_direction(primary_direction)
             dir2_display_name = get_display_direction(secondary_direction)
 
             ws_speed.write(0, 1, f"To {dir1_display_name}", header_format)
             ws_speed.write(0, 2, f"To {dir2_display_name}", header_format)
             ws_speed.write(0, 3, "Total", header_format)
-            
+
             speed_data_format = workbook.add_format({'border': 1, 'align': 'center'})
-            for r, lbl in enumerate(row_lbls):
+            for r, (lbl, v1, v2, v3) in enumerate(stat_rows):
                 ws_speed.write(r + 1, 0, lbl)
-                v1, v2, v3 = st1[r], st2[r], stTot[r]
-                
                 if r == 0:
                     # Speed Limit row: merge columns 1 to 3
-                    val = v1 if v1 != "" else ""
-                    if val != "": 
-                        ws_speed.merge_range(r + 1, 1, r + 1, 3, f"{float(val):.2f}", speed_data_format)
-                    else:
-                        ws_speed.merge_range(r + 1, 1, r + 1, 3, "", speed_data_format)
+                    merged = f"{float(v1):.2f}" if v1 != "" else ""
+                    ws_speed.merge_range(r + 1, 1, r + 1, 3, merged, speed_data_format)
                 else:
-                    if isinstance(v1, float) and np.isnan(v1): v1 = ""
-                    if isinstance(v2, float) and np.isnan(v2): v2 = ""
-                    if isinstance(v3, float) and np.isnan(v3): v3 = ""
-                    if v1 != "": ws_speed.write(r + 1, 1, f"{float(v1):.2f}", speed_data_format)
-                    if v2 != "": ws_speed.write(r + 1, 2, f"{float(v2):.2f}", speed_data_format)
-                    if v3 != "": ws_speed.write(r + 1, 3, f"{float(v3):.2f}", speed_data_format)
+                    for c, v in enumerate((v1, v2, v3), start=1):
+                        if isinstance(v, float) and np.isnan(v): v = ""
+                        if v != "": ws_speed.write(r + 1, c, f"{float(v):.2f}", speed_data_format)
                 
             ws_speed.set_column(0, 0, 45)
             ws_speed.set_column(1, 3, 15)

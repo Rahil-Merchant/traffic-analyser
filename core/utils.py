@@ -3,11 +3,9 @@ import os
 import torch
 import gc
 from datetime import datetime
-from config import VALID_MOVEMENTS, MIN_SPEED_POSITIONS, MIN_SPEED_DURATION_SEC, JUMP_THRESHOLD_MULTIPLIER, MAX_PLAUSIBLE_SPEED_KMH
+from config import VALID_MOVEMENTS
 import psutil
 from loguru import logger
-import numpy as np
-import cv2
 
 def format_timestamp(dt: datetime):
     """Convert datetime to date (YYMMDD) and time (HHMMSSmmm) strings."""
@@ -103,66 +101,3 @@ def cleanup_memory():
         torch.cuda.empty_cache()
     logger.debug("Performed memory cleanup (GC + CUDA Cache)")
 
-def compute_speed_from_trajectory(trajectory_data, perspective_transformer):
-    """Compute average speed from stored trajectory using perspective transform.
-
-    Parameters
-    ----------
-    trajectory_data : list of ([x, y], time_sec) tuples
-    perspective_transformer : PerspectiveTransformer instance
-    """
-    if perspective_transformer is None or not trajectory_data or len(trajectory_data) < MIN_SPEED_POSITIONS:
-        return None
-
-    total_dt = trajectory_data[-1][1] - trajectory_data[0][1]
-    if total_dt < MIN_SPEED_DURATION_SEC:
-        return None
-
-    # Transform each position to metric coordinates via perspective transform
-    transformed = []
-    for pos, t in trajectory_data:
-        try:
-            mx, my = perspective_transformer.transform_point(float(pos[0]), float(pos[1]))
-            transformed.append((mx, my, t))
-        except Exception:
-            continue
-
-    if len(transformed) < 2:
-        return None
-
-    # Compute per-segment Euclidean distances in metric space
-    seg_distances = []
-    seg_durations = []
-    for i in range(len(transformed) - 1):
-        dx = transformed[i + 1][0] - transformed[i][0]
-        dy = transformed[i + 1][1] - transformed[i][1]
-        ds = np.sqrt(dx**2 + dy**2)
-        dur = transformed[i + 1][2] - transformed[i][2]
-        if dur > 0:
-            seg_distances.append(ds)
-            seg_durations.append(dur)
-
-    if not seg_distances:
-        return None
-
-    # Jump filtering: remove outlier segments
-    median_seg = np.median(seg_distances)
-    threshold = max(median_seg * JUMP_THRESHOLD_MULTIPLIER, 0.5)
-    clean_total_meters = 0.0
-    clean_total_time = 0.0
-    per_segment_speeds = []
-    for dist, dur in zip(seg_distances, seg_durations):
-        if dist <= threshold:
-            clean_total_meters += dist
-            clean_total_time += dur
-            per_segment_speeds.append((dist / dur) * 3.6)  # km/h
-
-    if clean_total_meters < 1.0 or clean_total_time < 0.1:
-        return 0.0
-
-    # Use median of per-segment speeds for robustness against outliers
-    speed = float(np.median(per_segment_speeds))
-    if speed > MAX_PLAUSIBLE_SPEED_KMH:
-        return None
-
-    return round(speed, 1)

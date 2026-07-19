@@ -1186,37 +1186,35 @@ class VideoProcessor:
                 valid_positions.append((pos, t))
 
         # 3. Ensure we have enough valid points inside the zone to make a calculation
-        if len(valid_positions) < 2:
+        if len(valid_positions) < MIN_SPEED_POSITIONS:
             logger.info("[Speed Calculation] Not enough tracking points inside the reliable zone.")
             return None
 
-        # 4. Get the first and last points INSIDE the zone
-        first_pos, first_time = valid_positions[0]
-        last_pos, last_time = valid_positions[-1]
-
-        total_time_sec = last_time - first_time
-        if total_time_sec < MIN_SPEED_DURATION_SEC:
-            logger.info(f"[Speed Calculation] Time in zone too short: {total_time_sec:.2f}s")
-            return None
-
         try:
-            # 5. Transform these specific pixel coordinates to metric (meters) coordinates
-            x1, y1 = self.perspective_transformer.transform_point(float(first_pos[0]), float(first_pos[1]))
-            x2, y2 = self.perspective_transformer.transform_point(float(last_pos[0]), float(last_pos[1]))
+            # 4. Transform all valid pixel coordinates to metric (meters) coordinates
+            metric = self.perspective_transformer.transform_batch([pos for pos, _ in valid_positions])
         except Exception as e:
             logger.warning(f"[Speed Calculation] Perspective transform failed: {e}")
             return None
 
-        # 6. Calculate the straight-line distance covered in meters
-        total_distance_meters = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        # 5. Per-segment speeds; discard jump outliers (track ID switches, detection noise)
+        dists = np.linalg.norm(np.diff(metric.astype(np.float64), axis=0), axis=1)
+        dts = np.maximum(np.diff([t for _, t in valid_positions]), 1e-9)
+        seg_speeds = dists / dts
+        keep = seg_speeds <= np.median(seg_speeds) * JUMP_THRESHOLD_MULTIPLIER
+        total_distance_meters = float(dists[keep].sum())
+        total_time_sec = float(dts[keep].sum())
+
+        if total_time_sec < MIN_SPEED_DURATION_SEC:
+            logger.info(f"[Speed Calculation] Time in zone too short: {total_time_sec:.2f}s")
+            return None
 
         # Ignore tiny movements (e.g., vehicle clipped the corner of the zone)
         if total_distance_meters < 1.0:
             return None
 
-        # 7. Calculate final speed: v = d / t
-        speed_ms = total_distance_meters / total_time_sec
-        speed_kmh = speed_ms * 3.6
+        # 6. Calculate final speed: v = d / t
+        speed_kmh = total_distance_meters / total_time_sec * 3.6
 
         if speed_kmh > MAX_PLAUSIBLE_SPEED_KMH:
             logger.info(f"[Speed Calculation] Speed exceeded max plausible limit: {speed_kmh:.1f} km/h")
