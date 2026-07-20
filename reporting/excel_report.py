@@ -628,7 +628,8 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
 
             dir1_speeds = []; dir2_speeds = []
             dir1_night = []; dir2_night = []
-            class_speeds = {v: ([], []) for v in VEHICLE_ID_MAP}  # per class: ([dir1], [dir2])
+            # Per reporting category (from config), in sheet row order: ([dir1], [dir2])
+            class_speeds = {c: ([], []) for c in REPORT_COLUMN_ORDER}
 
             for path in completed_paths_data:
                 if path.get('status') != 'exited' or not path.get('exit_time'): continue
@@ -644,7 +645,8 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
                 else: continue
 
                 (dir1_speeds, dir2_speeds)[dir_idx].append(spd)
-                if v_type in class_speeds: class_speeds[v_type][dir_idx].append(spd)
+                cat = next((c for c in REPORT_COLUMN_ORDER if v_type in BIDIRECTIONAL_REPORT_CATEGORIES[c]), None)
+                if cat: class_speeds[cat][dir_idx].append(spd)
                 if n_flag: (dir1_night, dir2_night)[dir_idx].append(spd)
 
             tot_speeds = dir1_speeds + dir2_speeds
@@ -661,8 +663,8 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             lim_out = speed_limit_kmh if speed_limit_kmh else ""
             stat_rows = [("Speed limit (km/hr)", lim_out, "", ""),
                          ("Average speed (km/hr)", *[avg(c) for c in dir_cols])]
-            for v_type, (d1, d2) in class_speeds.items():
-                stat_rows.append((f"Average speed - {v_type} (km/hr)", avg(d1), avg(d2), avg(d1 + d2)))
+            for cat, (d1, d2) in class_speeds.items():
+                stat_rows.append((f"Average speed - {cat} (km/hr)", avg(d1), avg(d2), avg(d1 + d2)))
             stat_rows += [
                 ("Average night speed (km/hr)", avg(dir1_night), avg(dir2_night), avg(dir1_night + dir2_night)),
                 ("15th percentile speed (km/hr)", *[pctile(c, 15) for c in dir_cols]),
