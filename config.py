@@ -56,8 +56,25 @@ MOTION_INFERENCE_MAX_PROJECTION = 0.5
 # --- Speed Estimation ---
 MIN_SPEED_POSITIONS = 3
 MIN_SPEED_DURATION_SEC = 0.4
-MAX_PLAUSIBLE_SPEED_KMH = 150.0
+MAX_PLAUSIBLE_SPEED_KMH = 250.0  # Ceiling for classes with no specific limit below
 JUMP_THRESHOLD_MULTIPLIER = 3.0
+SPEED_OUTLIER_MEDIAN_WINDOW = 5  # Samples median-filtered to drop isolated bad detections
+SPEED_SMOOTHING_WINDOW = 9  # Samples averaged to stop detection jitter inflating distance
+
+# Per-class ceiling a measurement is clamped to (never dropped). Realistic maxima, NOT
+# enforcement thresholds: lowering toward the posted limit hides genuine speeding vehicles.
+VEHICLE_MAX_SPEED_KMH = {
+    'Light Vehicle': 200.0, 'Motorcycle': 220.0, 'Minibus Taxi': 160.0,
+    'Short Truck': 150.0, 'Medium Truck': 140.0, 'Long Truck': 130.0,
+    'Bus': 140.0, 'Pedestrian': 20.0, 'Cyclist': 70.0,
+    'Animal drawn vehicle': 40.0, 'Person with wheel barrow': 15.0,
+    'default': 180.0
+}
+
+# Low-confidence readings are also clamped to this multiple of their own median segment speed
+SPEED_LOWCONF_MEDIAN_MULTIPLIER = 2.0
+SPEED_CONFIDENCE_MIN_POSITIONS = 10       # below this point count, a reading is low-confidence
+SPEED_CONFIDENCE_MIN_DURATION_SEC = 1.0   # below this zone time, a reading is low-confidence
 DEBUG_SPEED = False
 
 # #*############## Video 1 #################

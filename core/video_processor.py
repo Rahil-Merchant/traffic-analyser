@@ -32,8 +32,10 @@ from config import (
     BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH, CROP_MODE,
     USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG, PATCHWISE_USE_BATCH_PROCESSING,
     MOTION_INFERENCE_MIN_FRAMES, MOTION_INFERENCE_MAX_PROJECTION, MOTION_INFERENCE_MIN_DIST,
-    MIN_SPEED_POSITIONS, MIN_SPEED_DURATION_SEC, MAX_PLAUSIBLE_SPEED_KMH,
-    JUMP_THRESHOLD_MULTIPLIER, DEBUG_SPEED, DEBUG_MODE, BASE_OUTPUT_DIR
+    MIN_SPEED_POSITIONS, MIN_SPEED_DURATION_SEC,
+    JUMP_THRESHOLD_MULTIPLIER, SPEED_SMOOTHING_WINDOW, SPEED_OUTLIER_MEDIAN_WINDOW,
+    VEHICLE_MAX_SPEED_KMH, SPEED_LOWCONF_MEDIAN_MULTIPLIER, SPEED_CONFIDENCE_MIN_POSITIONS,
+    SPEED_CONFIDENCE_MIN_DURATION_SEC, DEBUG_SPEED, DEBUG_MODE, BASE_OUTPUT_DIR
 )
 from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory
@@ -46,6 +48,26 @@ from reporting.excel_report import create_excel_report, create_bidirectional_lin
 from core.converters import convert_dav_to_mp4_internal
 from video_reader import PyVideoReader
 from core.finalized_paths_store import FinalizedPathsStore
+
+
+def _odd_window(limit, n):
+    """Largest odd filter window <= limit that fits n samples, or 0 if too few samples."""
+    w = min(limit, n)
+    w -= 1 - w % 2  # an even window would misalign the filtered points against their times
+    return w if w >= 3 else 0
+
+
+def _endpoint_speed(pts, times, max_speed_kmh):
+    """Endpoint-only speed for tracks too sparse for the full pipeline. Over-ceiling here means
+    an unreliable measurement, not a fast vehicle, so it is left unmeasured rather than clamped."""
+    if len(pts) < 2:
+        return None
+    dt = float(times[-1] - times[0])
+    if dt <= 0:
+        return None
+    speed_kmh = float(np.linalg.norm(pts[-1] - pts[0])) / dt * 3.6
+    return round(speed_kmh, 1) if 0 < speed_kmh <= max_speed_kmh else None
+
 
 class VideoProcessor:
     @profile
@@ -304,6 +326,8 @@ class VideoProcessor:
             self.writer_thread.start()
         
         frame_interval = max(1, round(original_fps / self.target_fps)) if self.target_fps > 0 and original_fps > 0 else 1
+        # Rate frames are actually sampled at, which is >= target_fps after integer decimation
+        self.effective_fps = original_fps / frame_interval if original_fps > 0 else self.target_fps
         total_target_frames = total_frames // frame_interval if total_frames > 0 else 0
         if self.perf: self.perf.start_processing(total_target_frames)
         
@@ -974,7 +998,7 @@ class VideoProcessor:
                     for zone_dir in zone_keys:
                         if self.zone_tracker._check_point_in_zone(tuple(bottom_center), self.zone_tracker.zones[zone_dir]):
                             timeout = VEHICLE_TIMEOUTS.get(vehicle_type, VEHICLE_TIMEOUTS['default'])
-                            pos_maxlen = int(timeout * self.target_fps)
+                            pos_maxlen = int(timeout * getattr(self, 'effective_fps', self.target_fps))
                             self.active_track_data[track_id_str] = {
                                                             'id': track_id_str,
                                                             'entry_direction': zone_dir,
@@ -984,7 +1008,7 @@ class VideoProcessor:
                                                             'last_pos_zone': bottom_center,
                                                             'last_seen_frame': current_frame_num,
                                                             'status': 'active',
-                                                            'positions': deque(maxlen=pos_maxlen),
+                                                            'positions': deque([(bottom_center, current_frame_time_sec)], maxlen=pos_maxlen),
                                                             'frames_seen': 0,
                                                             'confirmed': False
                                                         }
@@ -1174,53 +1198,81 @@ class VideoProcessor:
             return None
         if self.perspective_transformer is None:
             return None
-            
-        # 1. Get the perspective polygon (the reliable road zone) in pixel coordinates
+
+        max_speed_kmh = VEHICLE_MAX_SPEED_KMH.get(vehicle_type, VEHICLE_MAX_SPEED_KMH['default'])
+
+        # Keep only points inside the calibration polygon (the reliable zone)
         poly = self.perspective_transformer._raw_corners.astype(np.int32)
-
-        # 2. Filter the vehicle's history: keep ONLY points inside the polygon
-        valid_positions = []
-        for pos, t in positions_with_times:
-            # cv2.pointPolygonTest returns >= 0 if the point is inside or on the edge of the polygon
-            if cv2.pointPolygonTest(poly, (float(pos[0]), float(pos[1])), False) >= 0:
-                valid_positions.append((pos, t))
-
-        # 3. Ensure we have enough valid points inside the zone to make a calculation
-        if len(valid_positions) < MIN_SPEED_POSITIONS:
-            logger.info("[Speed Calculation] Not enough tracking points inside the reliable zone.")
-            return None
+        valid_positions = [(pos, t) for pos, t in positions_with_times
+                           if cv2.pointPolygonTest(poly, (float(pos[0]), float(pos[1])), False) >= 0]
 
         try:
-            # 4. Transform all valid pixel coordinates to metric (meters) coordinates
             metric = self.perspective_transformer.transform_batch([pos for pos, _ in valid_positions])
         except Exception as e:
             logger.warning(f"[Speed Calculation] Perspective transform failed: {e}")
             return None
 
-        # 5. Per-segment speeds; discard jump outliers (track ID switches, detection noise)
-        dists = np.linalg.norm(np.diff(metric.astype(np.float64), axis=0), axis=1)
-        dts = np.maximum(np.diff([t for _, t in valid_positions]), 1e-9)
-        seg_speeds = dists / dts
-        keep = seg_speeds <= np.median(seg_speeds) * JUMP_THRESHOLD_MULTIPLIER
-        total_distance_meters = float(dists[keep].sum())
-        total_time_sec = float(dts[keep].sum())
+        # Too few points for the full pipeline: endpoint fallback
+        if len(valid_positions) < MIN_SPEED_POSITIONS:
+            return _endpoint_speed(metric.astype(np.float64),
+                                   [t for _, t in valid_positions], max_speed_kmh)
 
-        if total_time_sec < MIN_SPEED_DURATION_SEC:
-            logger.info(f"[Speed Calculation] Time in zone too short: {total_time_sec:.2f}s")
+        metric = metric.astype(np.float64)
+        times = np.array([t for _, t in valid_positions], dtype=np.float64)
+
+        # Median filter before the split so isolated bad detections don't trigger a spurious cut
+        med_w = _odd_window(SPEED_OUTLIER_MEDIAN_WINDOW, len(metric))
+        if med_w:
+            pad = med_w // 2
+            padded = np.pad(metric, ((pad, pad), (0, 0)), mode='edge')
+            metric = np.array([np.median(padded[i:i + med_w], axis=0) for i in range(len(metric))])
+
+        # Split at any segment too fast to be real motion (ID switch), keep the longest clean run.
+        # The bound floors at the class ceiling so a stopped vehicle is not treated as an outlier.
+        seg_speeds = np.linalg.norm(np.diff(metric, axis=0), axis=1) / np.maximum(np.diff(times), 1e-9)
+        max_seg_speed = max(np.median(seg_speeds) * JUMP_THRESHOLD_MULTIPLIER, max_speed_kmh / 3.6)
+        runs = np.split(np.arange(len(metric)), np.flatnonzero(seg_speeds > max_seg_speed) + 1)
+        keep = max(runs, key=len)
+        if len(keep) < MIN_SPEED_POSITIONS:  # fragmented: endpoint fallback on the clean run
+            return _endpoint_speed(metric[keep], times[keep], max_speed_kmh)
+        metric, times = metric[keep], times[keep]
+        n_kept = len(keep)
+
+        if float(times[-1] - times[0]) < MIN_SPEED_DURATION_SEC:  # too brief: endpoint fallback
+            return _endpoint_speed(metric, times, max_speed_kmh)
+
+        # Smooth jitter out of the path. Window capped at half the samples so short tracks
+        # keep a usable baseline; distance and time both come from the smoothed span.
+        mean_w = _odd_window(min(SPEED_SMOOTHING_WINDOW, len(metric) // 2), len(metric))
+        if mean_w:
+            kernel = np.ones(mean_w) / mean_w
+            metric = np.column_stack([np.convolve(metric[:, i], kernel, mode='valid') for i in (0, 1)])
+            off = mean_w // 2
+            times = times[off:len(times) - off]
+
+        total_time_sec = float(times[-1] - times[0])
+        if total_time_sec <= 0:
             return None
+        low_conf = n_kept < SPEED_CONFIDENCE_MIN_POSITIONS or total_time_sec < SPEED_CONFIDENCE_MIN_DURATION_SEC
 
-        # Ignore tiny movements (e.g., vehicle clipped the corner of the zone)
-        if total_distance_meters < 1.0:
-            return None
-
-        # 6. Calculate final speed: v = d / t
+        # Jitter only ever adds path length, so summing segments biases short tracks high; a
+        # low-confidence track rarely turns, so its straight-line displacement is less biased.
+        if low_conf:
+            total_distance_meters = float(np.linalg.norm(metric[-1] - metric[0]))
+        else:
+            total_distance_meters = float(np.linalg.norm(np.diff(metric, axis=0), axis=1).sum())
         speed_kmh = total_distance_meters / total_time_sec * 3.6
 
-        if speed_kmh > MAX_PLAUSIBLE_SPEED_KMH:
-            logger.info(f"[Speed Calculation] Speed exceeded max plausible limit: {speed_kmh:.1f} km/h")
-            return None
+        # Clamp, never drop: class ceiling always, plus a robust per-vehicle bound for
+        # low-confidence readings. A near-zero median (stop-and-go) skips the second term.
+        cap_kmh = max_speed_kmh
+        if low_conf:
+            seg_kmh = np.linalg.norm(np.diff(metric, axis=0), axis=1) / np.maximum(np.diff(times), 1e-9) * 3.6
+            robust_kmh = SPEED_LOWCONF_MEDIAN_MULTIPLIER * float(np.median(seg_kmh))
+            if robust_kmh > 0:
+                cap_kmh = min(cap_kmh, robust_kmh)
 
-        return round(speed_kmh, 1)
+        return round(min(speed_kmh, cap_kmh), 1)
 
     @profile
     def _execute_single_model_inference(self, model_instance, input_tensor_chunk, stream_to_use=None):
