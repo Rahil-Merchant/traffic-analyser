@@ -140,6 +140,25 @@ def test_tracker_id_swap_between_opposite_cars_is_split_and_counted():
     assert sorted((e['entry_zone'], e['exit_zone']) for e in counts) == [('north', 'south'), ('south', 'north')]
 
 
+def test_swap_at_the_vanishing_point_is_split_by_the_zone_return():
+    # Far away both cars barely move in the image, so the motion check cannot see the reversal; the receding
+    # car's track continues on the oncoming car, which drives back into the south zone it never came from.
+    away = path(NEAR, FAR, 40) + path(FAR, FAR + np.array([-20.0, -12.0]), 30)
+    back = path(FAR + np.array([-20.0, -12.0]), FAR, 30) + path(FAR, NEAR, 40)
+    frames = [[(1, p, h, 'Light Vehicle')] for p, h in away + back]
+    events = run(make_counter(), frames)
+    assert sorted((e['entry_zone'], e['exit_zone']) for e in events) == [('north', 'south'), ('south', 'north')]
+
+
+def test_jitter_on_the_zone_boundary_does_not_split():
+    edge = np.array([330.0, 345.0])                    # straddles the gap between the two zones
+    rng = np.random.default_rng(1)
+    frames = [[(1, p, h, 'Light Vehicle')] for p, h in path(NEAR, edge, 30)]
+    frames += [[(1, edge + rng.normal(0, 6, 2), 40, 'Light Vehicle')] for _ in range(60)]
+    events = run(make_counter(), frames)
+    assert len(events) <= 1
+
+
 def test_class_comes_from_close_views_not_many_tiny_far_ones():
     # Oncoming car: a long approach far away (small boxes, misread as 'Bus'), then a few close frames
     pts = path(FAR + np.array([-30.0, -20.0]), FAR, 50) + path(FAR, NEAR, 20)

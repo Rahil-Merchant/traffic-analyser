@@ -99,6 +99,7 @@ DEFAULT_CONFIG = {
     # Duplicates
     'dup_iou': 0.6,                  # same-frame overlap that can make two tracks one vehicle
     'dup_frames': 3,                 # consecutive frames of overlap + common motion before two vehicles merge
+    'dup_count_gap_s': 0.5,          # two counted vehicles can only be one if counted this close in time
     'co_moving_cos': 0.7,            # min cosine between velocities of two boxes on one vehicle
     # Reversal split
     'reversal_window_s': 0.6,        # motion over the last window is compared with the window before it
@@ -106,19 +107,21 @@ DEFAULT_CONFIG = {
     'reversal_min_disp_h': 1.0,      # each window must travel at least this many box heights
     'reversal_cos': -0.5,            # directions this opposed mean two different vehicles
     'reversal_check_every_s': 0.25,
+    'return_min_back_h': 2.0,        # a return to the entry zone must come back this many box heights
     # Vehicle end, orphans
     'end_gap_s': 3.5,                # unseen this long -> vehicle ended (must exceed both stitch gaps)
     'orphan_min_travel_h': 1.5,      # orphan must travel this many box heights along the link...
     'orphan_min_frac': 0.10,         # ...and this fraction of the distance between the two zones
+    'orphan_facing_frac': 0.5,       # ...starting/ending in this share of the zone nearest the other zone
     'orphan_explain_radius_h': 3.0,  # a counted vehicle this close (box heights) explains an orphan
     'orphan_explain_window_s': 2.0,
     'keep_s': 15.0,                  # history kept after a vehicle ends (for orphan explanation)
     'velocity_window_s': 0.75,
     'max_positions': 2400,
     'track_history': 200,            # per-track observations kept for splitting vehicles
-    # Class votes: weight = confidence * min(box height, cap)^2, so close views dominate
+    # Class votes: weight = confidence * box height^power, so the closest views dominate
     'class_min_h': 12.0,             # boxes shorter than this (px) only vote if nothing larger was seen
-    'class_h_cap': 200.0,
+    'class_size_power': 4.0,         # the few closest views decide; far views are where the model guesses
     'class_edge_factor': 0.25,       # boxes cut off by the frame edge vote at this weight
 }
 
@@ -332,8 +335,7 @@ class VehicleCounter:
         return box[0] <= 1 or box[1] <= 1 or box[2] >= fw - 2 or box[3] >= fh - 2
 
     def _class_weight(self, box, score):
-        h = box[3] - box[1]
-        w = max(score, 0.01) * min(h, self.cfg['class_h_cap']) ** 2
+        w = max(score, 0.01) * max(box[3] - box[1], 1.0) ** self.cfg['class_size_power']
         return w * self.cfg['class_edge_factor'] if self._clipped(box) else w
 
     def _make_obs(self, tr, t):
@@ -403,15 +405,19 @@ class VehicleCounter:
         else:
             z = self._zone_at(np.array([[o[_X], o[_Y]]]))[0]
             visits = [(z, o[_T])] if z is not None else []
+        returned = False
         for zone, tz in visits:
             if not v.zones or v.zones[-1][0] != zone:
                 v.zones.append((zone, tz))
+                returned = returned or (len(v.zones) >= 3 and zone == v.zones[0][0])
         v.obs.append(o)
         while len(v.obs) > self.cfg['max_positions']:
             v.obs.popleft()
         v.vote(o, self.cfg['class_min_h'])
         v.last_t, v.last_box = o[_T], o[_BOX]
         seen[v.vid] = o[_BOX]
+        if returned:
+            self._check_zone_return(v, events)
         if not v.counted:
             self._try_crossing(v, events, seen)
 
@@ -602,6 +608,23 @@ class VehicleCounter:
             swapped = {o[_TID] for o in v.obs if o[_T] >= t_split}
         self._split(v, t_split, moved, swapped, events)
 
+    def _check_zone_return(self, v, events):
+        """A vehicle back in the zone it entered from, after reaching another zone, is two vehicles
+        (no U-turns between zones). This catches what the motion check cannot: near the vanishing
+        point a receding and an oncoming vehicle barely move in the image while one replaces the other.
+        It must come well back (box heights), so jitter on a zone boundary does not count."""
+        entry, other = v.zones[0][0], v.zones[1][0]
+        u = self.centroids[other] - self.centroids[entry]
+        u = u / max(float(np.linalg.norm(u)), 1e-9)
+        s = [o[_X] * u[0] + o[_Y] * u[1] for o in v.obs]
+        i_turn = int(np.argmax(s))
+        if s[i_turn] - s[-1] < self.cfg['return_min_back_h'] * v.obs[i_turn][_H]:
+            return
+        t_split = v.obs[i_turn][_T] + 1e-6
+        moved = {tid for tid, tj in v.track_joined.items() if tj >= t_split}
+        swapped = {o[_TID] for o in v.obs if o[_T] >= t_split} - moved
+        self._split(v, t_split, moved, swapped, events)
+
     def _split(self, v, t_split, moved, swapped, events):
         tids = moved | swapped
         take = [o for o in v.obs if o[_TID] in moved or (o[_TID] in swapped and o[_T] >= t_split)]
@@ -656,11 +679,24 @@ class VehicleCounter:
                     continue
                 live.add((a, b))
                 self._dup_streak[(a, b)] += 1
-                if self._dup_streak[(a, b)] >= self.cfg['dup_frames'] and not (va.counted and vb.counted):
+                if self._dup_streak[(a, b)] >= self.cfg['dup_frames']:
+                    if va.counted and vb.counted and not self._same_count(va, vb):
+                        continue                    # two separately counted vehicles (e.g. one following another)
                     older, younger = (va, vb) if va.first_t <= vb.first_t else (vb, va)
                     self._merge(younger, older)
         for k in [k for k in self._dup_streak if k not in live]:
             del self._dup_streak[k]
+
+    def _same_count(self, a, b):
+        """Two counted vehicles are one double-counted vehicle: same movement at the same moment, with boxes
+        overlapping through most of the time both were seen. Vehicles following each other overlap only
+        briefly far from the camera and are counted about a second apart."""
+        if a.count_move[:2] != b.count_move[:2] or (a.emitted and b.emitted) \
+                or abs(a.count_t - b.count_t) > self.cfg['dup_count_gap_s']:
+            return False
+        boxes = {o[_T]: o[_BOX] for o in a.obs}
+        common = [box_iou(boxes[o[_T]], o[_BOX]) >= 0.5 for o in b.obs if o[_T] in boxes]
+        return len(common) >= self.cfg['dup_frames'] and float(np.mean(common)) > 0.5
 
     def _merge(self, src, dst):
         """Fold vehicle src into dst (dst keeps its id; a count on either side carries over)."""
@@ -677,6 +713,8 @@ class VehicleCounter:
             dst.counted = dst.decided = True
             dst.count_t, dst.count_move, dst.emitted = src.count_t, src.count_move, src.emitted
             dst.zones = src.zones
+        elif src.counted:                           # both counted the same movement: keep one count
+            dst.emitted = dst.emitted or src.emitted
         elif not dst.counted:
             zones = []
             for zone, tz in sorted(dst.zones + src.zones, key=lambda z: z[1]):
@@ -722,6 +760,12 @@ class VehicleCounter:
         travel = float((v.last_xy - np.array(v.obs[0][_X:_Y + 1])) @ u)
         h = max(v.ref_height(), 1.0)
         if abs(travel) / h < self.cfg['orphan_min_travel_h'] or abs(travel) / link_len < self.cfg['orphan_min_frac']:
+            return None
+        # It came from, or left towards, the other zone unseen: so its path must start (or end) in the part
+        # of this zone that faces the other zone. A fragment deep in the far end of a zone is not a passage.
+        zs = self.zones[zone] @ u
+        s_end = float((v.last_xy if travel > 0 else np.array(v.obs[0][_X:_Y + 1])) @ u)
+        if s_end < zs.min() + (1.0 - self.cfg['orphan_facing_frac']) * (zs.max() - zs.min()):
             return None
         if self._explained_by_other(v):
             return None
