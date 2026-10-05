@@ -35,14 +35,17 @@ from config import (
     MIN_SPEED_POSITIONS, MIN_SPEED_DURATION_SEC,
     JUMP_THRESHOLD_MULTIPLIER, SPEED_SMOOTHING_WINDOW, SPEED_OUTLIER_MEDIAN_WINDOW,
     VEHICLE_MAX_SPEED_KMH, SPEED_LOWCONF_MEDIAN_MULTIPLIER, SPEED_CONFIDENCE_MIN_POSITIONS,
-    SPEED_CONFIDENCE_MIN_DURATION_SEC, DEBUG_SPEED, DEBUG_MODE, BASE_OUTPUT_DIR
+    SPEED_CONFIDENCE_MIN_DURATION_SEC, DEBUG_SPEED, DEBUG_MODE, BASE_OUTPUT_DIR,
+    TRACKER_TYPE, OCSORT_CONFIG, USE_VEHICLE_STITCHING, VEHICLE_COUNTER_CONFIG, NON_VEHICLE_TYPES
 )
 from core.patchwise_detector import PatchwiseDetector
-from core.utils import is_valid_movement, cleanup_memory
+from core.utils import is_valid_movement, cleanup_memory, is_vehicle_path
 from core.perspective_transform import PerspectiveTransformer
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
 from tracking.zone_tracker import ZoneTracker
+from tracking.ocsort import OCSort
+from tracking.vehicle_counter import VehicleCounter
 from visualization import overlay as visual_overlay
 from reporting.excel_report import create_excel_report, create_bidirectional_link_count_report
 from core.converters import convert_dav_to_mp4_internal
@@ -104,7 +107,8 @@ class VideoProcessor:
             logger.warning(f"DATA_YAML_PATH ('{data_yaml_path}') not found. Class names will be default.")
 
         self.models_list = []
-        self.bytetracker = None
+        self.tracker = None
+        self.vehicle_counter = None
         self.zone_tracker = None
         self.perf = None
         self.stop_event = None
@@ -149,12 +153,6 @@ class VideoProcessor:
     @profile
     def _initialize_run(self, video_paths, start_date_str, start_time_str, primary_direction, station_number_str, generate_link_count_report_flag, preview_image_width, preview_image_height):
         logger.info("--- Initializing New Video Processing Run ---")
-        self.bytetracker = ByteTrack(
-            track_activation_threshold=BYTETRACK_TRACK_THRESH,
-            minimum_matching_threshold=BYTETRACK_MATCH_THRESH,
-            lost_track_buffer=int(BYTETRACK_TRACK_BUFFER_SECONDS * self.target_fps),  # Convert seconds to frames
-            frame_rate=self.target_fps
-        )
         self.active_track_data.clear()
         self.finalized_paths_store.clear()
         self.temp_converted_files.clear()
@@ -296,6 +294,16 @@ class VideoProcessor:
         video_duration_seconds = total_frames / original_fps if original_fps > 0 else 0
         logger.info(f"Video Properties: ~{total_frames} frames, {original_fps:.2f} FPS (Original), Duration: {self._format_duration(video_duration_seconds)}")
 
+        frame_interval = max(1, round(original_fps / self.target_fps)) if self.target_fps > 0 and original_fps > 0 else 1
+        # Rate frames are actually sampled at, which is >= target_fps after integer decimation
+        self.effective_fps = original_fps / frame_interval if original_fps > 0 else self.target_fps
+        self.tracker = self._build_tracker()
+        self.vehicle_counter = VehicleCounter(
+            self.detection_zones_polygons, is_valid_movement, NON_VEHICLE_TYPES, VEHICLE_COUNTER_CONFIG,
+            ground_fn=self.perspective_transformer.ground_points if self.perspective_transformer else None
+        ) if USE_VEHICLE_STITCHING else None
+        logger.info(f"Tracker: {TRACKER_TYPE} | Counting: {'vehicle stitching' if self.vehicle_counter else 'legacy per-track'}")
+
         # Start all pipeline threads
         logger.info("Starting all pipeline threads...")
         
@@ -325,9 +333,6 @@ class VideoProcessor:
             self.writer_thread = threading.Thread(target=self._frame_writer_task, args=(output_path_viz,), daemon=True)
             self.writer_thread.start()
         
-        frame_interval = max(1, round(original_fps / self.target_fps)) if self.target_fps > 0 and original_fps > 0 else 1
-        # Rate frames are actually sampled at, which is >= target_fps after integer decimation
-        self.effective_fps = original_fps / frame_interval if original_fps > 0 else self.target_fps
         total_target_frames = total_frames // frame_interval if total_frames > 0 else 0
         if self.perf: self.perf.start_processing(total_target_frames)
         
@@ -624,6 +629,11 @@ class VideoProcessor:
     @profile
     def _finalize_and_report(self, init_data, frames_processed_count):
         logger.info("Finalizing tracks and generating reports...")
+        if self.vehicle_counter is not None:
+            end_t = init_data["total_frames"] / init_data["original_fps"]
+            with self.tracker_lock:
+                for ev in self.vehicle_counter.finalize(end_t):
+                    self._record_vehicle_event(ev, init_data["start_datetime"])
         if self.active_track_data:
             logger.info(f"Forcibly finalizing {len(self.active_track_data)} remaining active tracks.")
             last_ts = init_data["start_datetime"] + timedelta(seconds=(init_data["total_frames"] / init_data["original_fps"]))
@@ -641,7 +651,8 @@ class VideoProcessor:
         
         total_time = self.perf.total_time if self.perf else 0.0
         final_fps = frames_processed_count / total_time if total_time > 0 else 0.0
-        completed_paths = self.finalized_paths_store.count_by_status('exited')
+        vehicle_paths = [p for p in self.finalized_paths_store.get_all() if is_vehicle_path(p)]
+        completed_paths = len(vehicle_paths)
 
         calib_factors = {
             'Base Road Length (m)': getattr(self, 'road_length_meters', 'N/A'),
@@ -697,8 +708,7 @@ class VideoProcessor:
             "bidirectional_excel_path": excel_link_count_path,
             "tia_excel_path": excel_tia_path
         }
-        all_paths = self.finalized_paths_store.get_all()
-        speeds = [p['average_speed_kmh'] for p in all_paths if p.get('average_speed_kmh') is not None]
+        speeds = [p['average_speed_kmh'] for p in vehicle_paths if p.get('average_speed_kmh') is not None]
         avg_speed = round(sum(speeds) / len(speeds), 1) if speeds else None
 
         stats_dict = {
@@ -758,7 +768,7 @@ class VideoProcessor:
         
         self.models_list.clear()
         self.active_track_data.clear()
-        self.bytetracker = self.zone_tracker = self.perf = self.stop_event = None
+        self.tracker = self.vehicle_counter = self.zone_tracker = self.perf = self.stop_event = None
         self.reader_thread = self.preprocessor_thread = self.postprocessor_thread = self.writer_thread = None
         self.raw_frame_queue = self.preprocessed_tensor_queue = self.results_queue = self.video_write_queue = self.streams = None
         self.final_output_path = None
@@ -894,90 +904,154 @@ class VideoProcessor:
         if self.perf: self.perf.start_timer('app_logic_batch')
         processed_frames_list_viz = [None] * len(yolo_results_batch)
         
-        all_targets_list = []
+        per_frame_targets = []
         with self.tracker_lock:
-            for i, yolo_result in enumerate(yolo_results_batch):
+            for yolo_result in yolo_results_batch:
+                detections = np.empty((0, 6))
                 if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0:
-                    # Convert YOLO detections to supervision format [x1, y1, x2, y2, score, class_id]
                     detections_np = yolo_result.boxes.data.cpu().numpy()
-                    if detections_np.shape[1] >= 6:  # [x1, y1, x2, y2, conf, cls]
-                        # Reorder to supervision format: [x1, y1, x2, y2, score, class_id]
-                        supervision_detections = np.column_stack([
-                            detections_np[:, :4],  # bbox coordinates
-                            detections_np[:, 4],   # confidence score
-                            detections_np[:, 5]    # class_id
-                        ])
-                    else:
-                        supervision_detections = np.empty((0, 6))
-                else:
-                    supervision_detections = np.empty((0, 6))
+                    if detections_np.shape[1] >= 6:  # [x1, y1, x2, y2, score, class_id]
+                        detections = detections_np[:, :6]
+                # Update on empty frames too, so the tracker ages its tracks
+                per_frame_targets.append(self._update_tracker(detections))
+
+        if self.vehicle_counter is not None:
+            with self.tracker_lock:
+                temp_drawing_info_list = self._count_vehicles(per_frame_targets, frame_times_in_batch, start_datetime_obj_global)
+        else:
+            temp_drawing_info_list = self._count_tracks_legacy(
+                per_frame_targets, frames_batch_with_metadata, frame_numbers_in_batch, frame_times_in_batch, start_datetime_obj_global)
+
+        if ENABLE_VISUALIZATION:
+            for i in range(len(yolo_results_batch)):
+                original_frame_content = frames_batch_with_metadata[i][0]
+                temp_drawing_info = temp_drawing_info_list[i]
+                output_frame_viz = cv2.resize(original_frame_content.copy(), self.frame_shape)
+                if self.zone_tracker:
+                    output_frame_viz = visual_overlay.draw_zones(output_frame_viz, self.zone_tracker)
                 
-                # Update tracker with tensors
-                if supervision_detections.shape[0] > 0:
-                    online_stracks = self.bytetracker.update_with_tensors(supervision_detections)
+                for track_id, draw_data in temp_drawing_info.items():
+                    if self.vehicle_counter is not None:
+                        final_status = draw_data['status']
+                    else:
+                        final_status = self.active_track_data.get(track_id, {}).get('status', 'tracked')
+                    if 'box' in draw_data:
+                        visual_overlay.draw_detection_box(output_frame_viz, draw_data['box'], track_id, draw_data['type'], status=final_status)
+                    if draw_data.get('event') and 'center' in draw_data:
+                        visual_overlay.draw_event_marker(output_frame_viz, draw_data['center'], draw_data['event'])
+                    # Draw speed annotation when DEBUG_MODE is enabled
+                    if DEBUG_MODE and draw_data.get('speed') is not None and 'box' in draw_data:
+                        visual_overlay.draw_speed_annotation(output_frame_viz, draw_data['box'], draw_data['speed'])
+                
+                if getattr(self, 'last_vehicle_info', None) is not None:
+                    visual_overlay.draw_last_vehicle_info(output_frame_viz, self.last_vehicle_info)
                     
-                    if online_stracks:
-                        # Convert STrack objects back to numpy format matching boxmot format
-                        targets_np = []
-                        for strack, det in zip(online_stracks, supervision_detections):
-                            # Extract bbox in tlbr format
-                            tlbr = strack.tlbr  # [x1, y1, x2, y2]
-                            
-                            # Use external_track_id (the public track ID)
-                            track_id = strack.external_track_id
-                            if track_id == strack.external_id_counter.NO_ID:
-                                track_id = strack.internal_track_id
-                            
-                            score = strack.score
-                            class_id = strack.class_id
+                processed_frames_list_viz[i] = output_frame_viz
+        
+        if self.perf: self.perf.end_timer('app_logic_batch')
+        return [], processed_frames_list_viz
+    
+    def _build_tracker(self):
+        if TRACKER_TYPE == 'ocsort':
+            cfg = dict(OCSORT_CONFIG)
+            cfg['max_age'] = max(1, int(round(cfg.pop('max_age_sec', 2.0) * self.effective_fps)))
+            return OCSort(**cfg)
+        if TRACKER_TYPE != 'bytetrack':
+            raise ValueError(f"Invalid TRACKER_TYPE '{TRACKER_TYPE}'. Must be 'ocsort' or 'bytetrack'.")
+        # supervision's ByteTrack scales the buffer by frame_rate/30, so give it in 30-fps frames
+        return ByteTrack(
+            track_activation_threshold=BYTETRACK_TRACK_THRESH,
+            minimum_matching_threshold=BYTETRACK_MATCH_THRESH,
+            lost_track_buffer=int(BYTETRACK_TRACK_BUFFER_SECONDS * 30),
+            frame_rate=round(self.effective_fps)
+        )
 
-                            target_row = [tlbr[0], tlbr[1], tlbr[2], tlbr[3],
-                                        track_id, score, 0, class_id]
-                            targets_np.append(target_row)
-                        
-                        if targets_np:
-                            targets_array = np.array(targets_np, dtype=np.float32)
-                            # NOW add the batch index column (this was missing!)
-                            batch_idx_col = np.full((len(targets_array), 1), i, dtype=np.float32)
-                            all_targets_list.append(np.hstack([targets_array, batch_idx_col]))
-                else:
-                    # Handle empty detections - update tracker anyway to maintain internal state
-                    self.bytetracker.update_with_tensors(supervision_detections)
+    def _update_tracker(self, detections):
+        """Track one frame. detections: [x1, y1, x2, y2, score, class_id] -> (M, 7) [x1, y1, x2, y2, track_id, score, class_id]."""
+        if isinstance(self.tracker, OCSort):
+            return self.tracker.update(detections)
+        rows = []
+        for strack in self.tracker.update_with_tensors(detections):
+            track_id = strack.external_track_id
+            if track_id == strack.external_id_counter.NO_ID:
+                track_id = strack.internal_track_id
+            rows.append([*strack.tlbr, track_id, strack.score, strack.class_id])
+        return np.array(rows, dtype=float).reshape(-1, 7)
 
-
-        if not all_targets_list:
-            if self.perf: self.perf.end_timer('app_logic_batch')
-            return [], []
-
-        all_targets_np = np.vstack(all_targets_list)
-        tx1, ty1, tx2, ty2 = all_targets_np[:, 0], all_targets_np[:, 1], all_targets_np[:, 2], all_targets_np[:, 3]
-        track_ids = all_targets_np[:, 4].astype(int)
-        class_ids = all_targets_np[:, 7].astype(int)
-        batch_indices = all_targets_np[:, 8].astype(int)
-
-        model_h, model_w = self.model_input_size_config, self.model_input_size_config
+    def _to_processing_coords(self, boxes):
+        """Map model-space boxes to processing (zone) coordinates, undoing letterbox padding if any.
+        For stretch mode (or patchwise, where letterbox_params is None) this is a plain scale."""
         draw_w, draw_h = self.frame_shape
-
-        # Use letterbox parameters to correctly undo padding before scaling.
-        # For stretch mode (or patchwise where letterbox_params is None),
-        # dw/dh are 0 and unpad dims equal model dims, so this reduces to the
-        # original simple scale.
         if self.letterbox_params is not None:
             dw, dh, unpad_w, unpad_h = self.letterbox_params
         else:
             dw, dh = 0.0, 0.0
-            unpad_w, unpad_h = model_w, model_h
-        scale_x = draw_w / unpad_w
-        scale_y = draw_h / unpad_h
-        
-        bboxes_scaled = np.vstack([
-            (tx1 - dw) * scale_x, (ty1 - dh) * scale_y,
-            (tx2 - dw) * scale_x, (ty2 - dh) * scale_y
-        ]).T.astype(np.int32)
+            unpad_w = unpad_h = self.model_input_size_config
+        sx, sy = draw_w / unpad_w, draw_h / unpad_h
+        boxes = np.asarray(boxes, dtype=float).reshape(-1, 4)
+        return np.column_stack([(boxes[:, 0] - dw) * sx, (boxes[:, 1] - dh) * sy,
+                                (boxes[:, 2] - dw) * sx, (boxes[:, 3] - dh) * sy])
+
+    def _count_vehicles(self, per_frame_targets, frame_times_in_batch, start_datetime_obj_global):
+        """Count once per stitched vehicle (USE_VEHICLE_STITCHING). Returns per-frame drawing info."""
+        drawing = [{} for _ in per_frame_targets]
+        for i, targets in enumerate(per_frame_targets):
+            boxes = self._to_processing_coords(targets[:, :4])
+            tracks = [{'track_id': int(row[4]), 'box': box, 'score': float(row[5]),
+                       'type': self.class_id_to_name_map.get(int(row[6]), 'Light Vehicle')}
+                      for box, row in zip(boxes, targets)]
+            events = self.vehicle_counter.update(frame_times_in_batch[i], tracks)
+            for ev in events:
+                self._record_vehicle_event(ev, start_datetime_obj_global)
+            if ENABLE_VISUALIZATION:
+                counted_now = {ev['vehicle_id'] for ev in events}
+                for tr in tracks:
+                    vid = self.vehicle_counter.vehicle_id_of(tr['track_id'])
+                    box = tr['box'].astype(np.int32)
+                    drawing[i][str(vid)] = {
+                        'box': box, 'type': self.vehicle_counter.vehicle_type_of(vid) or tr['type'],
+                        'status': self.vehicle_counter.status_of(vid), 'center': ((box[0] + box[2]) // 2, box[3]),
+                        'event': 'EXIT' if vid in counted_now else None,
+                    }
+        return drawing
+
+    def _record_vehicle_event(self, ev, start_datetime_obj_global):
+        entry_ts = start_datetime_obj_global + timedelta(seconds=ev['entry_t'])
+        exit_ts = start_datetime_obj_global + timedelta(seconds=ev['exit_t'])
+        duration = ev['exit_t'] - ev['entry_t']
+        speed = self._compute_average_speed_kmh(ev['positions'], vehicle_type=ev['type'])
+        self.finalized_paths_store.append({
+            'id': str(ev['vehicle_id']),
+            'type': ev['type'],
+            'entry_direction': ev['entry_zone'],
+            'exit_direction': ev['exit_zone'],
+            'entry_time': entry_ts,
+            'exit_time': exit_ts,
+            'time_in_intersection': round(duration, 2),
+            'status': 'exited',
+            'average_speed_kmh': speed,
+            'trajectory_data': [([float(x), float(y)], float(t)) for (x, y), t in ev['positions']],
+        })
+        self.last_vehicle_info = {'track_id': str(ev['vehicle_id']), 'type': ev['type'], 'time_taken': duration, 'speed': speed}
+        if self.perf: self.perf.record_vehicle_exit('exited' if ev['method'] == 'crossing' else 'motion_inferred', duration)
+        logger.info(f"[Count:{ev['method']}] Vehicle {ev['vehicle_id']} (tracks {ev['track_ids']}) "
+                    f"{ev['entry_zone']} -> {ev['exit_zone']} | Speed - {speed} km/h")
+
+    def _count_tracks_legacy(self, per_frame_targets, frames_batch_with_metadata, frame_numbers_in_batch, frame_times_in_batch, start_datetime_obj_global):
+        """Per-track counting with motion inference (USE_VEHICLE_STITCHING = False)."""
+        temp_drawing_info_list = [{} for _ in per_frame_targets]
+        all_targets_list = [np.column_stack([t[:, :6], np.zeros(len(t)), t[:, 6], np.full(len(t), i)])
+                            for i, t in enumerate(per_frame_targets) if len(t)]
+        if not all_targets_list:
+            return temp_drawing_info_list
+
+        all_targets_np = np.vstack(all_targets_list)
+        track_ids = all_targets_np[:, 4].astype(int)
+        class_ids = all_targets_np[:, 7].astype(int)
+        batch_indices = all_targets_np[:, 8].astype(int)
+        bboxes_scaled = self._to_processing_coords(all_targets_np[:, :4]).astype(np.int32)
         bottom_centers = np.vstack([(bboxes_scaled[:, 0] + bboxes_scaled[:, 2]) // 2, bboxes_scaled[:, 3]]).T
 
-        temp_drawing_info_list = [{} for _ in range(len(yolo_results_batch))]
-        
         with self.tracker_lock:
             # Pre-fetch zone keys to avoid repeated calls in the loop
             zone_keys = list(self.zone_tracker.zones.keys())
@@ -1097,32 +1171,8 @@ class VideoProcessor:
             if tracks_to_remove and self.zone_tracker:
                  self.zone_tracker.cleanup_cooldowns(last_frame_time_in_batch)
 
-        if ENABLE_VISUALIZATION:
-            for i in range(len(yolo_results_batch)):
-                original_frame_content = frames_batch_with_metadata[i][0]
-                temp_drawing_info = temp_drawing_info_list[i]
-                output_frame_viz = cv2.resize(original_frame_content.copy(), self.frame_shape)
-                if self.zone_tracker:
-                    output_frame_viz = visual_overlay.draw_zones(output_frame_viz, self.zone_tracker)
-                
-                for track_id, draw_data in temp_drawing_info.items():
-                    final_status = self.active_track_data.get(track_id, {}).get('status', 'tracked')
-                    if 'box' in draw_data:
-                        visual_overlay.draw_detection_box(output_frame_viz, draw_data['box'], track_id, draw_data['type'], status=final_status)
-                    if draw_data.get('event') and 'center' in draw_data:
-                        visual_overlay.draw_event_marker(output_frame_viz, draw_data['center'], draw_data['event'])
-                    # Draw speed annotation when DEBUG_MODE is enabled
-                    if DEBUG_MODE and draw_data.get('speed') is not None and 'box' in draw_data:
-                        visual_overlay.draw_speed_annotation(output_frame_viz, draw_data['box'], draw_data['speed'])
-                
-                if getattr(self, 'last_vehicle_info', None) is not None:
-                    visual_overlay.draw_last_vehicle_info(output_frame_viz, self.last_vehicle_info)
-                    
-                processed_frames_list_viz[i] = output_frame_viz
-        
-        if self.perf: self.perf.end_timer('app_logic_batch')
-        return [], processed_frames_list_viz
-    
+        return temp_drawing_info_list
+
     def _try_motion_inference(self, track_id, track_data, now_ts, current_frame=None):
         if self.zone_axis is None or track_data['confirmed']:
             return False

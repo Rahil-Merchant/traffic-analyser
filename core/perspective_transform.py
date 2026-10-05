@@ -109,6 +109,22 @@ class PerspectiveTransformer:
         result = cv2.perspectiveTransform(pts, self.M)
         return result.reshape(-1, 2)
 
+    def ground_points(self, points, max_extrapolation=1.0):
+        """Metric road-plane positions for pixel points. NaN where the mapping is unreliable: at or beyond
+        the horizon, or more than `max_extrapolation` rectangle sizes outside the calibrated rectangle."""
+        pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        M = self.M
+        hom = pts @ M[:, :2].T + M[:, 2]
+        ref_w = float((self._raw_corners.astype(np.float64) @ M[2, :2] + M[2, 2]).mean())
+        w = hom[:, 2]
+        out = hom[:, :2] / np.where(np.abs(w) < 1e-12, np.nan, w)[:, None]
+        W, L = self.width_meters, self.length_meters
+        ok = ((np.sign(w) == np.sign(ref_w))
+              & (out[:, 0] >= -max_extrapolation * W) & (out[:, 0] <= (1 + max_extrapolation) * W)
+              & (out[:, 1] >= -max_extrapolation * L) & (out[:, 1] <= (1 + max_extrapolation) * L))
+        out[~ok] = np.nan
+        return out
+
     def save_debug_frame(self, frame, output_dir=None):
         """Save a warped bird's-eye view of the full frame for debugging."""
         try:

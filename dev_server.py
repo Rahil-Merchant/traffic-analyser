@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
 from config import SERVER_PORT
-from core.utils import setup_torch_global_settings, setup_thread_affinity
+from core.utils import setup_torch_global_settings, setup_thread_affinity, is_vehicle_path
 from core.perspective_transform import PerspectiveTransformer
 from core.video_processor import VideoProcessor
 import signal
@@ -298,7 +298,7 @@ async def recalibrate_speed(config: RecalibrateConfigPayload):
                     night_hours_end=config.night_hours_end
                 )
 
-        updated_paths = processor.finalized_paths_store.get_all()
+        updated_paths = [p for p in processor.finalized_paths_store.get_all() if is_vehicle_path(p)]
         speeds = [p['average_speed_kmh'] for p in updated_paths if p.get('average_speed_kmh') is not None]
         avg_speed = round(float(sum(speeds)) / len(speeds), 1) if speeds else None
 

@@ -3,7 +3,7 @@ import os
 import torch
 import gc
 from datetime import datetime
-from config import VALID_MOVEMENTS
+from config import VALID_MOVEMENTS, NON_VEHICLE_TYPES
 import psutil
 from loguru import logger
 
@@ -80,6 +80,13 @@ def is_valid_movement(from_dir, to_dir, active_zones):
         logger.debug(f"Invalid movement: '{to_dir_norm}' not a valid exit from '{from_dir_norm}' per VALID_MOVEMENTS. Valid targets: {valid_config_targets}")
 
     return is_valid_target
+
+def is_vehicle_path(path, non_vehicle_types=NON_VEHICLE_TYPES):
+    """True for a completed movement that belongs in vehicle totals: it exited into a different zone
+    than it entered, and it is not a pedestrian or cyclist."""
+    entry, exit_ = normalize_direction(path.get('entry_direction')), normalize_direction(path.get('exit_direction'))
+    return (path.get('status') == 'exited' and bool(entry) and bool(exit_) and entry != exit_
+            and path.get('type') not in non_vehicle_types)
 
 def setup_thread_affinity(perf_cores=8):
     """Attempt to set thread affinity for hybrid CPUs (best effort)."""

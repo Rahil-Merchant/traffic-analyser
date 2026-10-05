@@ -4,8 +4,8 @@ import numpy as np
 from datetime import datetime, timedelta, time
 import os
 from collections import OrderedDict
-from config import VEHICLE_ID_MAP, REPORT_OUTPUT_DIR, VALID_MOVEMENTS, BIDIRECTIONAL_REPORT_CATEGORIES, TIA_REPORT_CATEGORIES
-from core.utils import get_display_direction
+from config import VEHICLE_ID_MAP, REPORT_OUTPUT_DIR, VALID_MOVEMENTS, BIDIRECTIONAL_REPORT_CATEGORIES, TIA_REPORT_CATEGORIES, NON_VEHICLE_TYPES
+from core.utils import get_display_direction, is_vehicle_path
 from loguru import logger
 
 # --- Helper Function: Build RSA Direction Map (Corrected Exit Order) ---
@@ -117,8 +117,9 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
             entry_dir = path.get('entry_direction'); exit_dir = path.get('exit_direction'); t_in_int = path.get('time_in_intersection')
             is_valid_entry_dir = entry_dir and entry_dir not in ['UNKNOWN', None]; is_valid_exit_dir = exit_dir and exit_dir not in ['UNKNOWN', 'TIMEOUT', 'FORCED', None, 'IN_PROGRESS', 'N/A']
             is_valid_status = status == 'exited'; has_valid_times = entry_t and exit_t and exit_t >= entry_t
+            is_movement = is_valid_entry_dir and is_valid_exit_dir and entry_dir.lower() != exit_dir.lower()
 
-            if is_valid_status and is_valid_entry_dir and is_valid_exit_dir and has_valid_times and v_id is not None:
+            if is_valid_status and is_movement and has_valid_times and v_id is not None:
                 v_type = path.get('type', 'UnkType')
                 if report_type.lower() == 'tia':
                     original_type = v_type
@@ -136,7 +137,8 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     'Entry Direction': entry_dir_disp, 'Exit Direction': exit_dir_disp,
                     'Entry Time': entry_time_str, 'Exit Time': exit_time_str,
                     'Time in Intersection (s)': round(t_in_int, 2) if t_in_int is not None else 'N/A',
-                    'Speed (km/h)': path.get('average_speed_kmh') if path.get('average_speed_kmh') is not None else ''
+                    'Speed (km/h)': path.get('average_speed_kmh') if path.get('average_speed_kmh') is not None else '',
+                    'is_vehicle': v_type not in NON_VEHICLE_TYPES
                 })
                 # Data for other sheets (use raw keys for direction map lookup)
                 valid_paths_structured.append({
@@ -196,7 +198,8 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                  log_cols = ['Vehicle Tracker ID', 'Object ID', 'Object Name', 'Entry Direction', 'Exit Direction', 'Entry Time', 'Exit Time', 'Time in Intersection (s)', 'Speed (km/h)']
                  df_logs = df_log_summary[[col for col in log_cols if col in df_log_summary.columns]]
                  df_logs.to_excel(writer, sheet_name='Vehicle Logs', index=False)
-                 speeds = [s for s in df_logs['Speed (km/h)'] if isinstance(s, (int, float))]
+                 speeds = [s for s, is_veh in zip(df_logs['Speed (km/h)'], df_log_summary['is_vehicle'])
+                           if is_veh and isinstance(s, (int, float))]
                  logs_ws = writer.sheets['Vehicle Logs']
                  footer_row = len(df_logs) + 1
                  logs_ws.write(footer_row, 7, "AVERAGE", workbook.add_format({'bold': True}))
@@ -249,7 +252,8 @@ def create_excel_report(completed_paths_data, start_datetime, primary_direction,
                     pivot_df = pivot_df.reindex(columns=multi_cols, fill_value=0)
                     pivot_df = pivot_df.reindex(interval_labels, fill_value=0)
                     for to_dir_disp in all_dest_display:
-                        vehicle_cols_tuples = [(to_dir_disp, vtype) for vtype in all_valid_vehicle_types]
+                        # Pedestrians and cyclists keep their own columns but stay out of TOTAL
+                        vehicle_cols_tuples = [(to_dir_disp, vtype) for vtype in all_valid_vehicle_types if vtype not in NON_VEHICLE_TYPES]
                         cols_to_sum = [col for col in vehicle_cols_tuples if col in pivot_df.columns]
                         if cols_to_sum: 
                             pivot_df[(to_dir_disp, 'TOTAL')] = pivot_df[cols_to_sum].sum(axis=1)
@@ -388,7 +392,7 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
     # --- 3. Filter and Categorize Data for the Two Selected "To" Directions ---
     processed_for_report = []
     for path in completed_paths_data:
-        if path.get('status') != 'exited' or not path.get('exit_time'):
+        if not is_vehicle_path(path) or not path.get('exit_time'):
             continue
 
         exit_time_dt = path['exit_time']
@@ -632,7 +636,7 @@ def create_bidirectional_link_count_report(completed_paths_data, start_datetime_
             class_speeds = {c: ([], []) for c in REPORT_COLUMN_ORDER}
 
             for path in completed_paths_data:
-                if path.get('status') != 'exited' or not path.get('exit_time'): continue
+                if not is_vehicle_path(path) or not path.get('exit_time'): continue
                 spd = path.get('average_speed_kmh')
                 if spd is None: continue
 

@@ -2,6 +2,26 @@
 import os
 from datetime import datetime
 
+# --- Machine ---
+PC = 'swest'  # key into PC_PATHS below; set per machine
+
+# Everything that differs between machines lives here
+PC_PATHS = {
+    'EMAAN': {
+        'base_output_dir': r"C:\Users\EMAAN\Documents\AI_output_videos",
+        'model_path': r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\premier_station.engine",
+        'data_yaml_path': r"",
+        'video_dir': r"C:\Users\EMAAN\Documents\YOLO",
+    },
+    'swest': {
+        'base_output_dir': r"C:\Users\swest\Documents\AI_output_videos",
+        'model_path': r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\26012026\premier_station.engine",
+        'data_yaml_path': r"",
+        'video_dir': r"C:\Users\swest\Desktop\traffic-capturing\sample_videos",
+    },
+}
+PATHS = PC_PATHS[PC]
+
 ENABLE_VISUALIZATION = False
 
 _now = datetime.now()
@@ -12,13 +32,13 @@ DEFAULT_PRIMARY_DIRECTION = 'south'
 
 # --- Core Settings ---
 TARGET_FPS = 20
-BASE_OUTPUT_DIR = r"C:\Users\EMAAN\Documents\AI_output_videos"
+BASE_OUTPUT_DIR = PATHS['base_output_dir']
 VIDEO_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "videos")
 REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
-MODEL_PATH = r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\premier_station.engine"
-DATA_YAML_PATH = r""
+MODEL_PATH = PATHS['model_path']
+DATA_YAML_PATH = PATHS['data_yaml_path']
 NUM_INFERENCE_STREAMS = 1
 CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
@@ -49,6 +69,29 @@ BYTETRACK_TRACK_THRESH = 0.12   # Detection confidence threshold for high-confid
 BYTETRACK_MATCH_THRESH = 0.88    # IoU threshold for matching detections to tracks
 BYTETRACK_TRACK_BUFFER_SECONDS = 25 # Seconds to keep a track alive if unmatched after it has stopped being associated with any new detections
 
+TRACKER_TYPE = 'ocsort'  # 'ocsort' or 'bytetrack'
+# Short memory and strict matching on purpose: with vehicle stitching on, a broken track costs nothing,
+# but a track that jumps to a neighbouring vehicle merges two vehicles into one count.
+OCSORT_CONFIG = {
+    'det_thresh': 0.25,            # detections at/above this score can start or continue a track
+    'low_thresh': 0.1,             # lower-score detections can only continue an existing track
+    'max_age_sec': 1.0,            # seconds a track survives without detections
+    'min_hits': 1,                 # report tracks from their first detection; fragments are stitched later
+    'iou_threshold': 0.3,
+    'delta_t': 3,                  # frames back used for the observed direction of motion
+    'inertia': 0.2,                # weight of direction consistency in association
+    'use_byte': True,
+    'buffer_scales': (0.3, 0.6),   # buffered-IoU passes for fast vehicles whose boxes stop overlapping; () disables
+    'buffer_iou_threshold': 0.1,
+    'buffer_max_age': 5,           # frames a track may be unseen and still use the buffered pass
+}
+
+# Count once per vehicle by stitching tracker fragments together (tracking/vehicle_counter.py).
+# False restores the per-track counting with motion inference below.
+USE_VEHICLE_STITCHING = True
+VEHICLE_COUNTER_CONFIG = {}  # overrides for tracking.vehicle_counter.DEFAULT_CONFIG
+
+# Legacy per-track counting only (USE_VEHICLE_STITCHING = False)
 MOTION_INFERENCE_MIN_FRAMES = 7
 MOTION_INFERENCE_MIN_DIST = 15
 MOTION_INFERENCE_MAX_PROJECTION = 0.5
@@ -64,11 +107,11 @@ SPEED_SMOOTHING_WINDOW = 9  # Samples averaged to stop detection jitter inflatin
 # Per-class ceiling a measurement is clamped to (never dropped). Realistic maxima, NOT
 # enforcement thresholds: lowering toward the posted limit hides genuine speeding vehicles.
 VEHICLE_MAX_SPEED_KMH = {
-    'Light Vehicle': 200.0, 'Motorcycle': 220.0, 'Minibus Taxi': 160.0,
+    'Light Vehicle': 150.0, 'Motorcycle': 150.0, 'Minibus Taxi': 140.0,
     'Short Truck': 150.0, 'Medium Truck': 140.0, 'Long Truck': 130.0,
     'Bus': 140.0, 'Pedestrian': 20.0, 'Cyclist': 70.0,
     'Animal drawn vehicle': 40.0, 'Person with wheel barrow': 15.0,
-    'default': 180.0
+    'default': 150.0
 }
 
 # Low-confidence readings are also clamped to this multiple of their own median segment speed
@@ -79,7 +122,7 @@ DEBUG_SPEED = False
 
 # #*############## Video 1 #################
 # # --- Input Settings (primarily for hardcoded mode) ---
-INPUT_VIDEO_PATH = [r"C:\Users\EMAAN\Documents\YOLO\5 minute test - 4 Way Intersection.mp4"]
+INPUT_VIDEO_PATH = [os.path.join(PATHS['video_dir'], "5 minute test - 4 Way Intersection.mp4")]
 # INPUT_VIDEO_PATH = [r"C:\Users\EMAAN\Desktop\M1 - NORTH\M1 19710 6-8.mp4"]
 # --- Line & Zone Definitions ---
 LINE_POINTS = {
@@ -119,7 +162,7 @@ LINE_POINTS = {
 
 # # *############## Video 2 #################
 # --- Input Settings (primarily for hardcoded mode) ---
-# INPUT_VIDEO_PATH = [r"C:\Users\swest\Desktop\traffic-capturing\sample_videos\5 min test - Large FOV.mp4"]
+# INPUT_VIDEO_PATH = [os.path.join(PATHS['video_dir'], "5 min test - Large FOV.mp4")]
 
 # # --- Line & Zone Definitions ---
 # LINE_POINTS = {'north': [[699, 529],
@@ -207,6 +250,8 @@ VEHICLE_TIMEOUTS = {
 # --- Reporting Configuration ---
 VEHICLE_ID_MAP = { 'Light Vehicle': '1', 'Motorcycle': '11', 'Minibus Taxi': '13', 'Short Truck': '2T,2', 'Medium Truck': '2T,3', 'Long Truck': '2T,4', 'Bus': '2B', 'Pedestrian': '9P', 'Cyclist': '9C', 'Animal drawn vehicle': '95', 'Person with wheel barrow': '100' }
 ALL_VEHICLE_TYPES = list(VEHICLE_ID_MAP.keys())
+# Listed per type in logs and sheets, but excluded from every vehicle total and speed statistic
+NON_VEHICLE_TYPES = ['Pedestrian', 'Cyclist']
 REPORTING_DIRECTIONS = { 'From South': ['To North', 'To West', 'To East'], 'From North': ['To South', 'To West', 'To East'], 'From West': ['To North', 'To South', 'To East'], 'From East': ['To North', 'To South', 'To West'] }
 
 # --- Performance & Debugging ---
@@ -219,6 +264,7 @@ SERVER_PORT = 8080
 
 # --- Print Confirmation ---
 print(f"--- Configuration Loaded (Tuned for Exit Accuracy) ---")
+print(f"PC: {PC}")
 print(f"Start Date/Time: {START_DATE} / {START_TIME}")
 print(f"Using Model: {MODEL_PATH} (Conf: {CONF_THRESHOLD}, IoU: {IOU_THRESHOLD})")
 print(f"Model Input Size: {MODEL_INPUT_SIZE}x{MODEL_INPUT_SIZE}")
