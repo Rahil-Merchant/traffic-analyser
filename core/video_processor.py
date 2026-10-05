@@ -7,6 +7,7 @@ import os
 import threading
 import queue
 import gc
+import json
 import math
 import yaml
 from supervision_modified.tracker.byte_tracker.core import ByteTrack
@@ -36,7 +37,8 @@ from config import (
     JUMP_THRESHOLD_MULTIPLIER, SPEED_SMOOTHING_WINDOW, SPEED_OUTLIER_MEDIAN_WINDOW,
     VEHICLE_MAX_SPEED_KMH, SPEED_LOWCONF_MEDIAN_MULTIPLIER, SPEED_CONFIDENCE_MIN_POSITIONS,
     SPEED_CONFIDENCE_MIN_DURATION_SEC, DEBUG_SPEED, DEBUG_MODE, BASE_OUTPUT_DIR,
-    TRACKER_TYPE, OCSORT_CONFIG, USE_VEHICLE_STITCHING, VEHICLE_COUNTER_CONFIG, NON_VEHICLE_TYPES
+    TRACKER_TYPE, OCSORT_CONFIG, USE_VEHICLE_STITCHING, VEHICLE_COUNTER_CONFIG, NON_VEHICLE_TYPES,
+    DUMP_DETECTIONS, REPORT_OUTPUT_DIR
 )
 from core.patchwise_detector import PatchwiseDetector
 from core.utils import is_valid_movement, cleanup_memory, is_vehicle_path
@@ -133,6 +135,7 @@ class VideoProcessor:
         self.last_cleanup_time = 0
         self.final_output_path = None
         self.temp_converted_files = []
+        self.detection_dump = []            # (frame_number, detections) per frame when DUMP_DETECTIONS
 
         # Letterbox inverse-mapping parameters (dw, dh, unpad_w, unpad_h)
         # Computed once in _preprocess_batch from the first frame's dimensions.
@@ -154,6 +157,7 @@ class VideoProcessor:
     def _initialize_run(self, video_paths, start_date_str, start_time_str, primary_direction, station_number_str, generate_link_count_report_flag, preview_image_width, preview_image_height):
         logger.info("--- Initializing New Video Processing Run ---")
         self.active_track_data.clear()
+        self.detection_dump = []
         self.finalized_paths_store.clear()
         self.temp_converted_files.clear()
         self.last_vehicle_info = None
@@ -300,7 +304,8 @@ class VideoProcessor:
         self.tracker = self._build_tracker()
         self.vehicle_counter = VehicleCounter(
             self.detection_zones_polygons, is_valid_movement, NON_VEHICLE_TYPES, VEHICLE_COUNTER_CONFIG,
-            ground_fn=self.perspective_transformer.ground_points if self.perspective_transformer else None
+            ground_fn=self.perspective_transformer.ground_points if self.perspective_transformer else None,
+            frame_size=self.frame_shape
         ) if USE_VEHICLE_STITCHING else None
         logger.info(f"Tracker: {TRACKER_TYPE} | Counting: {'vehicle stitching' if self.vehicle_counter else 'legacy per-track'}")
 
@@ -629,6 +634,8 @@ class VideoProcessor:
     @profile
     def _finalize_and_report(self, init_data, frames_processed_count):
         logger.info("Finalizing tracks and generating reports...")
+        if DUMP_DETECTIONS:
+            self._save_detection_dump(init_data)
         if self.vehicle_counter is not None:
             end_t = init_data["total_frames"] / init_data["original_fps"]
             with self.tracker_lock:
@@ -906,12 +913,14 @@ class VideoProcessor:
         
         per_frame_targets = []
         with self.tracker_lock:
-            for yolo_result in yolo_results_batch:
+            for i, yolo_result in enumerate(yolo_results_batch):
                 detections = np.empty((0, 6))
                 if yolo_result and hasattr(yolo_result, 'boxes') and len(yolo_result.boxes.data) > 0:
                     detections_np = yolo_result.boxes.data.cpu().numpy()
                     if detections_np.shape[1] >= 6:  # [x1, y1, x2, y2, score, class_id]
                         detections = detections_np[:, :6]
+                if DUMP_DETECTIONS:
+                    self.detection_dump.append((frame_numbers_in_batch[i], np.asarray(detections, dtype=np.float32)))
                 # Update on empty frames too, so the tracker ages its tracks
                 per_frame_targets.append(self._update_tracker(detections))
 
@@ -951,6 +960,44 @@ class VideoProcessor:
         if self.perf: self.perf.end_timer('app_logic_batch')
         return [], processed_frames_list_viz
     
+    def _save_detection_dump(self, init_data):
+        """Raw per-frame detections plus the run's geometry, for offline replay (utility_scripts/replay_detections.py)."""
+        try:
+            self.detection_dump.sort(key=lambda fd: fd[0])
+            dets = [d for _, d in self.detection_dump]
+            pt = self.perspective_transformer
+            meta = {
+                'video_path': str(init_data['video_paths'][0]),
+                'start_datetime': init_data['start_datetime'].isoformat(),
+                'primary_direction': init_data['primary_direction'],
+                'original_fps': init_data['original_fps'],
+                'total_frames': init_data['total_frames'],
+                'effective_fps': self.effective_fps,
+                'frame_shape': list(self.frame_shape),
+                'model_input_size': self.model_input_size_config,
+                'letterbox_params': list(self.letterbox_params) if self.letterbox_params is not None else None,
+                'class_names': {int(k): v for k, v in self.class_id_to_name_map.items()},
+                'zones': {k: np.asarray(v).tolist() for k, v in self.detection_zones_polygons.items()},
+                'road_corners': pt._raw_corners.tolist() if pt is not None else None,
+                'road_width_m': pt.width_meters if pt is not None else None,
+                'road_length_m': pt.length_meters if pt is not None else None,
+            }
+            os.makedirs(REPORT_OUTPUT_DIR, exist_ok=True)
+            base = os.path.splitext(os.path.basename(str(init_data['video_paths'][0])))[0]
+            path = os.path.join(REPORT_OUTPUT_DIR, f"detections_{base}.npz")
+            np.savez_compressed(
+                path,
+                frame=np.array([f for f, _ in self.detection_dump], dtype=np.int64),
+                offs=np.cumsum([0] + [len(d) for d in dets]).astype(np.int64),
+                dets=np.concatenate(dets).astype(np.float32) if dets else np.zeros((0, 6), np.float32),
+                meta=np.array(json.dumps(meta)),
+            )
+            logger.info(f"Detection dump saved: {path} ({len(dets)} frames)")
+        except Exception:
+            logger.exception("Failed to save detection dump.")
+        finally:
+            self.detection_dump = []
+
     def _build_tracker(self):
         if TRACKER_TYPE == 'ocsort':
             cfg = dict(OCSORT_CONFIG)
@@ -1004,7 +1051,7 @@ class VideoProcessor:
             for ev in events:
                 self._record_vehicle_event(ev, start_datetime_obj_global)
             if ENABLE_VISUALIZATION:
-                counted_now = {ev['vehicle_id'] for ev in events}
+                counted_now = {ev['vehicle_id'] for ev in events if not ev.get('retract')}
                 for tr in tracks:
                     vid = self.vehicle_counter.vehicle_id_of(tr['track_id'])
                     box = tr['box'].astype(np.int32)
@@ -1016,6 +1063,11 @@ class VideoProcessor:
         return drawing
 
     def _record_vehicle_event(self, ev, start_datetime_obj_global):
+        if ev.get('retract'):
+            # A reversal split showed the count rested on another vehicle's observations
+            self.finalized_paths_store.delete_by_id(str(ev['vehicle_id']))
+            logger.info(f"[Count:retracted] Vehicle {ev['vehicle_id']}")
+            return
         entry_ts = start_datetime_obj_global + timedelta(seconds=ev['entry_t'])
         exit_ts = start_datetime_obj_global + timedelta(seconds=ev['exit_t'])
         duration = ev['exit_t'] - ev['entry_t']

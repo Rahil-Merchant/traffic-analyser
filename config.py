@@ -89,6 +89,9 @@ OCSORT_CONFIG = {
 # Count once per vehicle by stitching tracker fragments together (tracking/vehicle_counter.py).
 # False restores the per-track counting with motion inference below.
 USE_VEHICLE_STITCHING = True
+# Save every frame's raw detections (+ zones and calibration) next to the reports, so counting can be
+# replayed offline in seconds with utility_scripts/replay_detections.py
+DUMP_DETECTIONS = False
 VEHICLE_COUNTER_CONFIG = {}  # overrides for tracking.vehicle_counter.DEFAULT_CONFIG
 
 # Legacy per-track counting only (USE_VEHICLE_STITCHING = False)

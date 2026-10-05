@@ -115,6 +115,12 @@ class FinalizedPathsStore:
         cursor.execute('UPDATE finalized_paths SET average_speed_kmh = ? WHERE rowid = ?', (new_speed, rowid))
         self.conn.commit()
 
+    def delete_by_id(self, path_id):
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM finalized_paths WHERE id = ?', (path_id,))
+        self.conn.commit()
+        return cursor.rowcount
+
     def count_by_status(self, status):
         cursor = self.conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM finalized_paths WHERE status = ?', (status,))

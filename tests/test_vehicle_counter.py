@@ -113,6 +113,42 @@ def test_fast_vehicle_long_gap_is_stitched_on_road_plane():
     assert counter.vehicle_id_of(1) == counter.vehicle_id_of(2)
 
 
+def _receding_then_oncoming(oncoming_track_id, gap_frames):
+    """A car drives away into the far north zone and vanishes; an oncoming car appears where it was
+    predicted to be and drives towards the camera through the south zone."""
+    frames = []
+    for i in range(50):                               # receding, 20 m/s, from the south zone to far away
+        p, h = road_obs(2.0, 46.0 - 20.0 * i / FPS)
+        frames.append([(1, p, h, 'Light Vehicle')])
+    frames += [[] for _ in range(gap_frames)]
+    gy0 = 46.0 - 20.0 * (50 + gap_frames) / FPS       # where the receding car would be by now
+    for i in range(70):                               # oncoming, 20 m/s, towards the camera
+        p, h = road_obs(2.4, gy0 + 20.0 * i / FPS)
+        frames.append([(oncoming_track_id, p, h, 'Light Vehicle')])
+    return frames
+
+
+def test_oncoming_car_stitched_to_a_receding_one_is_split_and_counted():
+    events = run(make_counter(ground=True), _receding_then_oncoming(2, gap_frames=4))
+    counts = [e for e in events if not e.get('retract')]
+    assert sorted((e['entry_zone'], e['exit_zone']) for e in counts) == [('north', 'south'), ('south', 'north')]
+
+
+def test_tracker_id_swap_between_opposite_cars_is_split_and_counted():
+    events = run(make_counter(ground=True), _receding_then_oncoming(1, gap_frames=1))
+    counts = [e for e in events if not e.get('retract')]
+    assert sorted((e['entry_zone'], e['exit_zone']) for e in counts) == [('north', 'south'), ('south', 'north')]
+
+
+def test_class_comes_from_close_views_not_many_tiny_far_ones():
+    # Oncoming car: a long approach far away (small boxes, misread as 'Bus'), then a few close frames
+    pts = path(FAR + np.array([-30.0, -20.0]), FAR, 50) + path(FAR, NEAR, 20)
+    frames = [[(1, p, h, 'Light Vehicle' if h >= 60 else 'Bus')] for p, h in pts]
+    events = run(make_counter(), frames)
+    assert sum(1 for _, h in pts if h < 60) > 3 * sum(1 for _, h in pts if h >= 60)
+    assert len(events) == 1 and events[0]['type'] == 'Light Vehicle'
+
+
 def test_vehicles_in_opposite_lanes_are_not_stitched_together_on_road_plane():
     away = [road_obs(1.75, 46.0 - 25.0 * i / FPS) for i in range(10)]
     toward = [road_obs(5.25, 20.0 + 25.0 * i / FPS) for i in range(12, 30)]
