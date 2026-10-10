@@ -1,12 +1,21 @@
-"""Stage 1: run the production model over a video and keep every detection, in the app's dump format."""
+"""Stage 1: run the production model over a video and keep every detection, in the app's dump format.
+
+Decoding is the bottleneck, so frames come from the GPU decoder the app uses (video_reader-rs with
+CUDA, resizing on the GPU, 7,600-frame segments) when it is installed, with the next segment decoding
+while the current one is being detected. OpenCV decoding is the fallback.
+"""
 import json
 import os
+import queue
+import threading
 import time
 
 import cv2
 import numpy as np
 
 MODEL_SIZE = 640
+BATCH = 64               # the engine is exported with a dynamic batch of up to 64
+SEGMENT = 7600           # frames per GPU decode segment, as in the app
 
 
 def configured_model():
@@ -55,43 +64,90 @@ def read_frames(video_path, frame_indices, fps):
     cap.release()
 
 
-def detect_video(video_path, model, out_path, conf=0.05, iou=0.7, batch=32, device=None, progress=print):
-    """Detect on every frame (squashed to 640x640 like production) and save a dump at out_path."""
-    info = video_info(video_path)
+def _segments_gpu(video_path, total):
+    """(first_index, frames RGB (N,640,640,3)) per segment, decoded on the GPU like the app."""
+    from video_reader import PyVideoReader
+    pvr = PyVideoReader(video_path, device='cuda', resize_shorter_side=MODEL_SIZE, resize_longer_side=MODEL_SIZE)
+    for start in range(0, total, SEGMENT):
+        end = min(start + SEGMENT, total)
+        try:
+            seg = pvr.decode(start_frame=start, end_frame=end)
+        except Exception as e:                       # noqa: BLE001 - skip a corrupt segment, as the app does
+            print(f"  skipping frames {start}-{end}: {e}")
+            continue
+        if seg is not None and len(seg):
+            yield start, np.ascontiguousarray(seg)
+
+
+def _segments_cv2(video_path, total):
+    """Fallback: OpenCV decode on the CPU, in smaller segments, frames converted to RGB."""
     cap = cv2.VideoCapture(video_path)
-    frames, dets, offs = [], [], [0]
-    pending, pending_idx = [], []
-    names = None
-    t0 = time.time()
-    idx = 0
-
-    def flush():
-        nonlocal names
-        results = model.predict(pending, imgsz=MODEL_SIZE, conf=conf, iou=iou, device=device, verbose=False, half=True)
-        for r in results:
-            if names is None:
-                names = {int(k): str(v) for k, v in r.names.items()}
-            d = r.boxes.data.cpu().numpy()[:, :6].astype(np.float32) if len(r.boxes) else np.zeros((0, 6), np.float32)
-            dets.append(d)
-            offs.append(offs[-1] + len(d))
-        frames.extend(pending_idx)
-        pending.clear()
-        pending_idx.clear()
-
+    idx, buf = 0, []
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        pending.append(cv2.resize(frame, (MODEL_SIZE, MODEL_SIZE), interpolation=cv2.INTER_LINEAR))
-        pending_idx.append(idx)
+        buf.append(cv2.cvtColor(cv2.resize(frame, (MODEL_SIZE, MODEL_SIZE), interpolation=cv2.INTER_LINEAR), cv2.COLOR_BGR2RGB))
         idx += 1
-        if len(pending) == batch:
-            flush()
-            if idx % (batch * 50) == 0:
-                progress(f"  {idx}/{info['frames']} frames, {idx / (time.time() - t0):.0f} fps")
-    if pending:
-        flush()
+        if len(buf) == 512:
+            yield idx - len(buf), np.stack(buf)
+            buf = []
+    if buf:
+        yield idx - len(buf), np.stack(buf)
     cap.release()
+
+
+def _prefetch(gen, depth=2):
+    """Run a generator in a thread so decoding overlaps inference."""
+    q = queue.Queue(maxsize=depth)
+    done = object()
+
+    def pump():
+        try:
+            for item in gen:
+                q.put(item)
+        finally:
+            q.put(done)
+    threading.Thread(target=pump, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is done:
+            return
+        yield item
+
+
+def detect_video(video_path, model, out_path, conf=0.05, iou=0.7, device=None, progress=print):
+    """Detect on every frame (squashed to 640x640 like production) and save a dump at out_path."""
+    import torch
+    info = video_info(video_path)
+    total = info['frames']
+    try:
+        import video_reader  # noqa: F401
+        segments, how = _segments_gpu(video_path, total), 'GPU decode'
+    except ImportError:
+        segments, how = _segments_cv2(video_path, total), 'CPU decode (video_reader not installed)'
+    device = device or ('cuda' if torch.cuda.is_available() else None)
+    use_half = device == 'cuda'
+    progress(f"  {how}, batch {BATCH}, {info['frames']} frames")
+    frames, dets, offs = [], [], [0]
+    names = None
+    t0 = time.time()
+    with torch.no_grad():
+        for start, seg in _prefetch(segments):
+            for b in range(0, len(seg), BATCH):
+                chunk = seg[b:b + BATCH]
+                n = len(chunk)
+                x = torch.from_numpy(chunk).to(device or 'cpu', non_blocking=True).permute(0, 3, 1, 2)
+                x = (x.half() if use_half else x.float()) / 255.0
+                results = model(x, imgsz=MODEL_SIZE, conf=conf, iou=iou, verbose=False, half=use_half, device=device)
+                for r in results[:n]:
+                    if names is None:
+                        names = {int(k): str(v) for k, v in r.names.items()}
+                    d = r.boxes.data.cpu().numpy()[:, :6].astype(np.float32) if len(r.boxes) else np.zeros((0, 6), np.float32)
+                    dets.append(d)
+                    offs.append(offs[-1] + len(d))
+                frames.extend(range(start + b, start + b + n))
+            progress(f"  {len(frames)}/{total} frames, {len(frames) / (time.time() - t0):.0f} fps")
     meta = dict(video_path=os.path.abspath(video_path), start_datetime=None, original_fps=info['fps'],
                 total_frames=len(frames), effective_fps=info['fps'], frame_shape=[info['width'], info['height']],
                 model_input_size=MODEL_SIZE, letterbox_params=None, class_names=names or {}, conf=conf)

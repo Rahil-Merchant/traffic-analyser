@@ -1,46 +1,12 @@
-"""A static review page: every chosen frame as a thumbnail with its pseudo-boxes and the flagged box."""
+"""A static review page: every selected frame as a thumbnail, grouped by reason."""
 import html
 import os
 
-import cv2
-import numpy as np
-
-from .detect import MODEL_SIZE
 from .export import REASON_TEXT, read_manifest
-from .signals import pseudo_labels
-
-COLOUR = {'fn': (0, 0, 255), 'fp': (0, 165, 255), 'class': (255, 0, 255), 'borderline': (0, 220, 220)}
 
 
-def _thumb(img, labels, cands, names, width=720):
-    H, W = img.shape[:2]
-    sx, sy = W / MODEL_SIZE, H / MODEL_SIZE
-    vis = img.copy()
-    for cls, b in labels:
-        x1, y1, x2, y2 = int(b[0] * sx), int(b[1] * sy), int(b[2] * sx), int(b[3] * sy)
-        cv2.rectangle(vis, (x1, y1), (x2, y2), (80, 220, 80), 3)
-        cv2.putText(vis, names.get(int(cls), str(cls)), (x1, max(28, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (80, 220, 80), 2, cv2.LINE_AA)
-    for c in cands:
-        b = c['box']
-        x1, y1, x2, y2 = int(b[0] * sx), int(b[1] * sy), int(b[2] * sx), int(b[3] * sy)
-        cv2.rectangle(vis, (x1 - 6, y1 - 6), (x2 + 6, y2 + 6), COLOUR[c['reason']], 4)
-    return cv2.resize(vis, (width, int(width * H / W)), interpolation=cv2.INTER_AREA)
-
-
-def write_review(out_dir, rows_by_video, progress=print):
-    """rows_by_video: [(manifest rows, chosen, tracks, meta)] per video processed in this run."""
-    thumbs = os.path.join(out_dir, 'review')
-    os.makedirs(thumbs, exist_ok=True)
-    for rows, chosen, tracks, meta in rows_by_video:           # thumbnails for the frames of this run
-        names = meta['class_names']
-        by_frame = dict(chosen)
-        for row in rows:
-            f = row['frame']
-            img = cv2.imread(os.path.join(out_dir, row['image']))
-            if img is None:
-                continue
-            tn = os.path.basename(row['image'])
-            cv2.imwrite(os.path.join(thumbs, tn), _thumb(img, pseudo_labels(f, tracks), by_frame[f], names), [cv2.IMWRITE_JPEG_QUALITY, 80])
+def write_review_page(out_dir):
+    """Static review page built from everything in the manifest (thumbnails already on disk)."""
     sections = {r: [] for r in REASON_TEXT}                     # page from everything selected so far
     for row in read_manifest(out_dir):
         if os.path.exists(os.path.join(out_dir, row['image'])):
@@ -65,4 +31,3 @@ h2{{margin:24px 0 8px}} button{{font:inherit;padding:6px 12px}} .legend span{{di
 const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(r,null,1)],{{type:'application/json'}}));a.download='rejected.json';a.click();}}</script>'''
     with open(os.path.join(out_dir, 'review.html'), 'w') as fh:
         fh.write(page)
-    progress(f"review page: {os.path.join(out_dir, 'review.html')}")
