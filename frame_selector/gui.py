@@ -204,7 +204,7 @@ main{max-width:1500px;margin:0 auto;padding:20px 24px}
 .card h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:10px}
 .num{display:inline-flex;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;align-items:center;justify-content:center;font-size:12px}
 .field{display:flex;gap:8px;align-items:center;margin:8px 0} .field input[type=text]{flex:1;min-width:0}
-input[type=text],input[type=number]{padding:8px 10px;background:#0c0e12;color:var(--text);border:1px solid var(--line);border-radius:6px;font:inherit}
+input[type=text]{cursor:pointer} input[type=text],input[type=number]{padding:8px 10px;background:#0c0e12;color:var(--text);border:1px solid var(--line);border-radius:6px;font:inherit}
 input[type=number]{width:90px}
 button{font:inherit;padding:8px 14px;border:0;border-radius:6px;background:#2a3140;color:var(--text);cursor:pointer} button:hover{filter:brightness(1.15)}
 button.primary{background:var(--accent);color:#fff} button.danger{background:var(--bad);color:#fff} button:disabled{opacity:.5;cursor:default}
@@ -235,12 +235,12 @@ figure .rej{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.6);padding
 <main>
 <div class="steps">
  <section class="card"><h2><span class="num">1</span>Videos</h2>
-  <div class="field"><input type="text" id="dir" placeholder="folder with videos"><button onclick="pick('dir')">Browse…</button><button onclick="scan()">Scan</button></div>
+  <div class="field"><input type="text" id="dir" placeholder="click to choose the folder with videos" readonly onclick="pick('dir')"><button onclick="pick('dir')">Browse…</button><button onclick="scan()">Scan</button></div>
   <div class="videos" id="videos"><div class="empty">Choose a folder and click Scan.</div></div>
   <div class="field" style="margin-top:8px"><button onclick="setAll(true)">Select all</button><button onclick="setAll(false)">Select none</button><span class="muted" id="vidcount"></span></div>
  </section>
  <section class="card"><h2><span class="num">2</span>Run</h2>
-  <div class="field"><span style="width:150px">Output folder</span><input type="text" id="out"><button onclick="pick('out')">Browse…</button></div>
+  <div class="field"><span style="width:150px">Output folder</span><input type="text" id="out" readonly onclick="pick('out')"><button onclick="pick('out')">Browse…</button></div>
   <div class="field"><span style="width:150px">Frames per 2 h video</span><input type="number" id="budget" value="100" min="10" max="2000"></div>
   <div class="field"><button class="primary" id="runbtn" onclick="startRun()">Run</button><button onclick="loadResults()">Load existing results</button><span class="muted" id="stage"></span></div>
   <div class="bar" id="bar"><i></i></div>
