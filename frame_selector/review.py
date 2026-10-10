@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from .detect import MODEL_SIZE
-from .export import REASON_TEXT
+from .export import REASON_TEXT, read_manifest
 from .signals import pseudo_labels
 
 COLOUR = {'fn': (0, 0, 255), 'fp': (0, 165, 255), 'class': (255, 0, 255), 'borderline': (0, 220, 220)}
@@ -31,8 +31,7 @@ def write_review(out_dir, rows_by_video, progress=print):
     """rows_by_video: [(manifest rows, chosen, tracks, meta)] per video processed in this run."""
     thumbs = os.path.join(out_dir, 'review')
     os.makedirs(thumbs, exist_ok=True)
-    sections = {r: [] for r in REASON_TEXT}
-    for rows, chosen, tracks, meta in rows_by_video:
+    for rows, chosen, tracks, meta in rows_by_video:           # thumbnails for the frames of this run
         names = meta['class_names']
         by_frame = dict(chosen)
         for row in rows:
@@ -40,15 +39,17 @@ def write_review(out_dir, rows_by_video, progress=print):
             img = cv2.imread(os.path.join(out_dir, row['image']))
             if img is None:
                 continue
-            cands = by_frame[f]
-            labels = pseudo_labels(f, tracks)
             tn = os.path.basename(row['image'])
-            cv2.imwrite(os.path.join(thumbs, tn), _thumb(img, labels, cands, names), [cv2.IMWRITE_JPEG_QUALITY, 80])
-            when = row['clock'] or '%.1fs' % row['time_s']
-            sections[cands[0]['reason']].append(
+            cv2.imwrite(os.path.join(thumbs, tn), _thumb(img, pseudo_labels(f, tracks), by_frame[f], names), [cv2.IMWRITE_JPEG_QUALITY, 80])
+    sections = {r: [] for r in REASON_TEXT}                     # page from everything selected so far
+    for row in read_manifest(out_dir):
+        if os.path.exists(os.path.join(out_dir, row['image'])):
+            tn = os.path.basename(row['image'])
+            when = row['clock'] or '%ss' % row['time_s']
+            sections[row['reasons'].split('|')[0]].append(
                 '<figure data-img="%s"><img src="review/%s" loading="lazy"><figcaption><label><input type="checkbox"> reject</label> '
                 '<b>%s</b> frame %d %s<br>%s</figcaption></figure>'
-                % (html.escape(row['image']), html.escape(tn), html.escape(row['video']), f, html.escape(when), html.escape(row['notes'])))
+                % (html.escape(row['image']), html.escape(tn), html.escape(row['video']), int(row['frame']), html.escape(when), html.escape(row['notes'])))
     body = ''.join(f'<h2>{html.escape(REASON_TEXT[r])} ({len(figs)})</h2><div class="grid">{"".join(figs)}</div>'
                    for r, figs in sections.items() if figs)
     page = f'''<!doctype html><meta charset="utf-8"><title>Frame selector review</title>

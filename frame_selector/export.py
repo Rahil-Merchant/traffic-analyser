@@ -45,11 +45,25 @@ def export(out_dir, video_path, meta, chosen, tracks, progress=print):
                          n_labels=len(labels)))
         if len(rows) % 25 == 0:
             progress(f"  exported {len(rows)}/{len(by_frame)} frames")
-    path = os.path.join(out_dir, 'manifest.csv')
-    new = not os.path.exists(path)
-    with open(path, 'a', newline='') as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()) if rows else ['image'])
-        if new:
-            w.writeheader()
-        w.writerows(rows)
+    _update_manifest(out_dir, os.path.basename(video_path), rows)
     return rows
+
+
+FIELDS = ['image', 'label', 'video', 'frame', 'time_s', 'clock', 'reasons', 'score', 'tracks', 'notes', 'n_labels']
+
+
+def read_manifest(out_dir):
+    path = os.path.join(out_dir, 'manifest.csv')
+    if not os.path.exists(path):
+        return []
+    with open(path, newline='') as fh:
+        return list(csv.DictReader(fh))
+
+
+def _update_manifest(out_dir, video_name, rows):
+    """Append this video's rows; an earlier run of the same video is replaced, other videos are kept."""
+    old = [r for r in read_manifest(out_dir) if r['video'] != video_name]
+    with open(os.path.join(out_dir, 'manifest.csv'), 'w', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=FIELDS, extrasaction='ignore')
+        w.writeheader()
+        w.writerows(old + rows)

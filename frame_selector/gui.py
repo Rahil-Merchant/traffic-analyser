@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from .detect import configured_model
+from .export import read_manifest
 from .pipeline import run
 
 VIDEO_EXT = ('.dav', '.mp4', '.mkv', '.avi', '.mov')
@@ -118,8 +119,11 @@ def scan(dir: str, out: str = ''):
     if not os.path.isdir(dir):
         raise HTTPException(400, f"not a folder: {dir}")
     vids = sorted(f for f in os.listdir(dir) if f.lower().endswith(VIDEO_EXT))
+    done = {}
+    for r in (read_manifest(out) if out else []):
+        done[r['video']] = done.get(r['video'], 0) + 1
     return [dict(path=os.path.join(dir, f), name=f, size_gb=round(os.path.getsize(os.path.join(dir, f)) / 1e9, 2),
-                 dump=_dump_for(os.path.join(dir, f), out or dir)) for f in vids]
+                 dump=_dump_for(os.path.join(dir, f), out or dir), done=done.get(f, 0)) for f in vids]
 
 
 @app.post('/api/run')
@@ -157,11 +161,7 @@ def status():
 
 @app.get('/api/results')
 def results(out: str):
-    path = os.path.join(out, 'manifest.csv')
-    if not os.path.exists(path):
-        return []
-    with open(path, newline='') as fh:
-        return list(csv.DictReader(fh))
+    return read_manifest(out)
 
 
 @app.get('/file')
@@ -274,7 +274,7 @@ async function listDir(p){const r=await fetch(`/api/browse?path=${encodeURICompo
 function closeBrowser(){$('browser').style.display='none'} function chooseBrowser(){if(bCur){$(bTarget).value=bCur;if(bTarget==='dir')scan()}closeBrowser()}
 async function scan(){localStorage.fsDir=$('dir').value;const r=await fetch(`/api/scan?dir=${encodeURIComponent($('dir').value)}&out=${encodeURIComponent($('out').value)}`);
  if(!r.ok){$('videos').innerHTML=`<div class="empty">${(await r.json()).detail}</div>`;return} const v=await r.json();
- $('videos').innerHTML=v.length?v.map(x=>`<label><input type="checkbox" class="vid" value="${x.path}" checked onchange="countVids()"> <span>${x.name}</span><span class="meta">${x.size_gb} GB${x.dump?' · detections cached':''}</span></label>`).join(''):'<div class="empty">No videos in this folder.</div>';countVids()}
+ $('videos').innerHTML=v.length?v.map(x=>`<label><input type="checkbox" class="vid" value="${x.path}" ${x.done?'':'checked'} onchange="countVids()"> <span>${x.name}</span><span class="meta">${x.size_gb} GB${x.dump?' · detections cached':''}${x.done?' · '+x.done+' frames selected already':''}</span></label>`).join(''):'<div class="empty">No videos in this folder.</div>';countVids()}
 function setAll(on){document.querySelectorAll('.vid').forEach(e=>e.checked=on);countVids()}
 function countVids(){const n=document.querySelectorAll('.vid:checked').length;$('vidcount').textContent=n?`${n} selected`:''}
 async function startRun(){const videos=[...document.querySelectorAll('.vid:checked')].map(e=>e.value);if(!videos.length){alert('Select at least one video');return}
