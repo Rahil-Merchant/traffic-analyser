@@ -23,7 +23,7 @@ def postprocess(video, dump, out, budget):
         info = video_info(video)
         meta['frame_shape'] = [info['width'], info['height']]
     tracks = build_tracks(frames, offs, dets, fps)
-    cands = find_candidates(frames, offs, dets, tracks, fps)
+    cands = find_candidates(frames, offs, dets, tracks, fps, meta['class_names'])
     n = budget_for(len(frames) / fps, budget)
     chosen = select_frames(cands, n, fps)
     rows = export(out, video, meta, chosen, tracks)

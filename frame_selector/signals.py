@@ -79,8 +79,10 @@ def _size_term(box):
     return min(box[3] - box[1], 200.0) / 200.0
 
 
-def find_candidates(frames, offs, dets, tracks, fps):
+def find_candidates(frames, offs, dets, tracks, fps, names=None):
+    """names: class id -> class name, used in the notes shown to the reviewer."""
     by_frame = {int(f): i for i, f in enumerate(frames)}
+    name = lambda c: (names or {}).get(int(c), f"class {int(c)}")   # noqa: E731
     out = []
 
     def dets_of(frame, min_conf=0.0):
@@ -123,7 +125,7 @@ def find_candidates(frames, offs, dets, tracks, fps):
             share = sum(1 for c in tr.classes if c != tr.majority) / tr.hits
             out.append(dict(frame=tr.frames[k], reason='class', score=0.4 + 0.3 * _size_term(tr.boxes[k]) + 0.3 * share,
                             box=np.asarray(tr.boxes[k]), track=tr.tid,
-                            note=f"frame says class {tr.classes[k]}, track majority {tr.majority} ({share:.0%} disagree)"))
+                            note=f"this frame says {name(tr.classes[k])}, the track is mostly {name(tr.majority)} ({share:.0%} of frames disagree)"))
         # Borderline confidence on a big box
         k = int(np.argmin(np.where(heights >= BIG_BOX, tr.confs, 9)))
         if heights[k] >= BIG_BOX and tr.confs[k] < 0.5:
@@ -160,7 +162,7 @@ def find_candidates(frames, offs, dets, tracks, fps):
                 if iou[a, b] >= 0.7 and d[a, 5] != d[b, 5] and max(d[a, 3] - d[a, 1], d[b, 3] - d[b, 1]) >= BIG_BOX:
                     k = a if d[a, 4] >= d[b, 4] else b
                     out.append(dict(frame=f, reason='class', score=0.3 + 0.4 * _size_term(d[k]) + 0.3 * min(d[a, 4], d[b, 4]),
-                                    box=d[k, :4].copy(), track=None, note=f"classes {int(d[a, 5])} and {int(d[b, 5])} on one object"))
+                                    box=d[k, :4].copy(), track=None, note=f"{name(d[a, 5])} and {name(d[b, 5])} boxes on one object"))
     return out
 
 
