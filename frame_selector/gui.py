@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from .detect import configured_model
 from .pipeline import run
 
 VIDEO_EXT = ('.dav', '.mp4', '.mkv', '.avi', '.mov')
@@ -19,7 +20,6 @@ state = {'running': False, 'log': [], 'error': None, 'out': None}
 class RunRequest(BaseModel):
     videos: list[str]
     out: str
-    model: str = ''
     budget: int = 100
 
 
@@ -52,19 +52,25 @@ def start(req: RunRequest):
     if state['running']:
         raise HTTPException(409, 'a run is already in progress')
     dumps = [_dump_for(v, req.out) for v in req.videos]
-    if not req.model and not all(dumps):
-        raise HTTPException(400, 'a model is needed: some videos have no detection dump yet')
+    if not all(dumps) and not os.path.exists(configured_model()):
+        raise HTTPException(400, f"model not found: {configured_model()} (set MODEL_PATH / PC in config.py)")
     state.update(running=True, log=[], error=None, out=req.out)
 
     def work():
         try:
-            run(req.videos, req.out, req.model or None, dumps, req.budget, progress=lambda m: state['log'].append(m))
+            run(req.videos, req.out, dumps, req.budget, progress=lambda m: state['log'].append(m))
         except Exception as e:                       # noqa: BLE001 - shown to the user
             state['error'] = f"{type(e).__name__}: {e}"
         finally:
             state['running'] = False
     threading.Thread(target=work, daemon=True).start()
     return {'ok': True}
+
+
+@app.get('/api/info')
+def info():
+    m = configured_model()
+    return {'model': m, 'exists': os.path.exists(m)}
 
 
 @app.get('/api/status')
@@ -128,7 +134,7 @@ figure{margin:0;background:#1c1c1c;padding:6px;border-radius:6px} figure img{wid
 <button onclick="scan()">Scan folder</button>
 <div id="videos" class="muted">No folder scanned yet.</div>
 </div><div class="col">
-<label>Model (.engine or .pt) <input type="text" id="model" placeholder="leave empty to reuse existing detection dumps only"></label>
+<p>Model: <span id="modelinfo" class="muted">…</span></p>
 <label>Output folder <input type="text" id="out" value="mined"></label>
 <label>Frames per 2 hours of video <input type="number" id="budget" value="100" min="10" max="2000"></label>
 <button id="runbtn" onclick="startRun()">Run</button> <button onclick="loadResults()">Load results from output folder</button>
@@ -141,10 +147,11 @@ figure{margin:0;background:#1c1c1c;padding:6px;border-radius:6px} figure img{wid
 </main>
 <script>
 const $=id=>document.getElementById(id); let timer=null;
+fetch('/api/info').then(r=>r.json()).then(i=>{$('modelinfo').textContent=i.model+(i.exists?'':'  — NOT FOUND, set MODEL_PATH / PC in config.py');$('modelinfo').style.color=i.exists?'#9d9':'#f88'});
 const TXT={fn:'missed vehicle',fp:'false positive / hard negative','class':'wrong class',borderline:'low confidence'};
 async function scan(){const r=await fetch(`/api/scan?dir=${encodeURIComponent($('dir').value)}&out=${encodeURIComponent($('out').value)}`);
  if(!r.ok){alert((await r.json()).detail);return} const v=await r.json();
- $('videos').innerHTML=v.length?v.map(x=>`<label><input type="checkbox" class="vid" value="${x.path}" checked> ${x.name} <span class="muted">${x.size_gb} GB${x.dump?' · detection dump found, model not needed':''}</span></label>`).join(''):'No videos in that folder.';}
+ $('videos').innerHTML=v.length?v.map(x=>`<label><input type="checkbox" class="vid" value="${x.path}" checked> ${x.name} <span class="muted">${x.size_gb} GB${x.dump?' · detection dump found, detection will be skipped':''}</span></label>`).join(''):'No videos in that folder.';}
 async function startRun(){const videos=[...document.querySelectorAll('.vid:checked')].map(e=>e.value); if(!videos.length){alert('Select at least one video');return}
  const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({videos,out:$('out').value,model:$('model').value,budget:+$('budget').value})});
  if(!r.ok){alert((await r.json()).detail);return} $('runbtn').disabled=true; timer=setInterval(poll,1500); poll();}

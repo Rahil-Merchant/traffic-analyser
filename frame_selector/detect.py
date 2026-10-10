@@ -9,8 +9,20 @@ import numpy as np
 MODEL_SIZE = 640
 
 
-def load_model(model_path):
+def configured_model():
+    """The production model from config.py (MODEL_PATH, chosen per machine by PC_PATHS)."""
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):      # config.py prints a banner on import
+        from config import MODEL_PATH
+    return MODEL_PATH
+
+
+def load_model(model_path=None):
     from ultralytics import YOLO
+    model_path = model_path or configured_model()
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"model not found: {model_path} (set MODEL_PATH / PC in config.py)")
     return YOLO(model_path, task='detect')
 
 

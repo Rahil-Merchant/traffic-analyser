@@ -2,20 +2,21 @@
 import os
 import time
 
-from .detect import detect_video, load_dump, load_model, video_info
+from .detect import configured_model, detect_video, load_dump, load_model, video_info
 from .export import export
 from .review import write_review
 from .select import budget_for, select_frames
 from .signals import build_tracks, find_candidates
 
 
-def run(videos, out, model_path=None, detections=(), budget=100, device=None, progress=print):
-    """Mine `videos` into `out`. `detections[i]` (optional) is an existing dump for videos[i].
-    Returns the manifest rows of every video."""
-    if not model_path and len(detections) < len(videos):
-        raise ValueError('a model is required unless a detection dump is given for every video')
+def run(videos, out, detections=(), budget=100, device=None, progress=print):
+    """Mine `videos` into `out` with the model from config.py. `detections[i]` (optional) is an
+    existing dump for videos[i], which skips detection for it. Returns the manifest rows of every video."""
     os.makedirs(out, exist_ok=True)
-    model = load_model(model_path) if model_path else None
+    need_model = any(k >= len(detections) or not detections[k] for k in range(len(videos)))
+    model = load_model() if need_model else None
+    if model is not None:
+        progress(f"model: {configured_model()}")
     runs, all_rows = [], []
     for k, video in enumerate(videos):
         t0 = time.time()
