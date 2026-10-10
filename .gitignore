@@ -78,3 +78,5 @@ Waiting
 Running
 
 /data/
+# frame selector output
+frames_for_annotation/

@@ -1,10 +1,10 @@
 """Pick the frames of one or more videos most worth labelling.
 
     python -m frame_selector gui                                          # local web page (recommended)
-    python -m frame_selector VIDEO [VIDEO ...] --out mined/            # model: MODEL_PATH in config.py
-    python -m frame_selector VIDEO --detections dump.npz --out mined/  # reuse a detection dump (skips detection)
+    python -m frame_selector VIDEO [VIDEO ...] --out frames_for_annotation/            # model: MODEL_PATH in config.py
+    python -m frame_selector VIDEO --detections dump.npz --out frames_for_annotation/  # reuse a detection dump (skips detection)
 
-Output: mined/images/*.jpg (full resolution), mined/labels/*.txt (YOLO pseudo-labels to correct),
+Output: frames_for_annotation/images/*.jpg (full resolution), labels/*.txt (YOLO pseudo-labels to correct),
 classes.txt, manifest.csv (why each frame was chosen), review.html (thumbnails grouped by reason).
 """
 import argparse
@@ -27,7 +27,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('videos', nargs='+')
     ap.add_argument('--detections', nargs='*', default=[], help='existing detection dumps, one per video in order')
-    ap.add_argument('--out', default='mined')
+    ap.add_argument('--out', default='frames_for_annotation')
     ap.add_argument('--budget', type=int, default=100, help='frames per 2 hours of video')
     ap.add_argument('--device', default=None)
     a = ap.parse_args(argv)
