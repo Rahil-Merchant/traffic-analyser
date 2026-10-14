@@ -255,14 +255,14 @@ figure .rej{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.6);padding
  <button class="danger" onclick="deleteRejected()">Delete rejected</button>
 </div>
 <div class="stats" id="stats"></div>
-<p class="muted" style="font-size:12px">Green boxes are the pseudo-labels to correct. The coloured outline is the flagged problem. Click an image to enlarge; tick <b>reject</b> on frames you don't want, then <b>Delete rejected</b>. What remains in the output folder is ready to label.</p>
+<p class="muted" style="font-size:12px">Each frame is outlined on the vehicle it was chosen for. Click an image to enlarge; tick <b>reject</b> on frames you don't want, then <b>Delete rejected</b>. The label files hold every tracked vehicle, ready to correct.</p>
 <div class="grid" id="results"></div>
 </main>
 <div id="lightbox" onclick="this.style.display='none'"><img id="lbimg"><p id="lbcap"></p></div>
 <div id="browser"><div class="box"><div class="hd"><b>Choose a folder</b><div class="muted" id="bpath" style="font-size:12px;word-break:break-all"></div></div><div class="list" id="blist"></div><div class="ft"><button onclick="closeBrowser()">Cancel</button><button class="primary" onclick="chooseBrowser()">Use this folder</button></div></div></div>
 <script>
 const $=id=>document.getElementById(id); let timer=null, rows=[], filter=null, bTarget=null, bCur='';
-const TXT={fn:'missed',fp:'false positive',class:'wrong class',borderline:'low confidence'};
+const TXT={fn:'miss',fp:'no vehicle',class:'confusion',borderline:'low confidence'};
 const COL={fn:'var(--fn)',fp:'var(--fp)',class:'var(--class)',borderline:'var(--borderline)'};
 fetch('/api/info').then(r=>r.json()).then(i=>{$('model').textContent=(i.model_exists?'model: ':'MODEL NOT FOUND: ')+i.model;$('model').style.color=i.model_exists?'var(--ok)':'var(--bad)';
  $('out').value=localStorage.fsOut||i.default_out;$('dir').value=localStorage.fsDir||i.video_dir;if($('dir').value)scan();if(i.running){$('runbtn').disabled=true;timer=setInterval(poll,1500)}});
@@ -291,9 +291,10 @@ function render(){const out=$('out').value;const counts={};rows.forEach(r=>{cons
  const shown=rows.filter(r=>!filter||r.reasons.split('|')[0]===filter);
  $('results').innerHTML=shown.map(r=>{const tags=r.reasons.split('|').map(k=>`<span class="tag" style="background:${COL[k]}">${TXT[k]}</span>`).join('');
   const th=`/file?out=${encodeURIComponent(out)}&path=${encodeURIComponent('review/'+r.image.split('/').pop())}`,full=`/file?out=${encodeURIComponent(out)}&path=${encodeURIComponent(r.image)}`;
-  return `<figure data-img="${r.image}"><label class="rej"><input type="checkbox" onchange="this.closest('figure').classList.toggle('rejected',this.checked)"> reject</label>
-   <img loading="lazy" src="${th}" onclick="lightbox('${full}',${JSON.stringify(r.notes)})"><figcaption><div class="tags">${tags}</div><b>${r.video}</b> <span class="when">${r.clock||r.time_s+'s'} · frame ${r.frame}</span><br>${r.notes}</figcaption></figure>`}).join('')}
-function lightbox(src,cap){$('lbimg').src=src;$('lbcap').textContent=cap;$('lightbox').style.display='flex'}
+  return `<figure data-img="${esc(r.image)}"><label class="rej"><input type="checkbox" onchange="this.closest('figure').classList.toggle('rejected',this.checked)"> reject</label>
+   <img loading="lazy" src="${th}" data-full="${esc(full)}" data-cap="${esc(r.notes)}" onclick="lightbox(this)"><figcaption><div class="tags">${tags}</div>${esc(r.notes)}<br><span class="when">${esc(r.video)} · ${r.clock||r.time_s+'s'} · frame ${r.frame}</span></figcaption></figure>`}).join('')}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+function lightbox(img){$('lbimg').src=img.dataset.full;$('lbcap').textContent=img.dataset.cap;$('lightbox').style.display='flex'}
 function rejectVisible(on){document.querySelectorAll('#results figure input').forEach(e=>{e.checked=on;e.closest('figure').classList.toggle('rejected',on)})}
 async function deleteRejected(){const images=[...document.querySelectorAll('figure.rejected')].map(f=>f.dataset.img);if(!images.length){alert('Nothing is marked as rejected');return}
  if(!confirm(`Delete ${images.length} frame(s) from the output folder?`))return;

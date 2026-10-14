@@ -54,7 +54,7 @@ def test_weak_detection_in_a_gap_is_still_flagged():
 def test_class_flicker_is_flagged_at_the_largest_disagreeing_frame():
     _, cands = run([[car(i, cls=8 if i in (20, 21, 40) else 2)] for i in range(60)])
     cl = [c for c in cands if c['reason'] == 'class']
-    assert len(cl) == 1 and cl[0]['frame'] in (20, 21, 40) and 'mostly class 2' in cl[0]['note']
+    assert len(cl) == 1 and cl[0]['frame'] in (20, 21, 40) and cl[0]['note'] == 'class 8 / class 2'
 
 
 def test_orphan_detection_is_a_false_positive():
@@ -71,7 +71,7 @@ def test_static_track_is_a_hard_negative():
 
 def test_two_classes_on_one_object_is_a_class_candidate():
     _, cands = run([[car(i)] + ([[car(i)[0] + 2, 301, car(i)[2] - 2, 379, 0.5, 5]] if i == 25 else []) for i in range(60)])
-    assert any(c['reason'] == 'class' and 'on one object' in c['note'] for c in cands)
+    assert any(c['reason'] == 'class' and c['track'] is None and '/' in c['note'] for c in cands)
 
 
 def test_notes_use_class_names_when_given():
@@ -79,7 +79,7 @@ def test_notes_use_class_names_when_given():
     tracks = build_tracks(frames, offs, dets, FPS)
     cands = find_candidates(frames, offs, dets, tracks, FPS, {2: 'Light Vehicle', 8: 'Short Truck'})
     note = next(c['note'] for c in cands if c['reason'] == 'class')
-    assert 'Short Truck' in note and 'Light Vehicle' in note and 'class 8' not in note
+    assert note == 'Short Truck / Light Vehicle'
 
 
 def test_low_confidence_big_box_is_borderline():

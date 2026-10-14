@@ -102,7 +102,7 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
         for d in dets_of(f, TRACK_CONF):
             if tuple(np.round(np.asarray(d[:4], np.float32), 1)) not in tracked[f] and d[3] - d[1] >= 20:
                 out.append(dict(frame=f, reason='fp', score=0.5 * d[4] + 0.5 * _size_term(d), box=d[:4].copy(),
-                                track=None, note=f"orphan detection, conf {d[4]:.2f}"))
+                                track=None, note=f"single frame, {name(d[5])} {d[4]:.2f}"))
 
     for tr in tracks.values():
         if tr.hits < MIN_TRACK_HITS:
@@ -116,7 +116,7 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
             if np.hypot(cx.max() - cx.min(), cy.max() - cy.min()) < np.median(heights):
                 k = int(np.argmax(tr.confs))
                 out.append(dict(frame=tr.frames[k], reason='fp', score=0.6 + 0.4 * _size_term(tr.boxes[k]),
-                                box=np.asarray(tr.boxes[k]), track=tr.tid, note=f"static for {span_s:.0f}s"))
+                                box=np.asarray(tr.boxes[k]), track=tr.tid, note=f"static {span_s:.0f} s, {name(tr.majority)}"))
                 continue
         # Class disagreement: the frame where the vehicle is largest but the class differs from the track majority
         dis = [k for k, c in enumerate(tr.classes) if c != tr.majority and heights[k] >= 0.6 * heights.max()]
@@ -125,12 +125,12 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
             share = sum(1 for c in tr.classes if c != tr.majority) / tr.hits
             out.append(dict(frame=tr.frames[k], reason='class', score=0.4 + 0.3 * _size_term(tr.boxes[k]) + 0.3 * share,
                             box=np.asarray(tr.boxes[k]), track=tr.tid,
-                            note=f"this frame says {name(tr.classes[k])}, the track is mostly {name(tr.majority)} ({share:.0%} of frames disagree)"))
+                            note=f"{name(tr.classes[k])} / {name(tr.majority)}"))
         # Borderline confidence on a big box
         k = int(np.argmin(np.where(heights >= BIG_BOX, tr.confs, 9)))
         if heights[k] >= BIG_BOX and tr.confs[k] < 0.5:
             out.append(dict(frame=tr.frames[k], reason='borderline', score=0.3 + 0.4 * (0.5 - tr.confs[k]) / 0.25 + 0.3 * _size_term(tr.boxes[k]),
-                            box=np.asarray(tr.boxes[k]), track=tr.tid, note=f"conf {tr.confs[k]:.2f} on a {heights[k]:.0f}px box"))
+                            box=np.asarray(tr.boxes[k]), track=tr.tid, note=f"{tr.confs[k]:.2f}, {name(tr.majority)}"))
         # Gaps: the vehicle is between two sightings but nothing was detected near where it must be
         if tr.hits >= MIN_GAP_TRACK_HITS:
             for f0, f1 in zip(tr.frames, tr.frames[1:]):
@@ -143,13 +143,13 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
                     ov = iou_batch(box[None], weak[:, :4]).max() if len(weak) else 0.0
                     if ov < 0.3:
                         out.append(dict(frame=mid, reason='fn', score=0.5 + 0.5 * _size_term(box), box=box, track=tr.tid,
-                                        note=f"not detected for {f1 - f0 - 1} frames mid-track"))
+                                        note=f"{(f1 - f0 - 1) / fps:.2f} s, {name(tr.majority)}"))
             # The track survived on a detection production would have dropped (conf < 0.25): a near miss
             weak = [k for k, c in enumerate(tr.confs) if c < TRACK_CONF and not _clipped(tr.boxes[k])]
             if weak:
                 k = min(weak, key=lambda k: tr.confs[k])
                 out.append(dict(frame=tr.frames[k], reason='fn', score=0.3 + 0.5 * _size_term(tr.boxes[k]), box=np.asarray(tr.boxes[k]),
-                                track=tr.tid, note=f"only a weak detection (conf {tr.confs[k]:.2f}) mid-track"))
+                                track=tr.tid, note=f"weak {tr.confs[k]:.2f}, {name(tr.majority)}"))
 
     # Two classes on one object in one frame
     for f in by_frame:
@@ -162,7 +162,7 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
                 if iou[a, b] >= 0.7 and d[a, 5] != d[b, 5] and max(d[a, 3] - d[a, 1], d[b, 3] - d[b, 1]) >= BIG_BOX:
                     k = a if d[a, 4] >= d[b, 4] else b
                     out.append(dict(frame=f, reason='class', score=0.3 + 0.4 * _size_term(d[k]) + 0.3 * min(d[a, 4], d[b, 4]),
-                                    box=d[k, :4].copy(), track=None, note=f"{name(d[a, 5])} and {name(d[b, 5])} boxes on one object"))
+                                    box=d[k, :4].copy(), track=None, note=f"{name(d[a, 5])} / {name(d[b, 5])}"))
     return out
 
 
