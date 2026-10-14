@@ -237,7 +237,7 @@ figure .rej{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.6);padding
  <section class="card"><h2><span class="num">1</span>Videos</h2>
   <div class="field"><input type="text" id="dir" placeholder="click to choose the folder with videos" readonly onclick="pick('dir')"><button onclick="pick('dir')">Browse…</button><button onclick="scan()">Scan</button></div>
   <div class="videos" id="videos"><div class="empty">Choose a folder and click Scan.</div></div>
-  <div class="field" style="margin-top:8px"><button onclick="setAll(true)">Select all</button><button onclick="setAll(false)">Select none</button><span class="muted" id="vidcount"></span></div>
+  <div class="field" style="margin-top:8px"><button onclick="setAll(true)">Select all</button><button onclick="setAll(false)">Select none</button><button onclick="setDone()" title="tick the videos that already have results, to regenerate them from their cached detections">Select done</button><span class="muted" id="vidcount"></span></div>
  </section>
  <section class="card"><h2><span class="num">2</span>Run</h2>
   <div class="field"><span style="width:150px">Output folder</span><input type="text" id="out" readonly onclick="pick('out')"><button onclick="pick('out')">Browse…</button></div>
@@ -274,8 +274,9 @@ async function listDir(p){const r=await fetch(`/api/browse?path=${encodeURICompo
 function closeBrowser(){$('browser').style.display='none'} function chooseBrowser(){if(bCur){$(bTarget).value=bCur;if(bTarget==='dir')scan()}closeBrowser()}
 async function scan(){localStorage.fsDir=$('dir').value;const r=await fetch(`/api/scan?dir=${encodeURIComponent($('dir').value)}&out=${encodeURIComponent($('out').value)}`);
  if(!r.ok){$('videos').innerHTML=`<div class="empty">${(await r.json()).detail}</div>`;return} const v=await r.json();
- $('videos').innerHTML=v.length?v.map(x=>`<label><input type="checkbox" class="vid" value="${x.path}" ${x.done?'':'checked'} onchange="countVids()"> <span>${x.name}</span><span class="meta">${x.size_gb} GB${x.dump?' · detections cached':''}${x.done?' · '+x.done+' frames selected already':''}</span></label>`).join(''):'<div class="empty">No videos in this folder.</div>';countVids()}
+ $('videos').innerHTML=v.length?v.map(x=>`<label><input type="checkbox" class="vid" value="${x.path}" data-done="${x.done?1:0}" ${x.done?'':'checked'} onchange="countVids()"> <span>${x.name}</span><span class="meta">${x.size_gb} GB${x.dump?' · detections cached':''}${x.done?' · '+x.done+' frames selected already':''}</span></label>`).join(''):'<div class="empty">No videos in this folder.</div>';countVids()}
 function setAll(on){document.querySelectorAll('.vid').forEach(e=>e.checked=on);countVids()}
+function setDone(){document.querySelectorAll('.vid').forEach(e=>e.checked=e.dataset.done==='1');countVids()}
 function countVids(){const n=document.querySelectorAll('.vid:checked').length;$('vidcount').textContent=n?`${n} selected`:''}
 async function startRun(){const videos=[...document.querySelectorAll('.vid:checked')].map(e=>e.value);if(!videos.length){alert('Select at least one video');return}
  localStorage.fsOut=$('out').value;const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({videos,out:$('out').value,budget:+$('budget').value})});
@@ -292,7 +293,9 @@ function render(){const out=$('out').value;const counts={};rows.forEach(r=>{cons
  $('results').innerHTML=shown.map(r=>{const tags=r.reasons.split('|').map(k=>`<span class="tag" style="background:${COL[k]}">${TXT[k]}</span>`).join('');
   const th=`/file?out=${encodeURIComponent(out)}&path=${encodeURIComponent('review/'+r.image.split('/').pop())}`,full=`/file?out=${encodeURIComponent(out)}&path=${encodeURIComponent(r.image)}`;
   return `<figure data-img="${esc(r.image)}"><label class="rej"><input type="checkbox" onchange="this.closest('figure').classList.toggle('rejected',this.checked)"> reject</label>
-   <img loading="lazy" src="${th}" data-full="${esc(full)}" data-cap="${esc(r.notes)}" onclick="lightbox(this)"><figcaption><div class="tags">${tags}</div>${esc(r.notes)}<br><span class="when">${esc(r.video)} · ${r.clock||r.time_s+'s'} · frame ${r.frame}</span></figcaption></figure>`}).join('')}
+   <img loading="lazy" src="${th}" data-full="${esc(full)}" data-cap="${esc(tidy(r.notes))}" onclick="lightbox(this)"><figcaption><div class="tags">${tags}</div>${esc(tidy(r.notes))}<br><span class="when">${esc(r.video)} · ${r.clock||r.time_s+'s'} · frame ${r.frame}</span></figcaption></figure>`}).join('')}
+const OLD={'missed vehicle':'miss','false positive / hard negative':'no vehicle','wrong class':'confusion','low confidence':'low confidence'};
+function tidy(n){n=n.split(' ; ')[0];for(const k in OLD)if(n.startsWith(k+':'))n=OLD[k]+':'+n.slice(k.length+1);return n}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function lightbox(img){$('lbimg').src=img.dataset.full;$('lbcap').textContent=img.dataset.cap;$('lightbox').style.display='flex'}
 function rejectVisible(on){document.querySelectorAll('#results figure input').forEach(e=>{e.checked=on;e.closest('figure').classList.toggle('rejected',on)})}
