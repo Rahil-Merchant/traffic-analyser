@@ -103,7 +103,8 @@ def _segments_cv2(video_path, total):
 
 
 def _prefetch(gen, depth=2):
-    """Run a generator in a thread so decoding overlaps inference."""
+    """Run a generator in a thread so decoding overlaps inference. An error in the decoder is
+    re-raised here, in the caller's thread."""
     q = queue.Queue(maxsize=depth)
     done = object()
 
@@ -111,13 +112,16 @@ def _prefetch(gen, depth=2):
         try:
             for item in gen:
                 q.put(item)
-        finally:
             q.put(done)
+        except BaseException as e:                   # noqa: BLE001 - handed to the consumer
+            q.put(e)
     threading.Thread(target=pump, daemon=True).start()
     while True:
         item = q.get()
         if item is done:
             return
+        if isinstance(item, BaseException):
+            raise item
         yield item
 
 
@@ -126,12 +130,21 @@ def detect_video(video_path, model, out_path, conf=0.05, iou=0.7, device=None, p
     import torch
     info = video_info(video_path)
     total = info['frames']
+    temp = None
     try:
         import video_reader  # noqa: F401
-        total = gpu_frame_count(video_path) or total
+        source = video_path
+        if video_path.lower().endswith('.dav'):      # the GPU decoder needs a container: same conversion as the app
+            from core.converters import convert_dav_to_mp4_internal
+            progress("  converting .dav to .mp4 for the GPU decoder (stream copy)...")
+            temp = convert_dav_to_mp4_internal(video_path)
+            if not temp:
+                raise RuntimeError(f"could not convert {video_path} to mp4 (is ffmpeg on PATH?)")
+            source = temp
+        total = gpu_frame_count(source) or total
         if total <= 0:
             raise RuntimeError(f"no frames reported for {video_path}")
-        segments, how = _segments_gpu(video_path, total), 'GPU decode'
+        segments, how = _segments_gpu(source, total), 'GPU decode'
     except ImportError:
         segments, how = _segments_cv2(video_path, total), 'CPU decode (video_reader not installed)'
     device = device or ('cuda' if torch.cuda.is_available() else None)
@@ -167,6 +180,11 @@ def detect_video(video_path, model, out_path, conf=0.05, iou=0.7, device=None, p
                 model_input_size=MODEL_SIZE, letterbox_params=None, class_names=names or {}, conf=conf)
     np.savez_compressed(out_path, frame=np.array(frames, dtype=np.int64), offs=np.array(offs, dtype=np.int64),
                         dets=np.concatenate(dets) if dets else np.zeros((0, 6), np.float32), meta=np.array(json.dumps(meta)))
+    if temp:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
     return out_path
 
 
