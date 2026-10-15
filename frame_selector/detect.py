@@ -64,6 +64,11 @@ def read_frames(video_path, frame_indices, fps):
     cap.release()
 
 
+def gpu_frame_count(video_path):
+    from video_reader import PyVideoReader
+    return int(PyVideoReader(video_path).get_info().get('frame_count', 0))
+
+
 def _segments_gpu(video_path, total):
     """(first_index, frames RGB (N,640,640,3)) per segment, decoded on the GPU like the app."""
     from video_reader import PyVideoReader
@@ -123,6 +128,9 @@ def detect_video(video_path, model, out_path, conf=0.05, iou=0.7, device=None, p
     total = info['frames']
     try:
         import video_reader  # noqa: F401
+        total = gpu_frame_count(video_path) or total
+        if total <= 0:
+            raise RuntimeError(f"no frames reported for {video_path}")
         segments, how = _segments_gpu(video_path, total), 'GPU decode'
     except ImportError:
         segments, how = _segments_cv2(video_path, total), 'CPU decode (video_reader not installed)'
@@ -148,6 +156,12 @@ def detect_video(video_path, model, out_path, conf=0.05, iou=0.7, device=None, p
                     offs.append(offs[-1] + len(d))
                 frames.extend(range(start + b, start + b + n))
             progress(f"  {len(frames)}/{total} frames, {len(frames) / (time.time() - t0):.0f} fps")
+    n_det = offs[-1]
+    progress(f"  detected: {len(frames)} frames, {n_det} detections, classes: {', '.join((names or {}).values()) or 'none'}")
+    if len(frames) == 0:
+        raise RuntimeError(f"no frames could be decoded from {video_path}")
+    if n_det == 0:
+        progress("  WARNING: the model returned no detections at all on this video")
     meta = dict(video_path=os.path.abspath(video_path), start_datetime=None, original_fps=info['fps'],
                 total_frames=len(frames), effective_fps=info['fps'], frame_shape=[info['width'], info['height']],
                 model_input_size=MODEL_SIZE, letterbox_params=None, class_names=names or {}, conf=conf)
@@ -162,3 +176,12 @@ def load_dump(path):
     meta = json.loads(str(z['meta']))
     meta['class_names'] = {int(k): v for k, v in meta['class_names'].items()}
     return z['frame'], z['offs'], z['dets'], meta
+
+
+def dump_is_usable(path):
+    """A cache worth reusing: it has frames and at least one detection."""
+    try:
+        frames, offs, dets, _ = load_dump(path)
+        return len(frames) > 0 and len(dets) > 0
+    except Exception:                                # noqa: BLE001 - unreadable file
+        return False

@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-from .detect import configured_model
+from .detect import configured_model, dump_is_usable
 from .export import read_manifest
 from .pipeline import run
 
@@ -50,9 +50,11 @@ def _dump_for(video, out):
     """An existing detection dump for this video, next to it or in the output folder."""
     stem = os.path.splitext(os.path.basename(video))[0]
     for d in (os.path.dirname(video), out):
-        hits = glob.glob(os.path.join(glob.escape(d), f"detections_{glob.escape(stem)}*.npz"))
-        if hits:
-            return hits[0]
+        exact = os.path.join(d, f"detections_{stem}.npz")
+        hits = [exact] if os.path.exists(exact) else sorted(glob.glob(os.path.join(glob.escape(d), f"detections_{glob.escape(stem)}*.npz")))
+        for h in hits:
+            if dump_is_usable(h):
+                return h
     return None
 
 

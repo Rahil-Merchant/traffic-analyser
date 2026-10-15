@@ -7,7 +7,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-from .detect import configured_model, detect_video, load_dump, load_model, video_info
+from .detect import configured_model, detect_video, dump_is_usable, load_dump, load_model, video_info
 from .export import export, update_manifest, write_thumbs
 from .review import write_review_page
 from .select import budget_for, select_frames
@@ -29,14 +29,15 @@ def postprocess(video, dump, out, budget):
     rows = export(out, video, meta, chosen, tracks)
     write_thumbs(out, rows, chosen, tracks, meta)
     counts = ', '.join(f"{r} {sum(c['reason'] == r for c in cands)}" for r in ('fn', 'fp', 'class', 'borderline'))
-    return rows, f"{os.path.basename(video)}: {len(tracks)} tracks; flagged {counts}; selected {len(rows)} frames ({time.time() - t0:.0f}s)"
+    return rows, (f"{os.path.basename(video)}: {len(frames)} frames, {len(dets)} detections, {len(tracks)} tracks; "
+                  f"flagged {counts}; selected {len(rows)} frames ({time.time() - t0:.0f}s)")
 
 
 def run(videos, out, detections=(), budget=100, device=None, progress=print):
     """Mine `videos` into `out` with the model from config.py. `detections[i]` (optional) is an
     existing dump for videos[i], which skips detection for it. Returns the manifest rows of every video."""
     os.makedirs(out, exist_ok=True)
-    need_model = any(k >= len(detections) or not detections[k] for k in range(len(videos)))
+    need_model = any(k >= len(detections) or not detections[k] or not dump_is_usable(detections[k]) for k in range(len(videos)))
     model = load_model() if need_model else None
     if model is not None:
         progress(f"model: {configured_model()}")
@@ -45,10 +46,15 @@ def run(videos, out, detections=(), budget=100, device=None, progress=print):
         for k, video in enumerate(videos):
             t0 = time.time()
             progress(f"== {os.path.basename(video)}")
-            if k < len(detections) and detections[k]:
+            if k < len(detections) and detections[k] and dump_is_usable(detections[k]):
                 dump = detections[k]
                 progress("using cached detections")
             else:
+                if k < len(detections) and detections[k]:
+                    progress(f"cached detections are empty, detecting again: {detections[k]}")
+                if model is None:
+                    model = load_model()
+                    progress(f"model: {configured_model()}")
                 dump = os.path.join(out, 'detections_' + os.path.splitext(os.path.basename(video))[0] + '.npz')
                 detect_video(video, model, dump, device=device, progress=progress)
                 progress(f"detected in {time.time() - t0:.0f}s; tracking, selecting and exporting in the background")
