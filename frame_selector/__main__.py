@@ -32,10 +32,11 @@ def main(argv=None):
     ap.add_argument('--device', default=None)
     a = ap.parse_args(argv)
     try:
-        run(a.videos, a.out, a.detections, a.budget, a.device)
+        _, failed = run(a.videos, a.out, a.detections, a.budget, a.device)
     except FileNotFoundError as e:
         ap.error(str(e))
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

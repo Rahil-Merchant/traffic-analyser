@@ -10,12 +10,13 @@ import numpy as np
 from tracking.ocsort import OCSort, iou_batch
 
 MODEL_SIZE = 640
-TRACK_CONF = 0.25          # production threshold: tracks are built from what production would see
+TRACK_CONF = 0.25          # production threshold (detection already runs at it, see detect.CONF)
 MIN_TRACK_HITS = 3         # fewer hits than this is an orphan (likely false positive)
 MIN_GAP_TRACK_HITS = 10    # a track must be this established before its gaps count as misses
 MAX_GAP_S = 1.0
 STATIC_MIN_S = 2.0
 BIG_BOX = 60               # px tall in model space: large enough to label with confidence
+MIN_BOX = 20               # px tall in model space: smaller boxes are too far away to judge
 CLASS_POWER = 4.0
 
 
@@ -100,7 +101,7 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
                 tracked[f].add(tuple(np.round(np.asarray(b, np.float32), 1)))
     for f in by_frame:
         for d in dets_of(f, TRACK_CONF):
-            if tuple(np.round(np.asarray(d[:4], np.float32), 1)) not in tracked[f] and d[3] - d[1] >= 20:
+            if tuple(np.round(np.asarray(d[:4], np.float32), 1)) not in tracked[f] and d[3] - d[1] >= MIN_BOX:
                 out.append(dict(frame=f, reason='fp', score=0.5 * d[4] + 0.5 * _size_term(d), box=d[:4].copy(),
                                 track=None, note=f"single frame, {name(d[5])} {d[4]:.2f}"))
 
@@ -108,9 +109,10 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
         if tr.hits < MIN_TRACK_HITS:
             continue
         heights = tr.heights()
-        # Static object read as a vehicle (bush, pole, parked trailer): hard negative
+        # Static object read as a vehicle (bush, pole, parked trailer): hard negative. Not for tiny boxes:
+        # a distant vehicle barely moves in pixels and would look static.
         span_s = (tr.frames[-1] - tr.frames[0]) / fps
-        if span_s >= STATIC_MIN_S:
+        if span_s >= STATIC_MIN_S and np.median(heights) >= MIN_BOX:
             c = np.asarray(tr.boxes)
             cx, cy = (c[:, 0] + c[:, 2]) / 2, (c[:, 1] + c[:, 3]) / 2
             if np.hypot(cx.max() - cx.min(), cy.max() - cy.min()) < np.median(heights):
@@ -131,7 +133,7 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
         if heights[k] >= BIG_BOX and tr.confs[k] < 0.5:
             out.append(dict(frame=tr.frames[k], reason='borderline', score=0.3 + 0.4 * (0.5 - tr.confs[k]) / 0.25 + 0.3 * _size_term(tr.boxes[k]),
                             box=np.asarray(tr.boxes[k]), track=tr.tid, note=f"{tr.confs[k]:.2f}, {name(tr.majority)}"))
-        # Gaps: the vehicle is between two sightings but nothing was detected near where it must be
+        # Gaps: the vehicle is between two sightings but production detected nothing near where it must be
         if tr.hits >= MIN_GAP_TRACK_HITS:
             for f0, f1 in zip(tr.frames, tr.frames[1:]):
                 if 1 < f1 - f0 <= MAX_GAP_S * fps:
@@ -139,17 +141,11 @@ def find_candidates(frames, offs, dets, tracks, fps, names=None):
                     box = tr.box_at(mid)
                     if box is None or _clipped(box):
                         continue
-                    weak = dets_of(mid)
-                    ov = iou_batch(box[None], weak[:, :4]).max() if len(weak) else 0.0
+                    near = dets_of(mid)
+                    ov = iou_batch(box[None], near[:, :4]).max() if len(near) else 0.0
                     if ov < 0.3:
                         out.append(dict(frame=mid, reason='fn', score=0.5 + 0.5 * _size_term(box), box=box, track=tr.tid,
                                         note=f"{(f1 - f0 - 1) / fps:.2f} s, {name(tr.majority)}"))
-            # The track survived on a detection production would have dropped (conf < 0.25): a near miss
-            weak = [k for k, c in enumerate(tr.confs) if c < TRACK_CONF and not _clipped(tr.boxes[k])]
-            if weak:
-                k = min(weak, key=lambda k: tr.confs[k])
-                out.append(dict(frame=tr.frames[k], reason='fn', score=0.3 + 0.5 * _size_term(tr.boxes[k]), box=np.asarray(tr.boxes[k]),
-                                track=tr.tid, note=f"weak {tr.confs[k]:.2f}, {name(tr.majority)}"))
 
     # Two classes on one object in one frame
     for f in by_frame:

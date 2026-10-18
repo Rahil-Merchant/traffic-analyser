@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-from .detect import configured_model, dump_is_usable
+from .detect import configured_model, dump_is_usable, video_key
 from .export import read_manifest
 from .pipeline import run
 
@@ -46,16 +46,15 @@ def _video_dir():
             return ''
 
 
-def _dump_for(video, out):
-    """An existing detection dump for this video, next to it or in the output folder."""
+def _dump_for(video, out, key=None):
+    """A valid detection dump for this video: the frame selector's own in the output folder, else a
+    production app dump ('detections_<stem>_conv_*.npz') next to the video or in the output folder."""
+    key = key or video_key(video)
     stem = os.path.splitext(os.path.basename(video))[0]
+    hits = [os.path.join(out, f"detections_{key}.npz")]
     for d in (os.path.dirname(video), out):
-        exact = os.path.join(d, f"detections_{stem}.npz")
-        hits = [exact] if os.path.exists(exact) else sorted(glob.glob(os.path.join(glob.escape(d), f"detections_{glob.escape(stem)}*.npz")))
-        for h in hits:
-            if dump_is_usable(h):
-                return h
-    return None
+        hits += sorted(glob.glob(os.path.join(glob.escape(d), f"detections_{glob.escape(stem)}_conv_*.npz")))
+    return next((h for h in hits if os.path.exists(h) and dump_is_usable(h, video)), None)
 
 
 @app.get('/api/info')
@@ -121,11 +120,14 @@ def scan(dir: str, out: str = ''):
     if not os.path.isdir(dir):
         raise HTTPException(400, f"not a folder: {dir}")
     vids = sorted(f for f in os.listdir(dir) if f.lower().endswith(VIDEO_EXT))
-    done = {}
-    for r in (read_manifest(out) if out else []):
-        done[r['video']] = done.get(r['video'], 0) + 1
-    return [dict(path=os.path.join(dir, f), name=f, size_gb=round(os.path.getsize(os.path.join(dir, f)) / 1e9, 2),
-                 dump=_dump_for(os.path.join(dir, f), out or dir), done=done.get(f, 0)) for f in vids]
+    rows = read_manifest(out) if out else []          # rows without a video id are from version 1 (broken detection): not done
+    found = []
+    for f in vids:
+        path = os.path.join(dir, f)
+        key = video_key(path)
+        found.append(dict(path=path, name=f, size_gb=round(os.path.getsize(path) / 1e9, 2),
+                          dump=_dump_for(path, out or dir, key), done=sum(r.get('video_id') == key for r in rows)))
+    return found
 
 
 @app.post('/api/run')
@@ -139,7 +141,9 @@ def start(req: RunRequest):
 
     def work():
         try:
-            run(req.videos, req.out, dumps, req.budget, progress=lambda m: state['log'].append(m))
+            _, failed = run(req.videos, req.out, dumps, req.budget, progress=lambda m: state['log'].append(m))
+            if failed:
+                state['error'] = f"{len(failed)} of {len(req.videos)} videos failed (see the log above)"
         except Exception as e:                       # noqa: BLE001 - shown to the user
             state['error'] = f"{type(e).__name__}: {e}"
         finally:
@@ -285,7 +289,7 @@ async function startRun(){const videos=[...document.querySelectorAll('.vid:check
  if(!r.ok){alert((await r.json()).detail);return}$('runbtn').disabled=true;$('results').innerHTML='';timer=setInterval(poll,1500);poll()}
 async function poll(){const s=await (await fetch('/api/status')).json();$('log').textContent=s.log.join('\n')+(s.error?'\nERROR '+s.error:'');$('log').scrollTop=1e9;$('stage').textContent=s.running?s.stage:'';
  const bar=$('bar');if(s.running&&s.percent===null){bar.classList.add('busy')}else{bar.classList.remove('busy');bar.firstElementChild.style.width=(s.running?s.percent:100)+'%'}
- if(!s.running){clearInterval(timer);$('runbtn').disabled=false;if(!s.error){$('out').value=s.out||$('out').value;loadResults()}}}
+ if(!s.running){clearInterval(timer);$('runbtn').disabled=false;$('out').value=s.out||$('out').value;loadResults()}}
 async function loadResults(){const out=$('out').value;rows=await (await fetch(`/api/results?out=${encodeURIComponent(out)}`)).json();filter=null;render()}
 function render(){const out=$('out').value;const counts={};rows.forEach(r=>{const k=r.reasons.split('|')[0];counts[k]=(counts[k]||0)+1});
  $('count').textContent=rows.length?`${rows.length} frames in ${out}`:'no results in the output folder yet';
