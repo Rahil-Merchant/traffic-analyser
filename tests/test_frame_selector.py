@@ -257,3 +257,28 @@ def test_results_survive_dead_worker_processes(tmp_path, monkeypatch):
     dump = write_dump(tmp_path / 'good.npz', good, [[car(i)] if not 30 <= i < 36 else [] for i in range(64)])
     rows, failed = P.run([good], str(tmp_path / 'out'), [dump], budget=20, progress=lambda m: None)
     assert rows and not failed and len(read_manifest(str(tmp_path / 'out'))) == len(rows)
+
+
+def test_cache_with_undecoded_frames_is_not_reused(tmp_path):
+    a = make_video(tmp_path / 'a.mp4')
+    p = write_dump(tmp_path / 'part.npz', a, [[car(i)] for i in range(64)])
+    z = dict(np.load(p))
+    z['frame'] = z['frame'] + 10                                              # frames 0-9 were never decoded
+    np.savez_compressed(p, **z)
+    assert 'incomplete' in fsd.dump_status(p, a)
+
+
+def test_detection_process_failure_is_reported_not_hung(tmp_path):
+    from frame_selector.pipeline import detect_in_subprocess
+    with pytest.raises(RuntimeError):
+        detect_in_subprocess(str(tmp_path / 'missing.mp4'), str(tmp_path / 'd.npz'), progress=lambda m: None)
+
+
+def test_frames_are_read_back_in_decode_order(tmp_path):
+    # frames differ (each shows its index); the reader must return exactly what a sequential read returns
+    video = make_video(tmp_path / 'v.mp4', n=64)
+    cap = cv2.VideoCapture(video)
+    seq = [cap.read()[1] for _ in range(64)]
+    got = dict(fsd.read_frames(video, [50, 3, 3, 17, 63]))
+    assert sorted(got) == [3, 17, 50, 63]
+    assert all(np.array_equal(got[i], seq[i]) for i in got)

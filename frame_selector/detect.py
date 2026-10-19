@@ -76,24 +76,25 @@ def video_info(video_path):
 
 
 def read_frames(video_path, frame_indices):
-    """Yield (frame_index, bgr_frame) for the given indices, in ascending order.
-    A seek in these HEVC .dav streams lands a few frames late, but the position reported after a
-    read is exact, so seek early and step forward to the frame asked for. Positions are converted with
-    the capture's own fps: app dumps store the mp4's 20.000136, which is a frame off after an hour."""
+    """Yield (frame_index, bgr_frame) for the given indices, in ascending order, where an index is the
+    frame's position in decode order, as in the detection dumps. The video is stepped through from the
+    start: these recorders' timestamps jump (a 1 s gap, 138 ms steps), so any seek or timestamp
+    arithmetic lands up to a second away from the frame that was detected."""
     cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
-    for idx in sorted(set(int(i) for i in frame_indices)):
-        cap.set(cv2.CAP_PROP_POS_MSEC, max(0, idx - 10) / fps * 1000.0)
-        for _ in range(40):
+    try:
+        pos = 0                                      # index of the next frame the capture will return
+        for idx in sorted(set(int(i) for i in frame_indices)):
+            while pos < idx:
+                if not cap.grab():                   # decodes without converting: the cheap way to skip
+                    return
+                pos += 1
             ok, frame = cap.read()
             if not ok:
-                break
-            got = int(round(cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0 * fps))   # index of the frame just read
-            if got >= idx:
-                if got == idx:
-                    yield idx, frame
-                break
-    cap.release()
+                return
+            pos += 1
+            yield idx, frame
+    finally:
+        cap.release()
 
 
 def gpu_frame_count(video_path):
@@ -283,6 +284,8 @@ def dump_status(path, video_path=None, match_name=True):
     if det is not None:                              # made by the frame selector
         if det.get('version') != DETECTOR_VERSION or det.get('conf') != CONF or det.get('iou') != IOU:
             return "made by an older version of the frame selector"
+        if frames[0] != 0 or frames[-1] != len(frames) - 1:
+            return "incomplete: part of the video could not be decoded"
         current = model_id(configured_model())
         if current is not None and det.get('model') != current:
             return f"made with a different model ({(det.get('model') or {}).get('name')})"
