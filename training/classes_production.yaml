@@ -1,0 +1,19 @@
+# Class set of the deployed detector (premier_station engine, read from a production detection dump):
+# nine classes in this exact order. The Roboflow dataset has two more; they are mapped here.
+classes:
+  - Bus
+  - Cyclist
+  - Light Vehicle
+  - Long Truck
+  - Medium Truck
+  - Minibus Taxi
+  - Motorcycle
+  - Pedestrian
+  - Short Truck
+# dataset class -> production class (a person pushing a barrow is a pedestrian for counting purposes)
+remap:
+  Person with wheel barrow: Pedestrian
+# images holding any of these classes are left out entirely, so the unlabelled object cannot teach the
+# model that it is background (21 boxes in 20 images; too few to learn or evaluate)
+drop_images_with:
+  - Animal drawn vehicle

@@ -1,0 +1,13 @@
+# Training-server requirements (CUDA 12.x PyTorch installed separately, e.g. torch>=2.5 cu126).
+# Dataset tools
+numpy
+pyyaml
+pillow
+# YOLO26 (released with ultralytics 8.4; MuSGD, ProgLoss, STAL, dual heads)
+ultralytics>=8.4
+# targeted pixel-level augmentations for train_yolo26.py (2.x API: std_range, scale_range, quality_range)
+albumentations>=2.0
+# RF-DETR with training and TensorBoard/W&B loggers (needs Python >= 3.10)
+rfdetr[train,loggers]>=1.12
+# DEIMv2 is cloned, not pip-installed: github.com/Intellindust-AI-Lab/DEIMv2 (requirements.txt pins torch 2.5.1,
+# faster-coco-eval, calflops, transformers). Use a separate environment for it.
