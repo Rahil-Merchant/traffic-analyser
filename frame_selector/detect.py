@@ -36,6 +36,14 @@ def configured_model():
     return MODEL_PATH
 
 
+def configured_preprocessing():
+    """The pixel preprocessing that model needs (MODEL_PREPROCESSING in config.py): 'yolo' or 'deim'."""
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        from config import MODEL_PREPROCESSING
+    return MODEL_PREPROCESSING
+
+
 def model_id(model_path):
     """What identifies the model a dump was made with: file name, size and modification time.
     None when the model file isn't on this machine."""
@@ -47,10 +55,15 @@ def model_id(model_path):
 
 
 def load_model(model_path=None):
-    from ultralytics import YOLO
+    """The app's model: a YOLO engine through Ultralytics, a DEIM engine through models/trt_detector.py."""
     model_path = model_path or configured_model()
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"model not found: {model_path} (set MODEL_PATH / PC in config.py)")
+    if str(model_path).endswith('.engine'):
+        from models.trt_detector import TensorRTDetector, check_engine_preprocessing
+        if check_engine_preprocessing(model_path, configured_preprocessing()).get('model_type') == 'deim':
+            return TensorRTDetector(model_path)
+    from ultralytics import YOLO
     return YOLO(model_path, task='detect')
 
 
@@ -187,9 +200,12 @@ def _prefetch(gen, depth=1):
         t.join(timeout=120)
 
 
-def detect_video(video_path, model, out_path, device=None, progress=print, model_path=None):
-    """Detect on every frame (squashed to 640x640 like production) and save a dump at out_path."""
+def detect_video(video_path, model, out_path, device=None, progress=print, model_path=None, preprocessing=None):
+    """Detect on every frame (squashed to 640x640 like production) and save a dump at out_path.
+    `preprocessing` is the model's pixel normalisation ('yolo' or 'deim'); default: the configured one."""
     import torch
+    from models.preprocessing import normalize
+    preprocessing = preprocessing or configured_preprocessing()
     info = video_info(video_path)
     total = info['frames']
     temp = None
@@ -224,7 +240,7 @@ def detect_video(video_path, model, out_path, device=None, progress=print, model
                     # NHWC -> NCHW. contiguous() matters: the TensorRT backend reads the tensor's raw memory,
                     # so a permuted view reaches the engine as scrambled pixels (it then detects almost nothing).
                     x = torch.from_numpy(chunk).to(device or 'cpu', non_blocking=True).permute(0, 3, 1, 2).contiguous()
-                    x = (x.half() if use_half else x.float()) / 255.0
+                    x = normalize((x.half() if use_half else x.float()) / 255.0, preprocessing)
                     assert x.is_contiguous()
                     results = model(x, imgsz=MODEL_SIZE, conf=CONF, iou=IOU, verbose=False, half=use_half, device=device)
                     for r in results[:n]:

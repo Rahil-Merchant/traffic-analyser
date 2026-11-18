@@ -3,8 +3,10 @@
 import torch
 from ultralytics import YOLO
 import os
-from config import MODEL_INPUT_SIZE
+from config import MODEL_INPUT_SIZE, MODEL_PREPROCESSING
 from loguru import logger
+from models.preprocessing import check_mode
+from models.trt_detector import TensorRTDetector, check_engine_preprocessing
      
 def load_model(model_path, device, conf_threshold, iou_threshold):
     """Loads the model, automatically selecting the runtime based on file extension"""
@@ -13,6 +15,7 @@ def load_model(model_path, device, conf_threshold, iou_threshold):
     if not os.path.exists(model_path):
         print(f"FATAL ERROR: Model file not found at '{model_path}'")
         raise FileNotFoundError(f"Model file not found: {model_path}")
+    check_mode(MODEL_PREPROCESSING)
 
     try:
         if model_path.endswith('.pt'):
@@ -47,6 +50,13 @@ def load_model(model_path, device, conf_threshold, iou_threshold):
 
         elif model_path.endswith('.engine'):
             # --- Load TensorRT (.engine) Model ---
+            # The engine's header says which preprocessing it needs and whether Ultralytics can run it.
+            metadata = check_engine_preprocessing(model_path, MODEL_PREPROCESSING)
+            if metadata.get('model_type') == 'deim':
+                logger.debug("Detected a DEIM .engine file, using the TensorRT runtime directly (no NMS).")
+                model = TensorRTDetector(model_path)
+                logger.debug(f"DEIM engine loaded from: {model_path} (batch up to {model.max_batch}, score floor {model.conf})")
+                return model
             logger.debug("Detected .engine file, using TensorRT runtime via YOLO wrapper.")
             model = YOLO(model_path, task='detect')
             model.verbose = False

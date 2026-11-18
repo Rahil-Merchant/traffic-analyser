@@ -30,7 +30,7 @@ from config import (
     MEMORY_CLEANUP_INTERVAL, MODEL_PATH, CONF_THRESHOLD, VEHICLE_TIMEOUTS,
     LINE_POINTS, MODEL_INPUT_SIZE, ENABLE_VISUALIZATION, DATA_YAML_PATH,
     PYVIDEOREADER_DECODE_SEGMENT_SIZE, NUM_INFERENCE_STREAMS, BYTETRACK_MATCH_THRESH,
-    BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH, CROP_MODE,
+    BYTETRACK_TRACK_BUFFER_SECONDS, BYTETRACK_TRACK_THRESH, CROP_MODE, MODEL_PREPROCESSING,
     USE_PATCHWISE_INFERENCE, PATCHWISE_INFERENCE_CONFIG, PATCHWISE_USE_BATCH_PROCESSING,
     MOTION_INFERENCE_MIN_FRAMES, MOTION_INFERENCE_MAX_PROJECTION, MOTION_INFERENCE_MIN_DIST,
     MIN_SPEED_POSITIONS, MIN_SPEED_DURATION_SEC,
@@ -45,6 +45,7 @@ from core.utils import is_valid_movement, cleanup_memory, is_vehicle_path
 from core.perspective_transform import PerspectiveTransformer
 from core.performance import PerformanceTracker
 from models.model_loader import load_model, get_device
+from models.preprocessing import normalize as normalize_model_input
 from tracking.zone_tracker import ZoneTracker
 from tracking.ocsort import OCSort
 from tracking.vehicle_counter import VehicleCounter
@@ -902,8 +903,9 @@ class VideoProcessor:
         # Determine the final data type (float16 for mixed precision on CUDA, else float32)
         dtype_final = torch.float16 if (MIXED_PRECISION and self.device == 'cuda') else torch.float32
         
-        # Convert to the final float type and normalize pixel values from [0, 255] to [0.0, 1.0]
-        return batch_tensor.to(dtype_final) / 255.0
+        # Convert to the final float type and scale pixel values from [0, 255] to [0.0, 1.0], then apply
+        # the normalisation the configured model was trained with (none for YOLO, ImageNet mean/std for DEIM)
+        return normalize_model_input(batch_tensor.to(dtype_final) / 255.0, MODEL_PREPROCESSING)
 
     @torch.no_grad()
     @profile

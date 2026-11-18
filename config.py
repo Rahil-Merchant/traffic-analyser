@@ -5,17 +5,27 @@ from datetime import datetime
 # --- Machine ---
 PC = 'swest'  # key into PC_PATHS below; set per machine
 
-# Everything that differs between machines lives here
+# Everything that differs between machines lives here.
+# 'model_preprocessing' goes with the model at 'model_path' (see models/preprocessing.py):
+#   'yolo' : RGB scaled to 0..1                          - Ultralytics YOLO engines (.engine / .pt)
+#   'deim' : RGB scaled to 0..1, then ImageNet mean/std  - DEIMv2 engines built by utility_scripts/onnx2tensorrt.py
+# Engines built by that script record which one they need; the app refuses to start on a mismatch.
 PC_PATHS = {
     'EMAAN': {
         'base_output_dir': r"C:\Users\EMAAN\Documents\AI_output_videos",
         'model_path': r"C:\Users\EMAAN\Documents\YOLO\project\models\weights\premier_station.engine",
+        'model_preprocessing': 'yolo',
         'data_yaml_path': r"",
         'video_dir': r"C:\Users\EMAAN\Documents\YOLO",
     },
     'swest': {
         'base_output_dir': r"C:\Users\swest\Documents\AI_output_videos",
-        'model_path': r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\26012026\premier_station.engine",
+        # DEIMv2-L trained with the CCTV augmentations (test mAP50-95 0.504 as an engine; training/README.md,
+        # section 8). About half the frame rate of the YOLO engines.
+        # Previous model: models\weights\26012026\premier_station.engine with 'yolo'.
+        # Same data, smaller change: models\weights\261118\yolo26l_o2m_sq640.engine with 'yolo' (0.474).
+        'model_path': r"C:\Users\swest\Desktop\traffic-capturing\traffic-reporting\models\weights\261118\deimv2_l_cctv.engine",
+        'model_preprocessing': 'deim',
         'data_yaml_path': r"",
         'video_dir': r"C:\Users\swest\Desktop\traffic-capturing\sample_videos",
     },
@@ -38,13 +48,16 @@ REPORT_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "reports")
 
 # --- Model Configuration ---
 MODEL_PATH = PATHS['model_path']
+MODEL_PREPROCESSING = PATHS.get('model_preprocessing', 'yolo')   # 'yolo' or 'deim', see PC_PATHS above
 DATA_YAML_PATH = PATHS['data_yaml_path']
 NUM_INFERENCE_STREAMS = 1
 CONF_THRESHOLD = 0.05 # Keep SLIGHTLY LOWER CONF to potentially keep weaker detections
 IOU_THRESHOLD = 0.6   # Keep slightly higher
 MODEL_INPUT_SIZE = 640 # Keep smaller size for performance
 TTA = True # Enables test-time augmentation (TTA) for predictions
-CROP_MODE = 'letterbox'     # letterbox or stretch
+# letterbox or stretch. No effect in the standard path: the GPU decoder already resizes every frame to
+# MODEL_INPUT_SIZE x MODEL_INPUT_SIZE (a stretch), and letterboxing a square frame changes nothing.
+CROP_MODE = 'letterbox'
 
 # --- INFERENCE MODE SWITCH ---
 USE_PATCHWISE_INFERENCE = False # Set to True to use patch-based, False for standard
@@ -269,7 +282,7 @@ SERVER_PORT = 8080
 print(f"--- Configuration Loaded (Tuned for Exit Accuracy) ---")
 print(f"PC: {PC}")
 print(f"Start Date/Time: {START_DATE} / {START_TIME}")
-print(f"Using Model: {MODEL_PATH} (Conf: {CONF_THRESHOLD}, IoU: {IOU_THRESHOLD})")
+print(f"Using Model: {MODEL_PATH} (Preprocessing: {MODEL_PREPROCESSING}, Conf: {CONF_THRESHOLD}, IoU: {IOU_THRESHOLD})")
 print(f"Model Input Size: {MODEL_INPUT_SIZE}x{MODEL_INPUT_SIZE}")
 print(f"Target FPS: {TARGET_FPS}, Batch Size: {OPTIMAL_BATCH_SIZE}, Threads: {THREAD_COUNT}")
 print(f"Mixed Precision: {MIXED_PRECISION}, CUDA Streams: {PARALLEL_STREAMS}")

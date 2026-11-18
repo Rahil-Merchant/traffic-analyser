@@ -152,6 +152,7 @@ Place your trained YOLO model weights in `models/weights/` and update the path i
 PC_PATHS = {
     'your_machine': {
         'model_path': r"models/weights/your_model.engine",
+        'model_preprocessing': 'yolo',   # 'yolo' for YOLO engines, 'deim' for DEIMv2 engines
         'base_output_dir': r"./output",
         'video_dir': r"./data",
         'data_yaml_path': r"",
@@ -160,14 +161,17 @@ PC_PATHS = {
 PC = 'your_machine'
 ```
 
-To convert a PyTorch model to TensorRT:
+To convert a trained model (YOLO or DEIMv2) to a TensorRT engine:
 ```bash
-# PyTorch to ONNX
-python utility_scripts/pt2onnx_ultralytics.py
+# checkpoint to ONNX, in the environment the model was trained in
+python utility_scripts/export_onnx.py yolo --weights best.pt --out models/weights/your_model.onnx
+python utility_scripts/export_onnx.py deim --weights best_stg2.pth --config <DEIMv2 config> --deim-repo <DEIMv2> --out models/weights/your_model.onnx
 
-# ONNX to TensorRT
-python utility_scripts/onnx2trt_trtutils.py
+# ONNX to TensorRT, in the app's environment on the machine that runs the app
+python utility_scripts/onnx2tensorrt.py models/weights/your_model.onnx
 ```
+The engine records its class names and the preprocessing it needs; the app refuses to start if
+`model_preprocessing` does not match. See [training/README.md](training/README.md#8-deploying-a-model-to-the-app).
 
 ## Usage
 
@@ -385,8 +389,10 @@ python -m pytest tests/test_perspective_transform.py -v
 
 | Script | Purpose |
 |---|---|
-| `pt2onnx_ultralytics.py` | Export YOLO model from PyTorch to ONNX |
-| `onnx2trt_trtutils.py` | Convert ONNX model to TensorRT engine |
+| `export_onnx.py` | Export a trained YOLO or DEIMv2 model to ONNX, with class names and preprocessing in its metadata |
+| `onnx2tensorrt.py` | Build the app's TensorRT engine from that ONNX file |
+| `pt2onnx_ultralytics.py` | Export YOLO model from PyTorch to ONNX (older, fixed paths) |
+| `onnx2trt_trtutils.py` | Convert ONNX model to TensorRT engine (older, fixed paths) |
 | `replay_detections.py` | Replay saved detection dumps for offline counting |
 | `roboflow_upload.py` | Upload selected frames to Roboflow for annotation |
 | `cut_videos.py` | Extract video segments |
